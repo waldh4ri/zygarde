@@ -1,0 +1,29 @@
+# Binaries
+gohunt
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# eBPF generated files
+bpf/*_bpfel.go
+bpf/*_bpfeb.go
+bpf/*_bpfel.o
+bpf/*_bpfeb.o
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
