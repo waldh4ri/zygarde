@@ -206,8 +206,6 @@ func main() {
 	if suspiciousCount > 0 {
 		fmt.Println(strings.Repeat("=", 70))
 		fmt.Printf("%s[*] ECOSYSTEM THREAT DETECTED!%s\n", ColorRed, ColorReset)
-		fmt.Println("    Zygarde Complete Forme activation recommended.")
-		fmt.Println("    Review findings above and take immediate action.")
 		fmt.Println(strings.Repeat("=", 70))
 		os.Exit(2)
 	} else if errorCount > 0 {
@@ -218,7 +216,6 @@ func main() {
 	} else {
 		fmt.Println(strings.Repeat("=", 70))
 		fmt.Printf("%s[+] Ecosystem stable - no threats detected%s\n", ColorGreen, ColorReset)
-		fmt.Println("    Zygarde Cells report: All clear")
 		fmt.Println(strings.Repeat("=", 70))
 		os.Exit(0)
 	}
