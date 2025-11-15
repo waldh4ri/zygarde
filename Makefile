@@ -30,7 +30,7 @@ vmlinux:
 		exit 1; \
 	fi
 	@sudo bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
-	@echo "✓ Generated bpf/vmlinux.h"
+	@echo "[+] Generated bpf/vmlinux.h"
 
 # Generate eBPF Go bindings
 generate: vmlinux
@@ -40,13 +40,13 @@ generate: vmlinux
 		exit 1; \
 	fi
 	cd checks && go generate
-	@echo "✓ Generated eBPF bindings"
+	@echo "[+] Generated eBPF bindings"
 
 # Build the binary
 build: generate
 	@echo "Building zygarde..."
 	CGO_ENABLED=0 go build -ldflags="-s -w" -o zygarde .
-	@echo "✓ Built zygarde binary"
+	@echo "[+] Built zygarde binary"
 	@ls -lh zygarde
 
 # Clean generated files and binaries
@@ -55,7 +55,7 @@ clean:
 	rm -f zygarde
 	rm -f checks/bpf_bpfel.go checks/bpf_bpfeb.go
 	rm -f checks/bpf_bpfel.o checks/bpf_bpfeb.o
-	@echo "✓ Cleaned"
+	@echo "[+] Cleaned"
 
 # Run tests
 test:
@@ -66,26 +66,26 @@ test:
 fmt:
 	@echo "Formatting code..."
 	go fmt ./...
-	@echo "✓ Code formatted"
+	@echo "[+] Code formatted"
 
 # Run go vet
 vet:
 	@echo "Running go vet..."
 	go vet ./...
-	@echo "✓ Vet passed"
+	@echo "[+] Vet passed"
 
 # Install to system
 install: build
 	@echo "Installing zygarde to /usr/local/bin..."
 	sudo install -m 755 zygarde /usr/local/bin/zygarde
-	@echo "✓ Installed zygarde"
+	@echo "[+] Installed zygarde"
 
 # Check prerequisites
 check-prereqs:
 	@echo "Checking prerequisites..."
-	@echo -n "Go:      "; which go && go version || echo "✗ Not found"
-	@echo -n "Clang:   "; which clang && clang --version | head -1 || echo "✗ Not found"
-	@echo -n "bpftool: "; which bpftool && bpftool version || echo "✗ Not found"
+	@echo -n "Go:      "; which go && go version || echo "[-] Not found"
+	@echo -n "Clang:   "; which clang && clang --version | head -1 || echo "[-] Not found"
+	@echo -n "bpftool: "; which bpftool && bpftool version || echo "[-] Not found"
 	@echo -n "Kernel:  "; uname -r
-	@echo -n "BTF:     "; test -f /sys/kernel/btf/vmlinux && echo "✓ Available" || echo "✗ Not available"
+	@echo -n "BTF:     "; test -f /sys/kernel/btf/vmlinux && echo "[+] Available" || echo "[-] Not available"
 	@echo ""

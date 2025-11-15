@@ -1,4 +1,3 @@
-````markdown
 # Zygarde - eBPF-based Rootkit Detection Tool
 
 <div align="center">
@@ -18,13 +17,13 @@
 
 </div>
 
-## 🌍 Overview
+## Overview
 
 Zygarde is a powerful, portable forensic analysis tool inspired by the Pokémon guardian of the ecosystem. Just as Zygarde's Cells monitor the environment from deep within, this tool uses eBPF (Extended Berkeley Packet Filter) with CO-RE (Compile Once - Run Everywhere) to detect sophisticated rootkit techniques from deep within the Linux kernel.
 
 The tool compiles into a single static binary with no runtime dependencies, making it ideal for incident response and security auditing.
 
-## 🔬 The Zygarde Architecture
+## The Zygarde Architecture
 
 ### Core Concept
 - **Zygarde Core**: The main orchestrator (`main.go`) that coordinates all Cells
@@ -35,27 +34,27 @@ The tool compiles into a single static binary with no runtime dependencies, maki
 
 Zygarde implements three specialized Cells for rootkit detection:
 
-#### 🔴 **Cell 1: Syscall Integrity Cell**
+#### **Cell 1: Syscall Integrity Cell**
 Monitors the system call table for unauthorized modifications.
 - Detects `sys_call_table` hooking by rootkits
 - Compares kernel memory with expected values from `/proc/kallsyms`
 - Uses kprobes to safely read kernel memory
 - **Rootkit Technique Detected**: Syscall table modification
 
-#### 🟢 **Cell 2: Module Visibility Cell**
+#### **Cell 2: Module Visibility Cell**
 Reveals kernel modules hidden from user-space.
 - Finds kernel modules hidden from `lsmod` and `/sys/module`
 - Uses BPF iterators to traverse the kernel's internal module list
 - Compares kernel ground truth with user-space visibility
 - **Rootkit Technique Detected**: Module list manipulation (list_del)
 
-#### 🔵 **Cell 3: File Visibility Cell**
+#### **Cell 3: File Visibility Cell**
 Detects executables hidden from directory listings.
 - Monitors `execve` syscalls via tracepoints
 - Verifies file visibility from user-space
 - **Rootkit Technique Detected**: `getdents64` hooking
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 ┌─────────────────────────────────────────────────┐
@@ -63,15 +62,15 @@ Detects executables hidden from directory listings.
 │  (Static, Portable, Single Executable)          │
 ├─────────────────────────────────────────────────┤
 │                                                 │
-│  ┌──────────────┐  ┌──────────────┐            │
-│  │  Cell        │  │  Cell        │            │
-│  │  Interface   │  │  Orchestrator│            │
-│  └──────────────┘  └──────────────┘            │
+│  ┌──────────────┐  ┌──────────────┐             │
+│  │  Cell        │  │  Cell        │             │
+│  │  Interface   │  │  Orchestrator│             │
+│  └──────────────┘  └──────────────┘             │
 │                                                 │
-│  ┌──────────────┐  ┌──────────────┐  ┌────────┤
-│  │  Syscall     │  │  Module      │  │ File   │
-│  │  Cell        │  │  Cell        │  │ Cell   │
-│  └──────┬───────┘  └──────┬───────┘  └───┬────┘
+│  ┌──────────────┐  ┌──────────────┐  ┌────────┐ │
+│  │  Syscall     │  │  Module      │  │ File   │ │
+│  │  Cell        │  │  Cell        │  │ Cell   │ │
+│  └──────┬───────┘  └──────┬───────┘  └────┬───┘ │
 │         │                 │               │     │
 └─────────┼─────────────────┼───────────────┼─────┘
           │                 │               │
@@ -90,7 +89,7 @@ Detects executables hidden from directory listings.
 └─────────────────────────────────────────────────┘
 ```
 
-## 📋 Prerequisites
+## Prerequisites
 
 ### Build Requirements
 - Go 1.21 or later
@@ -124,7 +123,7 @@ sudo pacman -S go clang llvm libbpf linux-headers
 sudo pacman -S bpf
 ```
 
-## 🔨 Building
+## Building
 
 ### Quick Build (Automated)
 
@@ -176,7 +175,7 @@ make build
 
 The resulting `zygarde` binary is completely standalone and can be copied to any Linux system with a compatible kernel.
 
-## 🚀 Usage
+## Usage
 
 ### Basic Usage
 
@@ -245,7 +244,7 @@ Total Cells Deployed: 3
 
 Deactivating Cells...
 ======================================================================
-[+] ✓ Ecosystem stable - no threats detected
+[+] Ecosystem stable - no threats detected
    Zygarde Cells report: All clear
 ======================================================================
 ```
@@ -256,7 +255,7 @@ Deactivating Cells...
 - `1`: One or more Cells failed with errors
 - `2`: Suspicious activity detected - potential rootkit (Threat detected!)
 
-## 🛠️ Development
+## Development
 
 ### Project Structure
 
@@ -307,7 +306,7 @@ func (c *MyCell) Cleanup() error {
 }
 ```
 
-## 📖 Makefile Targets
+## Makefile Targets
 
 ```bash
 make help         # Show all available targets
@@ -318,7 +317,7 @@ make test         # Run tests
 make install      # Install to /usr/local/bin
 ```
 
-## 🔍 Technical Details
+## Technical Details
 
 ### CO-RE (Compile Once - Run Everywhere)
 
@@ -342,7 +341,7 @@ Zygarde uses eBPF CO-RE, which allows the same eBPF bytecode to run on different
 - Sophisticated rootkits may evade detection by hooking eBPF subsystem
 - Hidden file detection requires active process execution
 
-## 🔧 Troubleshooting
+## Troubleshooting
 
 ### "failed to load eBPF objects"
 
@@ -372,7 +371,7 @@ sudo bpftool feature
 
 **Solution**: Ensure running as root to see KASLR addresses
 
-## 🤝 Contributing
+## Contributing
 
 Contributions are welcome! Please:
 
@@ -382,11 +381,11 @@ Contributions are welcome! Please:
 4. Ensure `go fmt` and `go vet` pass
 5. Submit a pull request
 
-## 📜 License
+## License
 
 This project is licensed under the Dual BSD/GPL License - see the LICENSE file for details.
 
-## 🔗 References
+## References
 
 - [eBPF Documentation](https://ebpf.io/)
 - [Cilium eBPF Library](https://github.com/cilium/ebpf)
@@ -394,7 +393,7 @@ This project is licensed under the Dual BSD/GPL License - see the LICENSE file f
 - [Linux Rootkit Techniques](https://www.kernel.org/doc/html/latest/security/)
 - [Zygarde Pokémon](https://bulbapedia.bulbagarden.net/wiki/Zygarde) - Inspiration for the name
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 - The Cilium team for the excellent Go eBPF library
 - The Linux kernel eBPF community
@@ -405,9 +404,7 @@ This project is licensed under the Dual BSD/GPL License - see the LICENSE file f
 
 <div align="center">
 
-**⚠️ Disclaimer**: This tool is for legitimate security research and system administration only. Unauthorized access to computer systems is illegal.
-
 *"Order must be maintained in the ecosystem."* - Zygarde
 
 </div>
-````
+

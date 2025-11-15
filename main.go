@@ -11,6 +11,16 @@ import (
 	"zygarde/checks"
 )
 
+// ANSI color codes
+const (
+	ColorReset  = "\033[0m"
+	ColorRed    = "\033[31m"
+	ColorGreen  = "\033[32m"
+	ColorYellow = "\033[33m"
+	ColorBlue   = "\033[34m"
+	ColorCyan   = "\033[36m"
+)
+
 const banner = `
  ███████╗██╗   ██╗ ██████╗  █████╗ ██████╗ ██████╗ ███████╗
  ╚══███╔╝╚██╗ ██╔╝██╔════╝ ██╔══██╗██╔══██╗██╔══██╗██╔════╝
@@ -21,7 +31,7 @@ const banner = `
                                                              
  Guardian of the Kernel - eBPF Rootkit Detection
  Version 1.0.0 - Order Forme
- `
+`
 
 // Global debug flag
 var debugMode bool
@@ -62,8 +72,8 @@ func main() {
 
 	// Check if running as root
 	if os.Geteuid() != 0 {
-		fmt.Println("[-] Error: This tool must be run as root (for eBPF operations)")
-		fmt.Println("   Please run with: sudo ./zygarde")
+		fmt.Printf("%s[-]%s Error: This tool must be run as root (for eBPF operations)\n", ColorRed, ColorReset)
+		fmt.Println("    Please run with: sudo ./zygarde")
 		os.Exit(1)
 	}
 
@@ -111,13 +121,13 @@ func main() {
 		}{cell: cell, result: result})
 
 		// Print immediate result
-		statusSymbol := getStatusSymbol(result.Status)
-		fmt.Printf("            %s %s (%.2fs)\n", statusSymbol, result.Message, result.Duration.Seconds())
+		statusSymbol, statusColor := getStatusSymbol(result.Status)
+		fmt.Printf("            %s%s%s %s (%.2fs)\n", statusColor, statusSymbol, ColorReset, result.Message, result.Duration.Seconds())
 
 		// Show findings immediately
 		if len(result.Findings) > 0 {
 			for _, finding := range result.Findings {
-				fmt.Printf("              [*] %s\n", finding.Description)
+				fmt.Printf("              %s[*]%s %s\n", ColorYellow, ColorReset, finding.Description)
 				if len(finding.Details) > 0 {
 					for key, value := range finding.Details {
 						fmt.Printf("                  - %s: %s\n", key, value)
@@ -127,7 +137,7 @@ func main() {
 		}
 
 		if err != nil {
-			fmt.Printf("            [*] Error: %v\n", err)
+			fmt.Printf("            %s[*]%s Error: %v\n", ColorRed, ColorReset, err)
 		}
 
 		fmt.Println()
@@ -148,9 +158,9 @@ func main() {
 	fmt.Println("ZYGARDE CORE ANALYSIS - SUMMARY REPORT")
 	fmt.Println(strings.Repeat("=", 70))
 	fmt.Printf("Total Cells Deployed: %d\n", len(allCells))
-	fmt.Printf("  [+] OK:         %d\n", okCount)
-	fmt.Printf("  [*] SUSPICIOUS: %d\n", suspiciousCount)
-	fmt.Printf("  [-] ERROR:      %d\n", errorCount)
+	fmt.Printf("  %s[+]%s OK:         %d\n", ColorGreen, ColorReset, okCount)
+	fmt.Printf("  %s[*]%s SUSPICIOUS: %d\n", ColorYellow, ColorReset, suspiciousCount)
+	fmt.Printf("  %s[-]%s ERROR:      %d\n", ColorRed, ColorReset, errorCount)
 	fmt.Println()
 
 	// Print detailed findings if any
@@ -195,36 +205,36 @@ func main() {
 	// Exit with appropriate code
 	if suspiciousCount > 0 {
 		fmt.Println(strings.Repeat("=", 70))
-		fmt.Println("[*] ⚠️  ECOSYSTEM THREAT DETECTED!")
-		fmt.Println("   Zygarde Complete Forme activation recommended.")
-		fmt.Println("   Review findings above and take immediate action.")
+		fmt.Printf("%s[*] ECOSYSTEM THREAT DETECTED!%s\n", ColorRed, ColorReset)
+		fmt.Println("    Zygarde Complete Forme activation recommended.")
+		fmt.Println("    Review findings above and take immediate action.")
 		fmt.Println(strings.Repeat("=", 70))
 		os.Exit(2)
 	} else if errorCount > 0 {
 		fmt.Println(strings.Repeat("=", 70))
-		fmt.Println("[*] WARNING: Some Cells failed to complete analysis")
+		fmt.Printf("%s[*] WARNING: Some Cells failed to complete analysis%s\n", ColorYellow, ColorReset)
 		fmt.Println(strings.Repeat("=", 70))
 		os.Exit(1)
 	} else {
 		fmt.Println(strings.Repeat("=", 70))
-		fmt.Println("[+] ✓ Ecosystem stable - no threats detected")
-		fmt.Println("   Zygarde Cells report: All clear")
+		fmt.Printf("%s[+] Ecosystem stable - no threats detected%s\n", ColorGreen, ColorReset)
+		fmt.Println("    Zygarde Cells report: All clear")
 		fmt.Println(strings.Repeat("=", 70))
 		os.Exit(0)
 	}
 }
 
-// getStatusSymbol returns a symbol for the status
-func getStatusSymbol(status checks.Status) string {
+// getStatusSymbol returns a symbol and color for the status
+func getStatusSymbol(status checks.Status) (string, string) {
 	switch status {
 	case checks.StatusOK:
-		return "[+]"
+		return "[+]", ColorGreen
 	case checks.StatusSuspicious:
-		return "[*]"
+		return "[*]", ColorYellow
 	case checks.StatusError:
-		return "[-]"
+		return "[-]", ColorRed
 	default:
-		return "[?]"
+		return "[?]", ColorReset
 	}
 }
 

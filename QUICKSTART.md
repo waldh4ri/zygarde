@@ -22,15 +22,15 @@ sudo ./zygarde
 
 Zygarde deploys three specialized Cells for ecosystem monitoring:
 
-1. **🔴 Syscall Integrity Cell** (~0.1s)
+1. **Syscall Integrity Cell** (~0.1s)
    - Detects if system calls have been hooked
    - Checks: `getdents64` syscall integrity
 
-2. **🟢 Module Visibility Cell** (~0.1s)
+2. **Module Visibility Cell** (~0.1s)
    - Finds kernel modules hidden from `lsmod`
    - Compares kernel truth vs user-space visibility
 
-3. **🔵 File Visibility Cell** (~5s)
+3. **File Visibility Cell** (~5s)
    - Monitors program executions
    - Detects files that can execute but are invisible
 
@@ -44,7 +44,7 @@ Total runtime: ~5-6 seconds
 [+] All 145 kernel modules are visible
 [+] No hidden files detected
 
-✓ Ecosystem stable - no threats detected
+[+] Ecosystem stable - no threats detected
    Zygarde Cells report: All clear
 ```
 
@@ -55,7 +55,7 @@ Total runtime: ~5-6 seconds
    
 [*] Module 'evil_rootkit' is loaded but hidden from /sys/module
 
-⚠️ ECOSYSTEM THREAT DETECTED!
+[*] ECOSYSTEM THREAT DETECTED!
    Zygarde Complete Forme activation recommended.
    Review findings above and take immediate action.
 ```
@@ -118,10 +118,10 @@ ls /sys/kernel/btf/vmlinux  # Should exist
 
 ```bash
 # Check kernel version
-uname -r | awk -F. '{if ($1>=5 && $2>=8) print "✓ OK"; else print "✗ Too old"}'
+uname -r | awk -F. '{if ($1>=5 && $2>=8) print "[+] OK"; else print "[-] Too old"}'
 
 # Check BTF support
-[ -f /sys/kernel/btf/vmlinux ] && echo "✓ BTF enabled" || echo "✗ No BTF"
+[ -f /sys/kernel/btf/vmlinux ] && echo "[+] BTF enabled" || echo "[-] No BTF"
 
 # Check if can read kallsyms (need root)
 sudo grep sys_call_table /proc/kallsyms | head -1
