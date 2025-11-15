@@ -18,6 +18,12 @@ bpf/*_bpfeb.go
 bpf/*_bpfel.o
 bpf/*_bpfeb.o
 
+# ebpf2go generated files
+checks/bpf_bpfel_*.go
+checks/bpf_bpfeb_*.go
+checks/bpf_bpfel_*.o
+checks/bpf_bpfeb_*.o
+
 # IDE
 .vscode/
 .idea/
@@ -27,3 +33,4 @@ bpf/*_bpfeb.o
 
 # OS
 .DS_Store
+
