@@ -21,13 +21,13 @@ const banner = `
                                                         
  eBPF-based Rootkit Detection Tool
  Version 1.0.0
-`
+ `
 
 // Global debug flag
 var debugMode bool
 
 // DebugLog prints a message only if debug mode is enabled
-func DebugLog(format string, args ...interface{}) {
+func DebugLog(format string, args ...any) {
 	if debugMode {
 		timestamp := time.Now().Format("15:04:05.000")
 		msg := fmt.Sprintf(format, args...)
@@ -62,7 +62,7 @@ func main() {
 
 	// Check if running as root
 	if os.Geteuid() != 0 {
-		fmt.Println("❌ Error: This tool must be run as root (for eBPF operations)")
+		fmt.Println("[-] Error: This tool must be run as root (for eBPF operations)")
 		fmt.Println("   Please run with: sudo ./gohunt")
 		os.Exit(1)
 	}
@@ -117,7 +117,7 @@ func main() {
 		// Show findings immediately
 		if len(result.Findings) > 0 {
 			for _, finding := range result.Findings {
-				fmt.Printf("          ⚠️  %s\n", finding.Description)
+				fmt.Printf("          [*] %s\n", finding.Description)
 				if len(finding.Details) > 0 {
 					for key, value := range finding.Details {
 						fmt.Printf("              - %s: %s\n", key, value)
@@ -127,7 +127,7 @@ func main() {
 		}
 
 		if err != nil {
-			fmt.Printf("        ⚠️  Error: %v\n", err)
+			fmt.Printf("        [*] Error: %v\n", err)
 		}
 
 		fmt.Println()
@@ -148,9 +148,9 @@ func main() {
 	fmt.Println("SUMMARY REPORT")
 	fmt.Println(strings.Repeat("=", 70))
 	fmt.Printf("Total Checks: %d\n", len(allChecks))
-	fmt.Printf("  ✅ OK:         %d\n", okCount)
-	fmt.Printf("  🔍 SUSPICIOUS: %d\n", suspiciousCount)
-	fmt.Printf("  ❌ ERROR:      %d\n", errorCount)
+	fmt.Printf("  [+] OK:         %d\n", okCount)
+	fmt.Printf("  [*] SUSPICIOUS: %d\n", suspiciousCount)
+	fmt.Printf("  [-] ERROR:      %d\n", errorCount)
 	fmt.Println()
 
 	// Print detailed findings if any
@@ -195,34 +195,34 @@ func main() {
 	// Exit with appropriate code
 	if suspiciousCount > 0 {
 		fmt.Println(strings.Repeat("=", 70))
-		fmt.Println("⚠️  ALERT: Suspicious activity detected!")
+		fmt.Println("[*] ALERT: Suspicious activity detected!")
 		fmt.Println("   Your system may be compromised. Review findings above.")
 		fmt.Println(strings.Repeat("=", 70))
 		os.Exit(2)
 	} else if errorCount > 0 {
 		fmt.Println(strings.Repeat("=", 70))
-		fmt.Println("⚠️  WARNING: Some checks failed to complete")
+		fmt.Println("[*] WARNING: Some checks failed to complete")
 		fmt.Println(strings.Repeat("=", 70))
 		os.Exit(1)
 	} else {
 		fmt.Println(strings.Repeat("=", 70))
-		fmt.Println("✅ System appears clean - no rootkit activity detected")
+		fmt.Println("[+] System appears clean - no rootkit activity detected")
 		fmt.Println(strings.Repeat("=", 70))
 		os.Exit(0)
 	}
 }
 
-// getStatusSymbol returns an emoji/symbol for the status
+// getStatusSymbol returns a symbol for the status
 func getStatusSymbol(status checks.Status) string {
 	switch status {
 	case checks.StatusOK:
-		return "✅"
+		return "[+]"
 	case checks.StatusSuspicious:
-		return "🔍"
+		return "[*]"
 	case checks.StatusError:
-		return "❌"
+		return "[-]"
 	default:
-		return "❓"
+		return "[?]"
 	}
 }
 
