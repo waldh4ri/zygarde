@@ -74,9 +74,19 @@ func (c *SyscallCheck) Run() (Result, error) {
 	c.debugLog("Starting syscall table integrity check")
 	c.debugLog("Step 1: Loading eBPF objects with CO-RE...")
 
+	// Load the eBPF spec and objects (no .rodata rewriting needed for syscall check)
+	spec, err := loadBpf()
+	if err != nil {
+		c.debugLog("ERROR: Failed to load eBPF spec: %v", err)
+		result.Status = StatusError
+		result.Error = fmt.Errorf("failed to load eBPF spec: %w", err)
+		result.Duration = time.Since(start)
+		return result, err
+	}
+
 	// Load the eBPF program
 	objs := &bpfObjects{}
-	if err := loadBpfObjects(objs, nil); err != nil {
+	if err := spec.LoadAndAssign(objs, nil); err != nil {
 		c.debugLog("ERROR: Failed to load eBPF objects: %v", err)
 		result.Status = StatusError
 		result.Error = fmt.Errorf("failed to load eBPF objects: %w", err)

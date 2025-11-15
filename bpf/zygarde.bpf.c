@@ -11,7 +11,24 @@ char LICENSE[] SEC("license") = "Dual BSD/GPL";
 #define MAX_PATH_LEN 256
 #define MAX_NAME_LEN 64
 
-// ============================================================================
+// Minimal flavored declaration for older kernels exposing task_struct.state
+struct task_struct___old {
+    unsigned long state;
+};
+
+// Read-only configuration for monitored paths (populated by userspace if needed)
+struct cfg_paths {
+    bool use_custom_paths;               // if true, use prefixes below; otherwise built-in defaults
+    __u32 prefix_count;                  // number of valid prefixes
+    __u16 prefix_lens[8];                // length of each prefix
+    char prefixes[8][MAX_PATH_LEN];      // up to 8 path prefixes
+};
+
+// Placed in .rodata so verifier treats as read-only constant memory
+const struct cfg_paths zygarde_cfg SEC(".rodata") = {
+    .use_custom_paths = false,
+    .prefix_count = 0,
+};// ============================================================================
 // Feature 1: System Call Table Integrity Check
 // ============================================================================
 
@@ -35,8 +52,8 @@ struct {
 	__type(value, __u64);
 } syscall_config SEC(".maps");
 
-// Attach to a frequent, harmless syscall to trigger our check
-SEC("kprobe/sys_getuid")
+// Kprobe with generic name; userspace overrides the attach point dynamically
+SEC("kprobe/dummy")
 int check_syscall_table(struct pt_regs *ctx)
 {
 	struct syscall_event *e;
@@ -104,29 +121,35 @@ struct {
 	__uint(max_entries, 256 * 1024);
 } execve_events SEC(".maps");
 
-// Map to store monitored PATH directories (set by user-space)
-// Note: Currently unused, kept for future enhancements
-/*
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__uint(max_entries, 64);
-	__type(key, char[MAX_PATH_LEN]);
-	__type(value, __u8);
-} monitored_paths SEC(".maps");
-*/
-
 // Helper function to check if a path is in monitored directories
 static __always_inline int should_monitor_path(const char *filename)
 {
-	// Check if this is an absolute path in common PATH directories
+	// If configured, use read-only custom prefixes
+	if (zygarde_cfg.use_custom_paths && zygarde_cfg.prefix_count > 0) {
+		if (filename[0] != '/')
+			return 0;
+		#pragma unroll
+		for (int i = 0; i < 8; i++) {
+			if ((__u32)i >= zygarde_cfg.prefix_count)
+				break;
+			__u16 plen = zygarde_cfg.prefix_lens[i];
+			if (plen == 0)
+				continue;
+			if (__builtin_memcmp(filename, zygarde_cfg.prefixes[i], plen) == 0)
+				return 1;
+		}
+		return 0;
+	}
+
+	// Default set of common PATH directories
 	if (filename[0] == '/') {
 		if (__builtin_memcmp(filename, "/bin/", 5) == 0 ||
-		    __builtin_memcmp(filename, "/sbin/", 6) == 0 ||
-		    __builtin_memcmp(filename, "/usr/bin/", 9) == 0 ||
-		    __builtin_memcmp(filename, "/usr/sbin/", 10) == 0 ||
-		    __builtin_memcmp(filename, "/usr/local/bin/", 15) == 0 ||
-		    __builtin_memcmp(filename, "/usr/local/sbin/", 16) == 0 ||
-		    __builtin_memcmp(filename, "/opt/", 5) == 0) {
+			__builtin_memcmp(filename, "/sbin/", 6) == 0 ||
+			__builtin_memcmp(filename, "/usr/bin/", 9) == 0 ||
+			__builtin_memcmp(filename, "/usr/sbin/", 10) == 0 ||
+			__builtin_memcmp(filename, "/usr/local/bin/", 15) == 0 ||
+			__builtin_memcmp(filename, "/usr/local/sbin/", 16) == 0 ||
+			__builtin_memcmp(filename, "/opt/", 5) == 0) {
 			return 1;
 		}
 	}
@@ -351,10 +374,14 @@ int dump_task(struct bpf_iter__task *ctx)
 	else
 		info.ppid = 0;
 	
-	// Get task state
-	info.state = BPF_CORE_READ(task, __state);
-	
-	// Copy command name
+	// Get task state with CO-RE guards: __state (newer) or state (older)
+    unsigned long st = 0;
+    if (bpf_core_field_exists(((struct task_struct___old *)task)->state)) {
+        st = BPF_CORE_READ((struct task_struct___old *)task, state);
+    } else if (bpf_core_field_exists(task->__state)) {
+        st = BPF_CORE_READ(task, __state);
+    }
+    info.state = st;	// Copy command name
 	bpf_probe_read_kernel_str(&info.comm, sizeof(info.comm), &task->comm);
 	
 	// Submit the data to the iterator's seq_file

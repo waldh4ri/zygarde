@@ -34,3 +34,4 @@ checks/bpf_bpfel_arm64.o
 checks/bpf_bpfel_x86.go
 checks/bpf_bpfel_x86.o
 bpf/bpf_co-re_explanation.txt
+docs/forensic_structs.md

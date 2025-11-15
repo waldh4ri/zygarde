@@ -82,9 +82,67 @@ func (c *HiddenFilesCheck) Run() (Result, error) {
 	c.debugLog("Starting hidden files detection check")
 	c.debugLog("Step 1: Loading eBPF objects with CO-RE...")
 
-	// Load the eBPF program
+	// Load the eBPF spec first to allow constant rewriting
+	spec, err := loadBpf()
+	if err != nil {
+		c.debugLog("ERROR: Failed to load eBPF spec: %v", err)
+		result.Status = StatusError
+		result.Error = fmt.Errorf("failed to load eBPF spec: %w", err)
+		result.Duration = time.Since(start)
+		return result, err
+	}
+
+	// Get PATH directories from environment
+	pathDirs := getPathDirectories()
+	c.debugLog("Configuring BPF program to monitor %d PATH directories", len(pathDirs))
+
+	// Build path prefixes with trailing slashes for prefix matching
+	pathPrefixes := make([]string, 0, len(pathDirs))
+	for _, dir := range pathDirs {
+		if !strings.HasSuffix(dir, "/") {
+			dir = dir + "/"
+		}
+		pathPrefixes = append(pathPrefixes, dir)
+		c.debugLog("  - Will monitor: %s", dir)
+	}
+
+	// Configure monitored paths via .rodata constants
+	if len(pathPrefixes) > 0 && len(pathPrefixes) <= 8 {
+		// Build the configuration struct matching the BPF-side layout
+		type cfgPaths struct {
+			UseCustomPaths bool
+			PrefixCount    uint32
+			PrefixLens     [8]uint16
+			Prefixes       [8][256]byte
+		}
+
+		cfg := cfgPaths{
+			UseCustomPaths: true,
+			PrefixCount:    uint32(len(pathPrefixes)),
+		}
+
+		for i, prefix := range pathPrefixes {
+			if i >= 8 {
+				break
+			}
+			cfg.PrefixLens[i] = uint16(len(prefix))
+			copy(cfg.Prefixes[i][:], prefix)
+		}
+
+		// Try to rewrite the .rodata section
+		err = spec.RewriteConstants(map[string]interface{}{
+			"zygarde_cfg": cfg,
+		})
+		if err != nil {
+			c.debugLog("WARNING: Failed to rewrite .rodata constants: %v (falling back to built-in defaults)", err)
+		} else {
+			c.debugLog("SUCCESS: Configured %d custom PATH prefixes in .rodata", len(pathPrefixes))
+		}
+	} else if len(pathPrefixes) > 8 {
+		c.debugLog("WARNING: PATH has %d directories but only 8 can be configured, using first 8", len(pathPrefixes))
+	} // Load the eBPF program with the modified spec
 	objs := &bpfObjects{}
-	if err := loadBpfObjects(objs, nil); err != nil {
+	if err := spec.LoadAndAssign(objs, nil); err != nil {
 		c.debugLog("ERROR: Failed to load eBPF objects: %v", err)
 		result.Status = StatusError
 		result.Error = fmt.Errorf("failed to load eBPF objects: %w", err)
@@ -96,6 +154,7 @@ func (c *HiddenFilesCheck) Run() (Result, error) {
 	c.debugLog("  - CO-RE relocations applied")
 	c.debugLog("  - BPF programs verified and loaded into kernel")
 	c.debugLog("  - BPF maps created (execve_events ring buffer)")
+	c.debugLog("  - Monitoring %d PATH directories from $PATH environment", len(pathPrefixes))
 
 	c.debugLog("Step 2: Attaching to syscall tracepoints...")
 
@@ -160,8 +219,12 @@ func (c *HiddenFilesCheck) Run() (Result, error) {
 	syscallCounts := make(map[string]int) // Track events per syscall type
 
 	c.debugLog("Step 4: Starting monitoring phase for %v...", c.monitorDuration)
-	c.debugLog("Monitoring file access in PATH directories: /bin, /sbin, /usr/bin, /usr/sbin, /usr/local/bin, /opt")
-	fmt.Printf("  [*] Monitoring file access syscalls for %v...\n", c.monitorDuration)
+	pathDirsStr := strings.Join(pathDirs, ", ")
+	if len(pathDirsStr) > 100 {
+		pathDirsStr = pathDirsStr[:100] + "..."
+	}
+	c.debugLog("Monitoring file access in PATH directories: %s", pathDirsStr)
+	fmt.Printf("  [*] Monitoring file access syscalls for %v (in %d PATH dirs)...\n", c.monitorDuration, len(pathDirs))
 
 	// Read events from the ring buffer
 	go func() {
