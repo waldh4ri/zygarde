@@ -19,20 +19,19 @@
 
 ## Overview
 
-Zygarde is a powerful, portable forensic analysis tool inspired by the Pokémon guardian of the ecosystem. Just as Zygarde's Cells monitor the environment from deep within, this tool uses eBPF (Extended Berkeley Packet Filter) with CO-RE (Compile Once - Run Everywhere) to detect sophisticated rootkit techniques from deep within the Linux kernel.
+Zygarde is a powerful, portable forensic analysis tool inspired by the Pokémon guardian of the ecosystem. Just as Zygarde's Cells monitor the environment from deep within, this tool uses eBPF (Extended Berkeley Packet Filter) with CO-RE (Compile Once - Run Everywhere) to detect rootkit techniques from deep within the Linux kernel.
 
-The tool compiles into a single static binary with no runtime dependencies, making it ideal for incident response and security auditing.
+The tool compiles into a single static binary with no runtime dependencies, making it ideal for incident response and security auditing on most recent Linux systems.
 
 ## The Zygarde Architecture
 
 ### Core Concept
 - **Zygarde Core**: The main orchestrator (`main.go`) that coordinates all Cells
 - **Zygarde Cells**: Individual detection modules that monitor specific aspects of the kernel
-- **Complete Forme**: When threats are detected, all findings converge for comprehensive analysis
 
 ### The Cells
 
-Zygarde implements four specialized Cells for rootkit detection:
+Zygarde implements four specialized Cells (checks) for rootkit detection:
 
 #### **Cell 1: Syscall Integrity Cell**
 Monitors the system call table for unauthorized modifications.
@@ -56,45 +55,10 @@ Detects processes and threads hidden from user-space.
 - **Rootkit Technique Detected**: `/proc` manipulation, process hiding
 
 #### **Cell 4: File Visibility Cell**
-Detects executables hidden from directory listings.
-- Monitors `execve` syscalls via tracepoints
-- Verifies file visibility from user-space
+Detects files hidden from directory listings.
+- Monitors file access syscalls (`execve`, `openat`, `open`, `openat2`) via tracepoints
+- Verifies file visibility from user-space directory listings
 - **Rootkit Technique Detected**: `getdents64` hooking
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────┐
-│           Zygarde Core (Binary)                 │
-│  (Static, Portable, Single Executable)          │
-├─────────────────────────────────────────────────┤
-│                                                 │
-│  ┌──────────────┐  ┌──────────────┐             │
-│  │  Cell        │  │  Cell        │             │
-│  │  Interface   │  │  Orchestrator│             │
-│  └──────────────┘  └──────────────┘             │
-│                                                 │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌────────┐ │
-│  │ Syscall  │ │  Module  │ │ Process  │ │ File   │ │
-│  │  Cell    │ │  Cell    │ │  Cell    │ │ Cell   │ │
-│  └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬───┘ │
-│       │            │            │            │     │
-└───────┼────────────┼────────────┼────────────┼─────┘
-        │            │            │            │
-        ▼            ▼            ▼            ▼
-┌─────────────────────────────────────────────────┐
-│           eBPF Programs (CO-RE)                 │
-├─────────────────────────────────────────────────┤
-│  • kprobe (sys_getuid)                          │
-│  • BPF Iterator (module & task traversal)       │
-│  • Tracepoint (sys_enter_execve)                │
-└─────────────────────────────────────────────────┘
-          │
-          ▼
-┌─────────────────────────────────────────────────┐
-│            Linux Kernel                         │
-└─────────────────────────────────────────────────┘
-```
 
 ## Prerequisites
 
@@ -223,8 +187,6 @@ Debug mode provides detailed information about:
 - Event processing and parsing
 - Cell activation and deactivation
 
-See [DEBUG.md](DEBUG.md) for complete debug mode documentation.
-
 ### Example Output
 
 ```
@@ -253,9 +215,9 @@ Deploying 4 Zygarde Cells for system analysis...
             [+] No hidden processes detected (428 kernel tasks, 428 /proc entries) (0.15s)
 
 [Cell 4/4] Executing: Hidden Files in PATH
-            Detects executable files that are hidden from directory listings
-            [*] Monitoring execve events for 5s...
-            [+] No hidden files detected (monitored 23 execve events) (5.11s)
+            Detects files that are hidden from directory listings by monitoring execve, openat, open, and openat2 syscalls on PATH directories
+            [*] Monitoring file access syscalls for 5s...
+            [+] No hidden files detected (monitored 87 events: map[execve:23 openat:58 open:6]) (5.11s)
 
 ======================================================================
 ZYGARDE CORE ANALYSIS - SUMMARY REPORT
@@ -268,7 +230,6 @@ Total Cells Deployed: 4
 Deactivating Cells...
 ======================================================================
 [+] Ecosystem stable - no threats detected
-   Zygarde Cells report: All clear
 ======================================================================
 ```
 
@@ -293,7 +254,7 @@ zygarde/
 │   ├── hidden_processes.go # Hidden Process Detection Cell
 │   └── hidden_files.go     # File Visibility Cell
 └── bpf/
-    ├── zygarde.bpf.c        # eBPF programs (C)
+    ├── zygarde.bpf.c       # eBPF programs (C)
     └── vmlinux.h           # Kernel type definitions (generated)
 ```
 
@@ -396,16 +357,6 @@ sudo bpftool feature
 
 **Solution**: Ensure running as root to see KASLR addresses
 
-## Contributing
-
-Contributions are welcome! Please:
-
-1. Fork the repository
-2. Create a feature branch
-3. Add tests for new functionality
-4. Ensure `go fmt` and `go vet` pass
-5. Submit a pull request
-
 ## License
 
 This project is licensed under the Dual BSD/GPL License - see the LICENSE file for details.
@@ -422,8 +373,6 @@ This project is licensed under the Dual BSD/GPL License - see the LICENSE file f
 
 - The Cilium team for the excellent Go eBPF library
 - The Linux kernel eBPF community
-- Security researchers studying rootkit techniques
-- The Pokémon franchise for inspiring the guardian metaphor
 
 ---
 
