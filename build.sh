@@ -86,8 +86,8 @@ echo ""
 
 if [ "$ALL_OK" = false ]; then
     echo -e "${RED}[-] Prerequisites not met. Please install missing components.${NC}"
-    echo -e "  ${YELLOW}sudo apt update${NC}"
-    echo -e "  ${YELLOW}sudo apt install -y golang clang llvm libbpf-dev linux-headers-\$(uname -r) bpftool${NC}"
+    echo -e "    ${YELLOW}sudo apt update${NC}"
+    echo -e "    ${YELLOW}sudo apt install -y golang clang llvm libbpf-dev linux-headers-\$(uname -r) bpftool${NC}"
     exit 1
 fi
 

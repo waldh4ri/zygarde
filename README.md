@@ -221,13 +221,13 @@ See [DEBUG.md](DEBUG.md) for complete debug mode documentation.
 ### Example Output
 
 ```
- ███████╗╚██╗ ██╔╝ ██████╗  █████╗ ██████╗ ██████╗ ███████╗
- ╚══███╔╝ ╚███╔╝ ██╔════╝ ██╔══██╗██╔══██╗██╔══██╗██╔════╝
-   ███╔╝   ╚██╔╝  ██║  ███╗███████║██████╔╝██║  ██║█████╗  
-  ███╔╝     ██║   ██║   ██║██╔══██║██╔══██╗██║  ██║██╔══╝  
+ ███████╗██╗   ██╗ ██████╗  █████╗ ██████╗ ██████╗ ███████╗
+ ╚══███╔╝╚██╗ ██╔╝██╔════╝ ██╔══██╗██╔══██╗██╔══██╗██╔════╝
+   ███╔╝  ╚████╔╝ ██║  ███╗███████║██████╔╝██║  ██║█████╗  
+  ███╔╝    ╚██╔╝  ██║   ██║██╔══██║██╔══██╗██║  ██║██╔══╝  
  ███████╗   ██║   ╚██████╔╝██║  ██║██║  ██║██████╔╝███████╗
  ╚══════╝   ╚═╝    ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝ ╚══════╝
-                                                             
+                                                                  
  Guardian of the Kernel - eBPF Rootkit Detection
  Version 0.0.1 - 10% Form
 
@@ -273,7 +273,7 @@ Deactivating Cells...
 
 ```
 zygarde/
-├── main.go                 # Zygarde Core - entry point and Cell orchestrator
+├── main.go                 # Zygarde Core - entry point 
 ├── go.mod                  # Go module definition
 ├── checks/
 │   ├── interface.go        # Cell interface definition
@@ -281,14 +281,14 @@ zygarde/
 │   ├── modules.go          # Module Visibility Cell
 │   └── hidden_files.go     # File Visibility Cell
 └── bpf/
-    ├── gohunt.bpf.c        # eBPF programs (C)
+    ├── zygarde.bpf.c        # eBPF programs (C)
     └── vmlinux.h           # Kernel type definitions (generated)
 ```
 
 ### Adding New Cells
 
 1. Implement the `Check` interface in a new file under `checks/`
-2. Add your eBPF program to `bpf/gohunt.bpf.c` with a unique section name
+2. Add your eBPF program to `bpf/zygarde.bpf.c` with a unique section name
 3. Register your Cell in `main.go` (in the `allCells` slice)
 4. Run `go generate` to update eBPF bindings
 
