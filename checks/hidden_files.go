@@ -19,11 +19,11 @@ import (
 // This is a common rootkit technique where getdents64 is hooked to hide files
 // We monitor execve, openat, open, and openat2 syscalls to detect hidden files
 type HiddenFilesCheck struct {
-	objs    *bpfObjects
-	links   []link.Link
-	reader  *ringbuf.Reader
-	done    chan struct{}
-	debug   bool
+	objs   *bpfObjects
+	links  []link.Link
+	reader *ringbuf.Reader
+	done   chan struct{}
+	debug  bool
 }
 
 // debugLog prints a message only if debug mode is enabled
@@ -148,7 +148,7 @@ func (c *HiddenFilesCheck) Run() (Result, error) {
 	// Monitor for a period of time
 	monitorDuration := 5 * time.Second
 	timeout := time.After(monitorDuration)
-	
+
 	hiddenFiles := make(map[string]bool)
 	eventCount := 0
 	syscallCounts := make(map[string]int) // Track events per syscall type
@@ -189,7 +189,7 @@ func (c *HiddenFilesCheck) Run() (Result, error) {
 				}
 
 				eventCount++
-				
+
 				// Track syscall type
 				syscallName := getSyscallName(event.SyscallType)
 				syscallCounts[syscallName]++
@@ -199,26 +199,61 @@ func (c *HiddenFilesCheck) Run() (Result, error) {
 				}
 
 				// Check if the file exists from user-space perspective
-				_, err = os.Stat(filename)
-				if err != nil {
-					if os.IsNotExist(err) {
-						// File accessed but doesn't exist - HIDDEN FILE!
-						if !hiddenFiles[filename] {
-							hiddenFiles[filename] = true
-							c.debugLog("**ALERT** Hidden file detected: %s (accessed via %s by PID %d)", filename, syscallName, event.PID)
-							result.Status = StatusSuspicious
-							result.Findings = append(result.Findings, Finding{
-								Description: fmt.Sprintf("File '%s' was accessed via %s but is hidden from directory listings", filename, syscallName),
-								Details: map[string]string{
-									"file_path":      filename,
-									"pid":            fmt.Sprintf("%d", event.PID),
-									"syscall":        syscallName,
-									"detection_type": "hidden_file",
-									"stat_error":     err.Error(),
-								},
-							})
+				statInfo, statErr := os.Stat(filename)
+
+				// Extract directory and base filename
+				dir := "/"
+				baseName := filename
+				lastSlash := strings.LastIndex(filename, "/")
+				if lastSlash >= 0 {
+					dir = filename[:lastSlash]
+					if dir == "" {
+						dir = "/"
+					}
+					baseName = filename[lastSlash+1:]
+				}
+
+				// Check if file appears in directory listing
+				foundInListing := false
+				if baseName != "" {
+					entries, listErr := os.ReadDir(dir)
+					if listErr == nil {
+						for _, entry := range entries {
+							if entry.Name() == baseName {
+								foundInListing = true
+								break
+							}
 						}
 					}
+				}
+
+				// Determine file status based on stat and listing results
+				statExists := statErr == nil && statInfo != nil
+
+				if statExists && !foundInListing {
+					// File exists via stat but NOT in directory listing - HIDDEN FILE!
+					if !hiddenFiles[filename] {
+						hiddenFiles[filename] = true
+						c.debugLog("**ALERT** Hidden file detected: %s (accessible via stat but hidden from directory listing)", filename)
+						result.Status = StatusSuspicious
+						result.Findings = append(result.Findings, Finding{
+							Description: fmt.Sprintf("File '%s' is accessible but hidden from directory listings - possible rootkit", filename),
+							Details: map[string]string{
+								"file_path":      filename,
+								"pid":            fmt.Sprintf("%d", event.PID),
+								"syscall":        syscallName,
+								"detection_type": "hidden_file",
+								"stat_result":    "exists",
+								"listing_result": "not_found",
+							},
+						})
+					}
+				} else if !statExists && !foundInListing {
+					// Neither stat nor listing found it - likely just a non-existent file
+					c.debugLog("File not found (likely non-existent): %s", filename)
+				} else if statExists && foundInListing {
+					// Both stat and listing found it - normal file
+					c.debugLog("Normal file: %s", filename)
 				}
 			}
 		}
@@ -239,10 +274,10 @@ func (c *HiddenFilesCheck) Run() (Result, error) {
 
 	// Set result message with syscall breakdown
 	if len(hiddenFiles) > 0 {
-		result.Message = fmt.Sprintf("Found %d hidden file(s) (monitored %d events: %v)", 
+		result.Message = fmt.Sprintf("Found %d hidden file(s) (monitored %d events: %v)",
 			len(hiddenFiles), eventCount, syscallCounts)
 	} else {
-		result.Message = fmt.Sprintf("No hidden files detected (monitored %d events: %v)", 
+		result.Message = fmt.Sprintf("No hidden files detected (monitored %d events: %v)",
 			eventCount, syscallCounts)
 	}
 
