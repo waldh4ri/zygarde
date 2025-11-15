@@ -54,8 +54,6 @@ if command_exists clang; then
     echo -e "${GREEN}[+] Clang: $CLANG_VERSION${NC}"
 else
     echo -e "${RED}[-] Clang: Not found${NC}"
-    echo "  Ubuntu/Debian: sudo apt install clang"
-    echo "  Fedora/RHEL:   sudo dnf install clang"
     ALL_OK=false
 fi
 
@@ -88,6 +86,8 @@ echo ""
 
 if [ "$ALL_OK" = false ]; then
     echo -e "${RED}[-] Prerequisites not met. Please install missing components.${NC}"
+    echo -e "  ${YELLOW}sudo apt update${NC}"
+    echo -e "  ${YELLOW}sudo apt install -y golang clang llvm libbpf-dev linux-headers-\$(uname -r) bpftool${NC}"
     exit 1
 fi
 
