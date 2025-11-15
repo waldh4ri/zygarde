@@ -13,16 +13,11 @@ zygarde
 *.out
 
 # eBPF generated files
-bpf/*_bpfel.go
-bpf/*_bpfeb.go
-bpf/*_bpfel.o
-bpf/*_bpfeb.o
+bpf_bpfeb_arm64.go
+bpf_bpfeb_arm64.o
+bpf_bpfeb_x86.go
+bpf_bpfeb_x86.o
 
-# ebpf2go generated files
-checks/bpf_bpfel_*.go
-checks/bpf_bpfeb_*.go
-checks/bpf_bpfel_*.o
-checks/bpf_bpfeb_*.o
 
 # IDE
 .vscode/
