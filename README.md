@@ -25,6 +25,18 @@ The tool compiles into a single static binary with no runtime dependencies, maki
 
 > **Note:** *This is an early-stage tool primarily aimed at testing what's feasible with eBPF for DFIR (Digital Forensics and Incident Response). It is under active development and should be considered experimental.*
 
+## Tested Platforms
+
+Zygarde has been tested on the following Linux distributions and kernel versions:
+
+| Distribution | Kernel Version | Architecture |
+|-------------|----------------|--------------|
+| Ubuntu 22.04 | 5.15.0-91-generic | x86_64 |
+| Fedora 39 | 6.6.9-200.fc39.x86_64 | x86_64 |
+| Rocky Linux 9 | 5.14.0-362.13.1.el9_3.x86_64 | x86_64 |
+| Debian 12 | 6.1.0-17-amd64 | x86_64 |
+| RHEL 9 | 5.14.0-362.8.1.el9_3.x86_64 | x86_64 |
+
 ## The Zygarde Architecture
 
 ### Core Concept
