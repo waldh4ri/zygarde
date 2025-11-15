@@ -1,0 +1,6 @@
+# Exclude generated kernel headers from GitHub Linguist language stats
+# vmlinux.h is auto-generated (e.g. via bpftool/bpf2go) and huge, skewing C %
+bpf/vmlinux.h linguist-generated
+
+# If you later generate skeleton headers, uncomment this too:
+# bpf/**/*.skel.h linguist-generated
