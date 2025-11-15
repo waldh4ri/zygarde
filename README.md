@@ -95,7 +95,7 @@ Detects executables hidden from directory listings.
 - Go 1.21 or later
 - Clang 11 or later
 - Linux kernel headers
-- `bpftool` (for generating `vmlinux.h`)
+ - `bpftool` (optional; only if generating `vmlinux.h` locally)
 - `libbpf-dev` (for eBPF headers)
 
 ### Runtime Requirements
@@ -106,9 +106,10 @@ Detects executables hidden from directory listings.
 
 **Ubuntu/Debian:**
 ```bash
-sudo apt-get update
-sudo apt-get install -y golang clang llvm libbpf-dev linux-headers-$(uname -r)
-sudo apt-get install -y linux-tools-common linux-tools-$(uname -r)
+sudo apt update
+sudo apt install -y golang clang llvm libbpf-dev linux-headers-$(uname -r)
+# Optional: only needed if you want to generate vmlinux.h from this system
+sudo apt install -y bpftool
 ```
 
 **Fedora/RHEL:**
@@ -127,15 +128,26 @@ sudo pacman -S bpf
 
 ### Quick Build (Automated)
 
+The easiest way to build Zygarde is using the included `build.sh` script, which handles all steps automatically:
+
 ```bash
 ./build.sh
 ```
+
+This script will:
+- Generate the `vmlinux.h` kernel header (if needed)
+- Create eBPF Go bindings
+- Compile the static binary
 
 ### Step-by-Step Build
 
 #### Step 1: Generate vmlinux.h
 
 The `vmlinux.h` file contains kernel type definitions for CO-RE:
+
+Note:
+- You do not need `bpftool` or root to build if you already have a suitable `bpf/vmlinux.h`. You can bring your own `vmlinux.h` (from any kernel with BTF enabled) and skip this step entirely.
+- `bpftool` is only required if you want to generate `vmlinux.h` from the current machine. Reading `/sys/kernel/btf/vmlinux` typically requires root.
 
 ```bash
 # Generate vmlinux.h from your running kernel
