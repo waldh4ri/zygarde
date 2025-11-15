@@ -83,6 +83,7 @@ func main() {
 		checks.NewSyscallCheck(),
 		checks.NewModulesCheck(),
 		checks.NewHiddenFilesCheck(),
+		checks.NewHiddenProcessesCheck(),
 	}
 	DebugLog("Activated %d Cells", len(allCells))
 

@@ -54,6 +54,7 @@ type bpfSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type bpfProgramSpecs struct {
 	CheckSyscallTable *ebpf.ProgramSpec `ebpf:"check_syscall_table"`
+	DumpTask          *ebpf.ProgramSpec `ebpf:"dump_task"`
 	TraceExecve       *ebpf.ProgramSpec `ebpf:"trace_execve"`
 	TraceOpen         *ebpf.ProgramSpec `ebpf:"trace_open"`
 	TraceOpenat       *ebpf.ProgramSpec `ebpf:"trace_openat"`
@@ -106,6 +107,7 @@ func (m *bpfMaps) Close() error {
 // It can be passed to loadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type bpfPrograms struct {
 	CheckSyscallTable *ebpf.Program `ebpf:"check_syscall_table"`
+	DumpTask          *ebpf.Program `ebpf:"dump_task"`
 	TraceExecve       *ebpf.Program `ebpf:"trace_execve"`
 	TraceOpen         *ebpf.Program `ebpf:"trace_open"`
 	TraceOpenat       *ebpf.Program `ebpf:"trace_openat"`
@@ -115,6 +117,7 @@ type bpfPrograms struct {
 func (p *bpfPrograms) Close() error {
 	return _BpfClose(
 		p.CheckSyscallTable,
+		p.DumpTask,
 		p.TraceExecve,
 		p.TraceOpen,
 		p.TraceOpenat,

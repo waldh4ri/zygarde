@@ -312,3 +312,57 @@ int trace_openat2(struct trace_event_raw_sys_enter *ctx)
 	
 	return 0;
 }
+
+// ============================================================================
+// Feature 4: Hidden Process Detection using Task Iterator
+// ============================================================================
+
+// Event structure for process/thread information
+struct task_info {
+	__u32 pid;           // Process ID (tgid)
+	__u32 tid;           // Thread ID (pid)
+	__u32 ppid;          // Parent process ID
+	__u32 state;         // Task state
+	char comm[16];       // Command name (limited to 16 chars in task_struct)
+};
+
+// BPF iterator to walk all tasks in the system
+SEC("iter/task")
+int dump_task(struct bpf_iter__task *ctx)
+{
+	struct seq_file *seq = ctx->meta->seq;
+	struct task_struct *task = ctx->task;
+	struct task_info info = {};
+	long ret;
+	
+	// If task is NULL, we've finished iterating
+	if (task == NULL)
+		return 0;
+	
+	// Read task information using BPF CO-RE helpers
+	// tgid is the PID (thread group ID), pid is the TID
+	info.pid = BPF_CORE_READ(task, tgid);
+	info.tid = BPF_CORE_READ(task, pid);
+	
+	// Get parent PID
+	struct task_struct *parent = BPF_CORE_READ(task, real_parent);
+	if (parent)
+		info.ppid = BPF_CORE_READ(parent, tgid);
+	else
+		info.ppid = 0;
+	
+	// Get task state
+	info.state = BPF_CORE_READ(task, __state);
+	
+	// Copy command name
+	bpf_probe_read_kernel_str(&info.comm, sizeof(info.comm), &task->comm);
+	
+	// Submit the data to the iterator's seq_file
+	ret = bpf_seq_write(seq, &info, sizeof(info));
+	if (ret < 0) {
+		// Returning a non-zero value can signal an error
+		return 1;
+	}
+	
+	return 0;
+}
