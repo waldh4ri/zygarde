@@ -23,6 +23,8 @@ Zygarde is a powerful, portable forensic analysis tool inspired by the Pokémon 
 
 The tool compiles into a single static binary with no runtime dependencies, making it ideal for incident response and security auditing on most recent Linux systems.
 
+> **Note:** *This is an early-stage tool primarily aimed at testing what's feasible with eBPF for DFIR (Digital Forensics and Incident Response). It is under active development and should be considered experimental.*
+
 ## The Zygarde Architecture
 
 ### Core Concept
