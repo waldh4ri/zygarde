@@ -29,3 +29,7 @@ bpf_bpfeb_x86.o
 # OS
 .DS_Store
 
+checks/bpf_bpfel_arm64.go
+checks/bpf_bpfel_arm64.o
+checks/bpf_bpfel_x86.go
+checks/bpf_bpfel_x86.o
