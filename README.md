@@ -32,7 +32,7 @@ The tool compiles into a single static binary with no runtime dependencies, maki
 
 ### The Cells
 
-Zygarde implements three specialized Cells for rootkit detection:
+Zygarde implements four specialized Cells for rootkit detection:
 
 #### **Cell 1: Syscall Integrity Cell**
 Monitors the system call table for unauthorized modifications.
@@ -48,7 +48,14 @@ Reveals kernel modules hidden from user-space.
 - Compares kernel ground truth with user-space visibility
 - **Rootkit Technique Detected**: Module list manipulation (list_del)
 
-#### **Cell 3: File Visibility Cell**
+#### **Cell 3: Hidden Process Detection Cell**
+Detects processes and threads hidden from user-space.
+- Enumerates tasks from kernel using BPF task iterator
+- Compares with `/proc` filesystem enumeration
+- Identifies processes visible to kernel but hidden from userspace tools
+- **Rootkit Technique Detected**: `/proc` manipulation, process hiding
+
+#### **Cell 4: File Visibility Cell**
 Detects executables hidden from directory listings.
 - Monitors `execve` syscalls via tracepoints
 - Verifies file visibility from user-space
@@ -67,19 +74,19 @@ Detects executables hidden from directory listings.
 │  │  Interface   │  │  Orchestrator│             │
 │  └──────────────┘  └──────────────┘             │
 │                                                 │
-│  ┌──────────────┐  ┌──────────────┐  ┌────────┐ │
-│  │  Syscall     │  │  Module      │  │ File   │ │
-│  │  Cell        │  │  Cell        │  │ Cell   │ │
-│  └──────┬───────┘  └──────┬───────┘  └────┬───┘ │
-│         │                 │               │     │
-└─────────┼─────────────────┼───────────────┼─────┘
-          │                 │               │
-          ▼                 ▼               ▼
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌────────┐ │
+│  │ Syscall  │ │  Module  │ │ Process  │ │ File   │ │
+│  │  Cell    │ │  Cell    │ │  Cell    │ │ Cell   │ │
+│  └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬───┘ │
+│       │            │            │            │     │
+└───────┼────────────┼────────────┼────────────┼─────┘
+        │            │            │            │
+        ▼            ▼            ▼            ▼
 ┌─────────────────────────────────────────────────┐
 │           eBPF Programs (CO-RE)                 │
 ├─────────────────────────────────────────────────┤
 │  • kprobe (sys_getuid)                          │
-│  • BPF Iterator (module traversal)              │
+│  • BPF Iterator (module & task traversal)       │
 │  • Tracepoint (sys_enter_execve)                │
 └─────────────────────────────────────────────────┘
           │
@@ -231,17 +238,21 @@ See [DEBUG.md](DEBUG.md) for complete debug mode documentation.
  Guardian of the Kernel - eBPF Rootkit Detection
  Version 0.0.1 - 10% Form
 
-Deploying 3 Zygarde Cells for system analysis...
+Deploying 4 Zygarde Cells for system analysis...
 
-[Cell 1/3] Executing: Syscall Table Integrity
+[Cell 1/4] Executing: Syscall Table Integrity
             Detects sys_call_table hooking by comparing kernel memory with expected addresses
             [+] sys_call_table entry for __x64_sys_getdents64 is intact (0xffffffff81234567) (0.12s)
 
-[Cell 2/3] Executing: Hidden Kernel Modules
+[Cell 2/4] Executing: Hidden Kernel Modules
             Detects kernel modules hidden from lsmod by comparing kernel module list with /sys/module
             [+] All 145 kernel modules are visible (0.08s)
 
-[Cell 3/3] Executing: Hidden Files in PATH
+[Cell 3/4] Executing: Hidden Process Detection
+            Detects hidden processes/threads by comparing kernel task list (BPF iterator) with userspace /proc enumeration
+            [+] No hidden processes detected (428 kernel tasks, 428 /proc entries) (0.15s)
+
+[Cell 4/4] Executing: Hidden Files in PATH
             Detects executable files that are hidden from directory listings
             [*] Monitoring execve events for 5s...
             [+] No hidden files detected (monitored 23 execve events) (5.11s)
@@ -249,7 +260,7 @@ Deploying 3 Zygarde Cells for system analysis...
 ======================================================================
 ZYGARDE CORE ANALYSIS - SUMMARY REPORT
 ======================================================================
-Total Cells Deployed: 3
+Total Cells Deployed: 4
   [+] OK:         3
   [*] SUSPICIOUS: 0
   [-] ERROR:      0
@@ -279,6 +290,7 @@ zygarde/
 │   ├── interface.go        # Cell interface definition
 │   ├── syscall.go          # Syscall Integrity Cell
 │   ├── modules.go          # Module Visibility Cell
+│   ├── hidden_processes.go # Hidden Process Detection Cell
 │   └── hidden_files.go     # File Visibility Cell
 └── bpf/
     ├── zygarde.bpf.c        # eBPF programs (C)
@@ -352,6 +364,7 @@ Zygarde uses eBPF CO-RE, which allows the same eBPF bytecode to run on different
 - Cannot detect all rootkit techniques (e.g., firmware rootkits)
 - Sophisticated rootkits may evade detection by hooking eBPF subsystem
 - Hidden file detection requires active process execution
+- Hidden process detection may have timing-related false positives due to process lifecycle races
 
 ## Troubleshooting
 
