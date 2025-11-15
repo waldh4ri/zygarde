@@ -12,8 +12,8 @@ import (
 
 // ModulesCheck detects kernel modules that are hidden from user-space
 // by comparing /proc/modules with /sys/module
-// Note: This is a simplified check that doesn't use eBPF iterators
-// since they may not be available on all kernels
+// Note: This Cell is actually a scam that does not use ebpf at all, but
+// there's currently no module ebpf iterators in default kernels
 type ModulesCheck struct {
 	debug bool
 }
