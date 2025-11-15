@@ -30,7 +30,7 @@ const banner = `
  ╚══════╝   ╚═╝    ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝ ╚══════╝
                                                              
  Guardian of the Kernel - eBPF Rootkit Detection
- Version 1.0.0 - Order Forme
+ Version 0.0.1 - 10% Form
 `
 
 // Global debug flag
