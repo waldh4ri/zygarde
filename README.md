@@ -168,7 +168,9 @@ The resulting `zygarde` binary is completely standalone and can be copied to any
 sudo ./zygarde
 ```
 
-### Debug Mode
+### Command-Line Options
+
+#### Debug Mode
 
 For detailed verbose output showing every step of the detection process:
 
@@ -187,6 +189,26 @@ Debug mode provides detailed information about:
 - Ring buffer operations
 - Event processing and parsing
 - Cell activation and deactivation
+
+#### Hidden Files Monitoring Duration
+
+Configure how long the Hidden Files Cell monitors for file access:
+
+```bash
+# Monitor for 10 seconds (default is 5 seconds)
+sudo ./zygarde --hidden-files-duration=10s
+
+# Monitor for 1 minute
+sudo ./zygarde --hidden-files-duration=1m
+
+# Monitor for 30 seconds
+sudo ./zygarde --hidden-files-duration=30s
+
+# Combine with debug mode
+sudo ./zygarde --debug --hidden-files-duration=15s
+```
+
+The duration accepts any valid Go duration format (e.g., `10s`, `1m`, `1m30s`, `500ms`).
 
 ### Example Output
 
@@ -217,8 +239,8 @@ Deploying 4 Zygarde Cells for system analysis...
 
 [Cell 4/4] Executing: Hidden Files in PATH
             Detects files that are hidden from directory listings by monitoring execve, openat, open, and openat2 syscalls on PATH directories
-            [*] Monitoring file access syscalls for 5s...
-            [+] No hidden files detected (monitored 87 events: map[execve:23 openat:58 open:6]) (5.11s)
+            [*] Monitoring file access syscalls for 20s...
+            [+] No hidden files detected (monitored 87 events: map[execve:23 openat:58 open:6]) (20.11s)
 
 ======================================================================
 ZYGARDE CORE ANALYSIS - SUMMARY REPORT

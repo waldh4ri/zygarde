@@ -48,6 +48,7 @@ func main() {
 	// Parse command-line flags
 	debugFlag := flag.Bool("d", false, "Enable debug mode with verbose output")
 	debugFlagLong := flag.Bool("debug", false, "Enable debug mode with verbose output")
+	hiddenFilesDuration := flag.Duration("hidden-files-duration", 5*time.Second, "Duration to monitor for hidden files (e.g., 10s, 1m)")
 	flag.Parse()
 
 	// Set global debug mode
@@ -91,6 +92,11 @@ func main() {
 		if debuggable, ok := cell.(checks.Debuggable); ok {
 			debuggable.SetDebug(debugMode)
 			DebugLog("Enabled debug mode for Cell: %s", cell.Name())
+		}
+		// Configure hidden files check duration
+		if hiddenFilesCheck, ok := cell.(*checks.HiddenFilesCheck); ok {
+			hiddenFilesCheck.SetMonitorDuration(*hiddenFilesDuration)
+			DebugLog("Set hidden files monitoring duration to %v for Cell: %s", *hiddenFilesDuration, cell.Name())
 		}
 	}
 

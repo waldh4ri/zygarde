@@ -19,11 +19,12 @@ import (
 // This is a common rootkit technique where getdents64 is hooked to hide files
 // We monitor execve, openat, open, and openat2 syscalls to detect hidden files
 type HiddenFilesCheck struct {
-	objs   *bpfObjects
-	links  []link.Link
-	reader *ringbuf.Reader
-	done   chan struct{}
-	debug  bool
+	objs            *bpfObjects
+	links           []link.Link
+	reader          *ringbuf.Reader
+	done            chan struct{}
+	debug           bool
+	monitorDuration time.Duration
 }
 
 // debugLog prints a message only if debug mode is enabled
@@ -45,13 +46,19 @@ type fileAccessEvent struct {
 // NewHiddenFilesCheck creates a new hidden file detection check
 func NewHiddenFilesCheck() *HiddenFilesCheck {
 	return &HiddenFilesCheck{
-		done: make(chan struct{}),
+		done:            make(chan struct{}),
+		monitorDuration: 5 * time.Second, // Default 5 seconds
 	}
 }
 
 // SetDebug enables or disables debug mode
 func (c *HiddenFilesCheck) SetDebug(debug bool) {
 	c.debug = debug
+}
+
+// SetMonitorDuration sets the monitoring duration for the check
+func (c *HiddenFilesCheck) SetMonitorDuration(duration time.Duration) {
+	c.monitorDuration = duration
 }
 
 // Name returns the check name
@@ -146,16 +153,15 @@ func (c *HiddenFilesCheck) Run() (Result, error) {
 	c.debugLog("SUCCESS: Ring buffer reader created")
 
 	// Monitor for a period of time
-	monitorDuration := 5 * time.Second
-	timeout := time.After(monitorDuration)
+	timeout := time.After(c.monitorDuration)
 
 	hiddenFiles := make(map[string]bool)
 	eventCount := 0
 	syscallCounts := make(map[string]int) // Track events per syscall type
 
-	c.debugLog("Step 4: Starting monitoring phase for %v...", monitorDuration)
+	c.debugLog("Step 4: Starting monitoring phase for %v...", c.monitorDuration)
 	c.debugLog("Monitoring file access in PATH directories: /bin, /sbin, /usr/bin, /usr/sbin, /usr/local/bin, /opt")
-	fmt.Printf("  [*] Monitoring file access syscalls for %v...\n", monitorDuration)
+	fmt.Printf("  [*] Monitoring file access syscalls for %v...\n", c.monitorDuration)
 
 	// Read events from the ring buffer
 	go func() {
