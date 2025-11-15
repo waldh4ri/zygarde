@@ -42,9 +42,10 @@ Monitors the system call table for unauthorized modifications.
 
 #### **Cell 2: Module Visibility Cell**
 Reveals kernel modules hidden from user-space.
-- Finds kernel modules hidden from `lsmod` and `/sys/module`
-- Uses BPF iterators to traverse the kernel's internal module list
-- Compares kernel ground truth with user-space visibility
+- ~Finds kernel modules hidden from `lsmod` and `/sys/module`~
+- ~Uses BPF iterators to traverse the kernel's internal module list~
+- ~Compares kernel ground truth with user-space visibility~
+- Exists somehow for now
 - **Rootkit Technique Detected**: Module list manipulation (list_del)
 
 #### **Cell 3: Hidden Process Detection Cell**
