@@ -1,4 +1,3 @@
-````markdown
 # Zygarde - Quick Start Guide
 
 ## For the Impatient
@@ -288,4 +287,3 @@ Perfect for understanding how each Cell operates or diagnosing issues.
 **Guardian of the Kernel** | **Order Forme Activated**
 
 </div>
-````
