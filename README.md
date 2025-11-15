@@ -76,6 +76,10 @@ Detects files hidden from directory listings.
 - Linux kernel 5.8+ with BTF enabled (`CONFIG_DEBUG_INFO_BTF=y`)
 - Root privileges (for loading eBPF programs)
 
+### Pre-compiled binary
+If you're brave enough to run a pre-compiled binary as sudo you can find it
+on the [releases page](https://github.com/waldh4ri/zygarde/releases).
+
 ### Installing Prerequisites
 
 **Ubuntu/Debian:**
