@@ -1,62 +1,76 @@
-# GoHunt - eBPF-based Rootkit Detection Tool
+````markdown
+# Zygarde - eBPF-based Rootkit Detection Tool
 
 <div align="center">
 
 ```
-  ██████╗  ██████╗ ██╗  ██╗██╗   ██╗███╗   ██╗████████╗
- ██╔════╝ ██╔═══██╗██║  ██║██║   ██║████╗  ██║╚══██╔══╝
- ██║  ███╗██║   ██║███████║██║   ██║██╔██╗ ██║   ██║   
- ██║   ██║██║   ██║██╔══██║██║   ██║██║╚██╗██║   ██║   
- ╚██████╔╝╚██████╔╝██║  ██║╚██████╔╝██║ ╚████║   ██║   
-  ╚═════╝  ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝   ╚═╝   
+ ███████╗╚██╗ ██╔╝ ██████╗  █████╗ ██████╗ ██████╗ ███████╗
+ ╚══███╔╝ ╚███╔╝ ██╔════╝ ██╔══██╗██╔══██╗██╔══██╗██╔════╝
+   ███╔╝   ╚██╔╝  ██║  ███╗███████║██████╔╝██║  ██║█████╗  
+  ███╔╝     ██║   ██║   ██║██╔══██║██╔══██╗██║  ██║██╔══╝  
+ ███████╗   ██║   ╚██████╔╝██║  ██║██║  ██║██████╔╝███████╗
+ ╚══════╝   ╚═╝    ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝ ╚══════╝
 ```
 
-**Advanced Linux Rootkit Detection using eBPF CO-RE**
+**Guardian of the Kernel - Advanced Linux Rootkit Detection using eBPF CO-RE**
+
+*"When the ecosystem is threatened, the Cells gather to protect."*
 
 </div>
 
-## Overview
+## 🌍 Overview
 
-GoHunt is a powerful, portable forensic analysis tool that uses eBPF (Extended Berkeley Packet Filter) with CO-RE (Compile Once - Run Everywhere) to detect sophisticated rootkit techniques on Linux systems. The tool compiles into a single static binary with no runtime dependencies, making it ideal for incident response and security auditing.
+Zygarde is a powerful, portable forensic analysis tool inspired by the Pokémon guardian of the ecosystem. Just as Zygarde's Cells monitor the environment from deep within, this tool uses eBPF (Extended Berkeley Packet Filter) with CO-RE (Compile Once - Run Everywhere) to detect sophisticated rootkit techniques from deep within the Linux kernel.
 
-## Features
+The tool compiles into a single static binary with no runtime dependencies, making it ideal for incident response and security auditing.
 
-GoHunt implements three advanced detection techniques:
+## 🔬 The Zygarde Architecture
 
-### 1. **System Call Table Integrity Check**
+### Core Concept
+- **Zygarde Core**: The main orchestrator (`main.go`) that coordinates all Cells
+- **Zygarde Cells**: Individual detection modules that monitor specific aspects of the kernel
+- **Complete Forme**: When threats are detected, all findings converge for comprehensive analysis
+
+### The Cells
+
+Zygarde implements three specialized Cells for rootkit detection:
+
+#### 🔴 **Cell 1: Syscall Integrity Cell**
+Monitors the system call table for unauthorized modifications.
 - Detects `sys_call_table` hooking by rootkits
 - Compares kernel memory with expected values from `/proc/kallsyms`
 - Uses kprobes to safely read kernel memory
 - **Rootkit Technique Detected**: Syscall table modification
 
-### 2. **Hidden Kernel Module Detection**
+#### 🟢 **Cell 2: Module Visibility Cell**
+Reveals kernel modules hidden from user-space.
 - Finds kernel modules hidden from `lsmod` and `/sys/module`
 - Uses BPF iterators to traverse the kernel's internal module list
 - Compares kernel ground truth with user-space visibility
 - **Rootkit Technique Detected**: Module list manipulation (list_del)
 
-### 3. **Hidden File Detection in PATH**
-- Detects executable files hidden from directory listings
+#### 🔵 **Cell 3: File Visibility Cell**
+Detects executables hidden from directory listings.
 - Monitors `execve` syscalls via tracepoints
 - Verifies file visibility from user-space
 - **Rootkit Technique Detected**: `getdents64` hooking
 
-## Architecture
+## 🏗️ Architecture
 
 ```
 ┌─────────────────────────────────────────────────┐
-│              GoHunt Binary                      │
+│           Zygarde Core (Binary)                 │
 │  (Static, Portable, Single Executable)          │
 ├─────────────────────────────────────────────────┤
 │                                                 │
 │  ┌──────────────┐  ┌──────────────┐            │
-│  │  Check       │  │  Check       │            │
-│  │  Interface   │  │  Runner      │            │
+│  │  Cell        │  │  Cell        │            │
+│  │  Interface   │  │  Orchestrator│            │
 │  └──────────────┘  └──────────────┘            │
 │                                                 │
 │  ┌──────────────┐  ┌──────────────┐  ┌────────┤
-│  │  Syscall     │  │  Modules     │  │Hidden  │
-│  │  Check       │  │  Check       │  │Files   │
+│  │  Syscall     │  │  Module      │  │ File   │
+│  │  Cell        │  │  Cell        │  │ Cell   │
 │  └──────┬───────┘  └──────┬───────┘  └───┬────┘
 │         │                 │               │     │
 └─────────┼─────────────────┼───────────────┼─────┘
@@ -76,7 +90,7 @@ GoHunt implements three advanced detection techniques:
 └─────────────────────────────────────────────────┘
 ```
 
-## Prerequisites
+## 📋 Prerequisites
 
 ### Build Requirements
 - Go 1.21 or later
@@ -110,9 +124,17 @@ sudo pacman -S go clang llvm libbpf linux-headers
 sudo pacman -S bpf
 ```
 
-## Building
+## 🔨 Building
 
-### Step 1: Generate vmlinux.h
+### Quick Build (Automated)
+
+```bash
+./build.sh
+```
+
+### Step-by-Step Build
+
+#### Step 1: Generate vmlinux.h
 
 The `vmlinux.h` file contains kernel type definitions for CO-RE:
 
@@ -121,7 +143,7 @@ The `vmlinux.h` file contains kernel type definitions for CO-RE:
 sudo bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
 ```
 
-### Step 2: Generate eBPF Go Bindings
+#### Step 2: Generate eBPF Go Bindings
 
 ```bash
 # Install bpf2go tool
@@ -139,11 +161,11 @@ Or use the Makefile:
 make generate
 ```
 
-### Step 3: Build the Binary
+#### Step 3: Build the Binary
 
 ```bash
 # Static build for maximum portability
-CGO_ENABLED=0 go build -ldflags="-s -w" -o gohunt .
+CGO_ENABLED=0 go build -ldflags="-s -w" -o zygarde .
 ```
 
 Or use the Makefile:
@@ -152,15 +174,15 @@ Or use the Makefile:
 make build
 ```
 
-The resulting `gohunt` binary is completely standalone and can be copied to any Linux system with a compatible kernel.
+The resulting `zygarde` binary is completely standalone and can be copied to any Linux system with a compatible kernel.
 
-## Usage
+## 🚀 Usage
 
 ### Basic Usage
 
 ```bash
 # Must be run as root
-sudo ./gohunt
+sudo ./zygarde
 ```
 
 ### Debug Mode
@@ -169,9 +191,9 @@ For detailed verbose output showing every step of the detection process:
 
 ```bash
 # Enable debug mode
-sudo ./gohunt -d
+sudo ./zygarde -d
 # or
-sudo ./gohunt --debug
+sudo ./zygarde --debug
 ```
 
 Debug mode provides detailed information about:
@@ -181,125 +203,126 @@ Debug mode provides detailed information about:
 - Kprobe/tracepoint attachment
 - Ring buffer operations
 - Event processing and parsing
-- Resource cleanup
+- Cell activation and deactivation
 
 See [DEBUG.md](DEBUG.md) for complete debug mode documentation.
 
 ### Example Output
 
 ```
-  ██████╗  ██████╗ ██╗  ██╗██╗   ██╗███╗   ██╗████████╗
- ██╔════╝ ██╔═══██╗██║  ██║██║   ██║████╗  ██║╚══██╔══╝
- ██║  ███╗██║   ██║███████║██║   ██║██╔██╗ ██║   ██║   
- ██║   ██║██║   ██║██╔══██║██║   ██║██║╚██╗██║   ██║   
- ╚██████╔╝╚██████╔╝██║  ██║╚██████╔╝██║ ╚████║   ██║   
-  ╚═════╝  ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝   ╚═╝   
-                                                        
- eBPF-based Rootkit Detection Tool
- Version 1.0.0
+ ███████╗╚██╗ ██╔╝ ██████╗  █████╗ ██████╗ ██████╗ ███████╗
+ ╚══███╔╝ ╚███╔╝ ██╔════╝ ██╔══██╗██╔══██╗██╔══██╗██╔════╝
+   ███╔╝   ╚██╔╝  ██║  ███╗███████║██████╔╝██║  ██║█████╗  
+  ███╔╝     ██║   ██║   ██║██╔══██║██╔══██╗██║  ██║██╔══╝  
+ ███████╗   ██║   ╚██████╔╝██║  ██║██║  ██║██████╔╝███████╗
+ ╚══════╝   ╚═╝    ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝ ╚══════╝
+                                                             
+ Guardian of the Kernel - eBPF Rootkit Detection
+ Version 1.0.0 - Order Forme
 
-Starting forensic analysis with 3 checks...
+Deploying 3 Zygarde Cells for system analysis...
 
-[1/3] Running: Syscall Table Integrity
-        Detects sys_call_table hooking by comparing kernel memory with expected addresses
-        ✅ sys_call_table entry for __x64_sys_getdents64 is intact (0xffffffff81234567) (0.12s)
+[Cell 1/3] Executing: Syscall Table Integrity
+            Detects sys_call_table hooking by comparing kernel memory with expected addresses
+            [+] sys_call_table entry for __x64_sys_getdents64 is intact (0xffffffff81234567) (0.12s)
 
-[2/3] Running: Hidden Kernel Modules
-        Detects kernel modules hidden from lsmod by comparing kernel module list with /sys/module
-        ✅ All 145 kernel modules are visible (0.08s)
+[Cell 2/3] Executing: Hidden Kernel Modules
+            Detects kernel modules hidden from lsmod by comparing kernel module list with /sys/module
+            [+] All 145 kernel modules are visible (0.08s)
 
-[3/3] Running: Hidden Files in PATH
-        Detects executable files that are hidden from directory listings
-  [*] Monitoring execve events for 5s...
-        ✅ No hidden files detected (monitored 23 execve events) (5.11s)
+[Cell 3/3] Executing: Hidden Files in PATH
+            Detects executable files that are hidden from directory listings
+            [*] Monitoring execve events for 5s...
+            [+] No hidden files detected (monitored 23 execve events) (5.11s)
 
 ======================================================================
-SUMMARY REPORT
+ZYGARDE CORE ANALYSIS - SUMMARY REPORT
 ======================================================================
-Total Checks: 3
-  ✅ OK:         3
-  🔍 SUSPICIOUS: 0
-  ❌ ERROR:      0
+Total Cells Deployed: 3
+  [+] OK:         3
+  [*] SUSPICIOUS: 0
+  [-] ERROR:      0
 
-Cleaning up...
+Deactivating Cells...
 ======================================================================
-✅ System appears clean - no rootkit activity detected
+[+] ✓ Ecosystem stable - no threats detected
+   Zygarde Cells report: All clear
 ======================================================================
 ```
 
 ### Exit Codes
 
-- `0`: All checks passed, no suspicious activity
-- `1`: One or more checks failed with errors
-- `2`: Suspicious activity detected (potential rootkit)
+- `0`: All checks passed, no suspicious activity (Ecosystem stable)
+- `1`: One or more Cells failed with errors
+- `2`: Suspicious activity detected - potential rootkit (Threat detected!)
 
-## Development
+## 🛠️ Development
 
 ### Project Structure
 
 ```
-gohunt/
-├── main.go                 # Entry point and check runner
+zygarde/
+├── main.go                 # Zygarde Core - entry point and Cell orchestrator
 ├── go.mod                  # Go module definition
 ├── checks/
-│   ├── interface.go        # Check interface definition
-│   ├── syscall.go          # Syscall table integrity check
-│   ├── modules.go          # Hidden module detection
-│   └── hidden_files.go     # Hidden file detection
+│   ├── interface.go        # Cell interface definition
+│   ├── syscall.go          # Syscall Integrity Cell
+│   ├── modules.go          # Module Visibility Cell
+│   └── hidden_files.go     # File Visibility Cell
 └── bpf/
     ├── gohunt.bpf.c        # eBPF programs (C)
     └── vmlinux.h           # Kernel type definitions (generated)
 ```
 
-### Adding New Checks
+### Adding New Cells
 
 1. Implement the `Check` interface in a new file under `checks/`
 2. Add your eBPF program to `bpf/gohunt.bpf.c` with a unique section name
-3. Register your check in `main.go`
+3. Register your Cell in `main.go` (in the `allCells` slice)
 4. Run `go generate` to update eBPF bindings
 
 Example:
 
 ```go
-type MyCheck struct{}
+type MyCell struct{}
 
-func NewMyCheck() *MyCheck {
-    return &MyCheck{}
+func NewMyCell() *MyCell {
+    return &MyCell{}
 }
 
-func (c *MyCheck) Name() string {
-    return "My Custom Check"
+func (c *MyCell) Name() string {
+    return "My Custom Cell"
 }
 
-func (c *MyCheck) Description() string {
-    return "Describes what this check does"
+func (c *MyCell) Description() string {
+    return "Describes what this Cell monitors"
 }
 
-func (c *MyCheck) Run() (Result, error) {
+func (c *MyCell) Run() (Result, error) {
     // Implementation
 }
 
-func (c *MyCheck) Cleanup() error {
+func (c *MyCell) Cleanup() error {
     // Cleanup resources
 }
 ```
 
-## Makefile Targets
+## 📖 Makefile Targets
 
 ```bash
 make help         # Show all available targets
 make generate     # Generate vmlinux.h and eBPF bindings
-make build        # Build the gohunt binary
+make build        # Build the zygarde binary
 make clean        # Remove built artifacts
 make test         # Run tests
 make install      # Install to /usr/local/bin
 ```
 
-## Technical Details
+## 🔍 Technical Details
 
 ### CO-RE (Compile Once - Run Everywhere)
 
-GoHunt uses eBPF CO-RE, which allows the same eBPF bytecode to run on different kernel versions without recompilation. This is achieved through:
+Zygarde uses eBPF CO-RE, which allows the same eBPF bytecode to run on different kernel versions without recompilation. This is achieved through:
 
 1. **BTF (BPF Type Format)**: Kernel type information available at `/sys/kernel/btf/vmlinux`
 2. **CO-RE Relocations**: The `libbpf` loader adjusts field offsets at load time
@@ -319,7 +342,7 @@ GoHunt uses eBPF CO-RE, which allows the same eBPF bytecode to run on different 
 - Sophisticated rootkits may evade detection by hooking eBPF subsystem
 - Hidden file detection requires active process execution
 
-## Troubleshooting
+## 🔧 Troubleshooting
 
 ### "failed to load eBPF objects"
 
@@ -341,7 +364,7 @@ sudo bpftool feature
 
 **Cause**: Not running as root
 
-**Solution**: Run with `sudo ./gohunt`
+**Solution**: Run with `sudo ./zygarde`
 
 ### "symbol not found in /proc/kallsyms"
 
@@ -349,7 +372,7 @@ sudo bpftool feature
 
 **Solution**: Ensure running as root to see KASLR addresses
 
-## Contributing
+## 🤝 Contributing
 
 Contributions are welcome! Please:
 
@@ -359,23 +382,32 @@ Contributions are welcome! Please:
 4. Ensure `go fmt` and `go vet` pass
 5. Submit a pull request
 
-## License
+## 📜 License
 
 This project is licensed under the Dual BSD/GPL License - see the LICENSE file for details.
 
-## References
+## 🔗 References
 
 - [eBPF Documentation](https://ebpf.io/)
 - [Cilium eBPF Library](https://github.com/cilium/ebpf)
 - [BPF CO-RE](https://nakryiko.com/posts/bpf-portability-and-co-re/)
 - [Linux Rootkit Techniques](https://www.kernel.org/doc/html/latest/security/)
+- [Zygarde Pokémon](https://bulbapedia.bulbagarden.net/wiki/Zygarde) - Inspiration for the name
 
-## Acknowledgments
+## 🙏 Acknowledgments
 
 - The Cilium team for the excellent Go eBPF library
 - The Linux kernel eBPF community
 - Security researchers studying rootkit techniques
+- The Pokémon franchise for inspiring the guardian metaphor
 
 ---
 
+<div align="center">
+
 **⚠️ Disclaimer**: This tool is for legitimate security research and system administration only. Unauthorized access to computer systems is illegal.
+
+*"Order must be maintained in the ecosystem."* - Zygarde
+
+</div>
+````

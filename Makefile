@@ -5,14 +5,15 @@ all: build
 
 # Help target
 help:
-	@echo "GoHunt - eBPF Rootkit Detection Tool"
+	@echo "Zygarde - eBPF Rootkit Detection Tool"
+	@echo "Guardian of the Kernel"
 	@echo ""
 	@echo "Available targets:"
 	@echo "  make generate    - Generate vmlinux.h and eBPF Go bindings"
-	@echo "  make build       - Build the gohunt binary"
+	@echo "  make build       - Build the zygarde binary"
 	@echo "  make clean       - Remove generated files and binaries"
 	@echo "  make test        - Run tests"
-	@echo "  make install     - Install gohunt to /usr/local/bin"
+	@echo "  make install     - Install zygarde to /usr/local/bin"
 	@echo "  make vmlinux     - Generate vmlinux.h from running kernel"
 	@echo "  make fmt         - Format Go code"
 	@echo "  make vet         - Run go vet"
@@ -43,15 +44,15 @@ generate: vmlinux
 
 # Build the binary
 build: generate
-	@echo "Building gohunt..."
-	CGO_ENABLED=0 go build -ldflags="-s -w" -o gohunt .
-	@echo "✓ Built gohunt binary"
-	@ls -lh gohunt
+	@echo "Building zygarde..."
+	CGO_ENABLED=0 go build -ldflags="-s -w" -o zygarde .
+	@echo "✓ Built zygarde binary"
+	@ls -lh zygarde
 
 # Clean generated files and binaries
 clean:
 	@echo "Cleaning..."
-	rm -f gohunt
+	rm -f zygarde
 	rm -f checks/bpf_bpfel.go checks/bpf_bpfeb.go
 	rm -f checks/bpf_bpfel.o checks/bpf_bpfeb.o
 	@echo "✓ Cleaned"
@@ -75,9 +76,9 @@ vet:
 
 # Install to system
 install: build
-	@echo "Installing gohunt to /usr/local/bin..."
-	sudo install -m 755 gohunt /usr/local/bin/gohunt
-	@echo "✓ Installed gohunt"
+	@echo "Installing zygarde to /usr/local/bin..."
+	sudo install -m 755 zygarde /usr/local/bin/zygarde
+	@echo "✓ Installed zygarde"
 
 # Check prerequisites
 check-prereqs:

@@ -3,7 +3,8 @@
 set -e
 
 echo "================================================"
-echo "  GoHunt Build Script"
+echo "  Zygarde Build Script"
+echo "  Guardian of the Kernel"
 echo "================================================"
 echo ""
 
@@ -180,23 +181,23 @@ echo ""
 
 # Step 5: Build the binary
 echo "================================================"
-echo "Step 5: Building gohunt binary"
+echo "Step 5: Building zygarde binary"
 echo "================================================"
 echo ""
 
 echo "Compiling static binary..."
-CGO_ENABLED=0 go build -ldflags="-s -w" -o gohunt .
+CGO_ENABLED=0 go build -ldflags="-s -w" -o zygarde .
 
-if [ -f gohunt ]; then
-    BINARY_SIZE=$(stat -f %z gohunt 2>/dev/null || stat -c %s gohunt 2>/dev/null)
+if [ -f zygarde ]; then
+    BINARY_SIZE=$(stat -f %z zygarde 2>/dev/null || stat -c %s zygarde 2>/dev/null)
     if [ -n "$BINARY_SIZE" ] && [ "$BINARY_SIZE" -gt 0 ] 2>/dev/null; then
         BINARY_SIZE_MB=$(awk "BEGIN {printf \"%.2f\", $BINARY_SIZE / 1048576}")
-        echo -e "${GREEN}[+]${NC} Built gohunt binary (${BINARY_SIZE_MB}MB)"
+        echo -e "${GREEN}[+]${NC} Built zygarde binary (${BINARY_SIZE_MB}MB)"
     else
-        echo -e "${GREEN}[+]${NC} Built gohunt binary"
+        echo -e "${GREEN}[+]${NC} Built zygarde binary"
     fi
     echo ""
-    ls -lh gohunt
+    ls -lh zygarde
 else
     echo -e "${RED}[-]${NC} Build failed"
     exit 1
@@ -208,7 +209,7 @@ echo "  Build Complete!"
 echo "================================================"
 echo ""
 echo "To run the tool:"
-echo "  sudo ./gohunt"
+echo "  sudo ./zygarde"
 echo ""
 echo "To install system-wide:"
 echo "  sudo make install"

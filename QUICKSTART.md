@@ -1,8 +1,9 @@
-# Quick Start Guide
+````markdown
+# Zygarde - Quick Start Guide
 
 ## For the Impatient
 
-If you just want to build and run GoHunt as quickly as possible:
+If you just want to build and run Zygarde as quickly as possible:
 
 ```bash
 # 1. Install prerequisites (Ubuntu/Debian)
@@ -13,23 +14,23 @@ sudo apt-get install -y golang clang libbpf-dev linux-headers-$(uname -r) \
 # 2. Build
 ./build.sh
 
-# 3. Run (requires root)
-sudo ./gohunt
+# 3. Deploy Cells (requires root)
+sudo ./zygarde
 ```
 
 ## What Does It Do?
 
-GoHunt runs three security checks:
+Zygarde deploys three specialized Cells for ecosystem monitoring:
 
-1. **Syscall Table Check** (~0.1s)
+1. **🔴 Syscall Integrity Cell** (~0.1s)
    - Detects if system calls have been hooked
-   - Checks: `getdents64` syscall
+   - Checks: `getdents64` syscall integrity
 
-2. **Hidden Modules Check** (~0.1s)
+2. **🟢 Module Visibility Cell** (~0.1s)
    - Finds kernel modules hidden from `lsmod`
    - Compares kernel truth vs user-space visibility
 
-3. **Hidden Files Check** (~5s)
+3. **🔵 File Visibility Cell** (~5s)
    - Monitors program executions
    - Detects files that can execute but are invisible
 
@@ -37,70 +38,72 @@ Total runtime: ~5-6 seconds
 
 ## Understanding the Output
 
-### Clean System
+### Ecosystem Stable (Clean System)
 ```
-✅ sys_call_table entry for __x64_sys_getdents64 is intact
-✅ All 145 kernel modules are visible
-✅ No hidden files detected
+[+] sys_call_table entry for __x64_sys_getdents64 is intact
+[+] All 145 kernel modules are visible
+[+] No hidden files detected
 
-System appears clean - no rootkit activity detected
+✓ Ecosystem stable - no threats detected
+   Zygarde Cells report: All clear
 ```
 
-### Compromised System
+### Threat Detected (Compromised System)
 ```
-🔍 SUSPICIOUS: sys_call_table has been hooked!
+[*] SUSPICIOUS: sys_call_table has been hooked!
    Expected 0xffffffff81234567, found 0xffffffff91234567
    
-🔍 Module 'evil_rootkit' is loaded but hidden from /sys/module
+[*] Module 'evil_rootkit' is loaded but hidden from /sys/module
 
-⚠️ ALERT: Suspicious activity detected!
-   Your system may be compromised.
+⚠️ ECOSYSTEM THREAT DETECTED!
+   Zygarde Complete Forme activation recommended.
+   Review findings above and take immediate action.
 ```
 
 ## Exit Codes
 
-- `0` - System is clean
-- `1` - Checks failed with errors
-- `2` - Rootkit detected
+- `0` - Ecosystem is stable (no threats)
+- `1` - Some Cells failed with errors
+- `2` - Threat detected (rootkit activity)
 
 Use in scripts:
 ```bash
-sudo ./gohunt
+sudo ./zygarde
 if [ $? -eq 2 ]; then
-    echo "ALERT: Send notification!"
+    echo "ALERT: Ecosystem threatened! Send notification!"
 fi
 ```
 
 ## Minimal Example
 
-Want to test just one check?
+Want to deploy just one Cell?
 
 Edit `main.go`:
 ```go
-allChecks := []checks.Check{
-    checks.NewSyscallCheck(),  // Just this one
+allCells := []checks.Check{
+    checks.NewSyscallCheck(),  // Just this Cell
 }
 ```
 
 Rebuild:
 ```bash
-go build -o gohunt .
-sudo ./gohunt
+go build -o zygarde .
+sudo ./zygarde
 ```
 
 ## Common Questions
 
 **Q: Why do I need root?**
-A: eBPF programs require privileged access to attach to kernel functions.
+A: eBPF programs require privileged access to attach to kernel functions and monitor the ecosystem.
 
 **Q: Will this crash my system?**
 A: No. eBPF programs are verified by the kernel and run safely in a sandbox.
 
 **Q: How much overhead does it add?**
-A: Negligible. eBPF is designed for high-performance monitoring.
+A: Negligible. eBPF is designed for high-performance monitoring with minimal impact.
 
-**Q: Can rootkits detect GoHunt?**
-A: Advanced rootkits could potentially detect it, but most cannot.
+**Q: Can rootkits detect Zygarde?**
+A: Advanced rootkits could potentially detect it, but most cannot. Zygarde operates deep within the kernel like the Cells monitoring the ecosystem.
 
 **Q: Does it work on my kernel?**
 A: If you're running Linux 5.8+ with BTF support, yes.
@@ -132,26 +135,31 @@ go version && clang --version && bpftool version
 ### As a Cron Job
 
 ```bash
-# /etc/cron.daily/gohunt-check
+# /etc/cron.daily/zygarde-check
 #!/bin/bash
-/usr/local/bin/gohunt > /var/log/gohunt-$(date +%Y%m%d).log 2>&1
+/usr/local/bin/zygarde > /var/log/zygarde-$(date +%Y%m%d).log 2>&1
 if [ $? -eq 2 ]; then
-    mail -s "ALERT: Rootkit detected!" admin@example.com < /var/log/gohunt-$(date +%Y%m%d).log
+    mail -s "ALERT: Ecosystem threat detected!" admin@example.com < /var/log/zygarde-$(date +%Y%m%d).log
 fi
+```
+
+Make it executable:
+```bash
+sudo chmod +x /etc/cron.daily/zygarde-check
 ```
 
 ### As a Systemd Service
 
-Create `/etc/systemd/system/gohunt.service`:
+Create `/etc/systemd/system/zygarde.service`:
 
 ```ini
 [Unit]
-Description=GoHunt Rootkit Detection
+Description=Zygarde Ecosystem Guardian
 After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/gohunt
+ExecStart=/usr/local/bin/zygarde
 StandardOutput=journal
 StandardError=journal
 
@@ -159,31 +167,125 @@ StandardError=journal
 WantedBy=multi-user.target
 ```
 
+Create `/etc/systemd/system/zygarde.timer`:
+
+```ini
+[Unit]
+Description=Zygarde Daily Ecosystem Check
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
 Enable:
 ```bash
-sudo systemctl enable gohunt.timer
-sudo systemctl start gohunt.timer
+sudo systemctl daemon-reload
+sudo systemctl enable zygarde.timer
+sudo systemctl start zygarde.timer
+
+# Check status
+sudo systemctl status zygarde.timer
 ```
 
 ## Integration with Security Tools
 
 ### Splunk
 ```bash
-sudo ./gohunt | logger -t gohunt -p local0.alert
+sudo ./zygarde | logger -t zygarde -p local0.alert
 ```
 
-### ELK Stack
+### ELK Stack (if JSON output implemented)
 ```bash
-sudo ./gohunt --json | curl -X POST localhost:9200/gohunt/_doc -d @-
+sudo ./zygarde --json 2>/dev/null | curl -X POST localhost:9200/zygarde/_doc -H 'Content-Type: application/json' -d @-
 ```
 
-### Prometheus (future feature)
+### Simple Logging
 ```bash
-sudo ./gohunt --metrics > /var/lib/node_exporter/gohunt.prom
+sudo ./zygarde 2>&1 | tee -a /var/log/zygarde.log
 ```
+
+## Automation Examples
+
+### Alert on Threat Detection
+```bash
+#!/bin/bash
+sudo ./zygarde > /tmp/zygarde-scan.log 2>&1
+EXIT_CODE=$?
+
+if [ $EXIT_CODE -eq 2 ]; then
+    # Threat detected - activate Complete Forme response
+    echo "Subject: CRITICAL: Zygarde Threat Detection" > /tmp/zygarde-alert.txt
+    echo "Ecosystem threat detected on $(hostname)" >> /tmp/zygarde-alert.txt
+    echo "" >> /tmp/zygarde-alert.txt
+    cat /tmp/zygarde-scan.log >> /tmp/zygarde-alert.txt
+    
+    # Send alert (choose your method)
+    mail -s "THREAT ALERT" security@example.com < /tmp/zygarde-alert.txt
+    # or
+    curl -X POST https://hooks.slack.com/... -d @/tmp/zygarde-alert.txt
+fi
+```
+
+### Monitoring Loop
+```bash
+#!/bin/bash
+# Continuous monitoring (use with caution in production)
+while true; do
+    echo "[$(date)] Deploying Zygarde Cells..."
+    sudo ./zygarde
+    
+    if [ $? -eq 2 ]; then
+        echo "THREAT DETECTED - Check logs immediately"
+        break
+    fi
+    
+    echo "Ecosystem stable. Waiting 1 hour..."
+    sleep 3600
+done
+```
+
+## Debug Mode
+
+For troubleshooting or understanding Cell operations:
+
+```bash
+sudo ./zygarde --debug
+```
+
+This shows:
+- Cell activation details
+- eBPF program loading
+- Kernel symbol resolution
+- Event processing
+- Resource cleanup
+
+Perfect for understanding how each Cell operates or diagnosing issues.
+
+## Performance Tips
+
+1. **Normal Scans**: Run daily via cron
+2. **Intensive Monitoring**: Use with caution - File Visibility Cell runs for 5 seconds
+3. **Quick Check**: Deploy only Syscall and Module Cells if time-constrained
+4. **Resource Usage**: Minimal - primarily during the 5-second monitoring window
 
 ## Next Steps
 
-- Read [README.md](README.md) for full documentation
-- Read [DEVELOPMENT.md](DEVELOPMENT.md) to add your own checks
+- Read [README.md](README.md) for complete documentation
+- Read [DEVELOPMENT.md](DEVELOPMENT.md) to add your own Cells
+- Check [MIGRATION.md](MIGRATION.md) if upgrading from GoHunt
 - Star the project if you find it useful!
+
+---
+
+<div align="center">
+
+*"When the ecosystem is threatened, the Cells gather to protect."*
+
+**Guardian of the Kernel** | **Order Forme Activated**
+
+</div>
+````

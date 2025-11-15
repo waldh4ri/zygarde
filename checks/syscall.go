@@ -1,6 +1,6 @@
 package checks
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -Werror" -target amd64,arm64 bpf ../bpf/gohunt.bpf.c -- -I../bpf
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -Werror" -target amd64,arm64 bpf ../bpf/zygarde.bpf.c -- -I../bpf
 
 import (
 	"bufio"
@@ -109,7 +109,7 @@ func (c *SyscallCheck) Run() (Result, error) {
 		number      uint64
 		description string
 	}
-	
+
 	syscallsToCheck := []syscallInfo{
 		{
 			name:        "__x64_sys_getdents64",
@@ -175,7 +175,7 @@ func (c *SyscallCheck) Run() (Result, error) {
 	checkedCount := 0
 	for _, syscallToCheck := range syscallsToCheck {
 		c.debugLog("Step %d: Checking syscall: %s (number %d) - %s", 5+checkedCount*5, syscallToCheck.name, syscallToCheck.number, syscallToCheck.description)
-		
+
 		// Look up the expected address
 		syscallName := syscallToCheck.name
 		syscallNum := syscallToCheck.number
@@ -282,7 +282,7 @@ func (c *SyscallCheck) Run() (Result, error) {
 		} else {
 			c.debugLog("SUCCESS: Addresses match - syscall entry is intact")
 		}
-		
+
 		checkedCount++
 	}
 

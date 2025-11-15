@@ -1,4 +1,4 @@
-module gohunt
+module zygarde
 
 go 1.21
 

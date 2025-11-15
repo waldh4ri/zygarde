@@ -8,19 +8,19 @@ import (
 	"strings"
 	"time"
 
-	"gohunt/checks"
+	"zygarde/checks"
 )
 
 const banner = `
-  ██████╗  ██████╗ ██╗  ██╗██╗   ██╗███╗   ██╗████████╗
- ██╔════╝ ██╔═══██╗██║  ██║██║   ██║████╗  ██║╚══██╔══╝
- ██║  ███╗██║   ██║███████║██║   ██║██╔██╗ ██║   ██║   
- ██║   ██║██║   ██║██╔══██║██║   ██║██║╚██╗██║   ██║   
- ╚██████╔╝╚██████╔╝██║  ██║╚██████╔╝██║ ╚████║   ██║   
-  ╚═════╝  ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝   ╚═╝   
-                                                        
- eBPF-based Rootkit Detection Tool
- Version 1.0.0
+ ███████╗██╗   ██╗ ██████╗  █████╗ ██████╗ ██████╗ ███████╗
+ ╚══███╔╝╚██╗ ██╔╝██╔════╝ ██╔══██╗██╔══██╗██╔══██╗██╔════╝
+   ███╔╝  ╚████╔╝ ██║  ███╗███████║██████╔╝██║  ██║█████╗  
+  ███╔╝    ╚██╔╝  ██║   ██║██╔══██║██╔══██╗██║  ██║██╔══╝  
+ ███████╗   ██║   ╚██████╔╝██║  ██║██║  ██║██████╔╝███████╗
+ ╚══════╝   ╚═╝    ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝ ╚══════╝
+                                                             
+ Guardian of the Kernel - eBPF Rootkit Detection
+ Version 1.0.0 - Order Forme
  `
 
 // Global debug flag
@@ -56,78 +56,78 @@ func main() {
 
 	fmt.Println(banner)
 
-	DebugLog("Starting GoHunt with debug mode enabled")
+	DebugLog("Starting Zygarde Core with debug mode enabled")
 	DebugLog("OS: %s, Kernel: %s", os.Getenv("OSTYPE"), getKernelVersion())
 	DebugLog("UID: %d, EUID: %d", os.Getuid(), os.Geteuid())
 
 	// Check if running as root
 	if os.Geteuid() != 0 {
 		fmt.Println("[-] Error: This tool must be run as root (for eBPF operations)")
-		fmt.Println("   Please run with: sudo ./gohunt")
+		fmt.Println("   Please run with: sudo ./zygarde")
 		os.Exit(1)
 	}
 
-	// Register all checks
-	DebugLog("Registering checks...")
-	allChecks := []checks.Check{
+	// Activate Zygarde Cells
+	DebugLog("Activating Zygarde Cells...")
+	allCells := []checks.Check{
 		checks.NewSyscallCheck(),
 		checks.NewModulesCheck(),
 		checks.NewHiddenFilesCheck(),
 	}
-	DebugLog("Registered %d checks", len(allChecks))
+	DebugLog("Activated %d Cells", len(allCells))
 
-	// Set debug mode on all checks that support it
-	for _, check := range allChecks {
-		if debuggable, ok := check.(checks.Debuggable); ok {
+	// Set debug mode on all cells that support it
+	for _, cell := range allCells {
+		if debuggable, ok := cell.(checks.Debuggable); ok {
 			debuggable.SetDebug(debugMode)
-			DebugLog("Enabled debug mode for check: %s", check.Name())
+			DebugLog("Enabled debug mode for Cell: %s", cell.Name())
 		}
 	}
 
-	fmt.Printf("Starting forensic analysis with %d checks...\n\n", len(allChecks))
+	fmt.Printf("Deploying %d Zygarde Cells for system analysis...\n\n", len(allCells))
 
-	// Run all checks
+	// Execute all Cells
 	var suspiciousCount, errorCount, okCount int
 	allResults := make([]struct {
-		check  checks.Check
+		cell   checks.Check
 		result checks.Result
 	}, 0)
 
-	for i, check := range allChecks {
-		fmt.Printf("[%d/%d] Running: %s\n", i+1, len(allChecks), check.Name())
-		fmt.Printf("        %s\n", check.Description())
+	for i, cell := range allCells {
+		fmt.Printf("[Cell %d/%d] Executing: %s\n", i+1, len(allCells), cell.Name())
+		fmt.Printf("            %s\n", cell.Description())
 
 		DebugLog(strings.Repeat("=", 60))
-		DebugLog("Starting check [%d/%d]: %s", i+1, len(allChecks), check.Name())
-		DebugLog("Description: %s", check.Description())
-		checkStart := time.Now()
+		DebugLog("Activating Cell [%d/%d]: %s", i+1, len(allCells), cell.Name())
+		DebugLog("Description: %s", cell.Description())
+		cellStart := time.Now()
 
-		result, err := check.Run()
+		result, err := cell.Run()
 
-		DebugLog("Check completed in %.3fs", time.Since(checkStart).Seconds())
+		DebugLog("Cell completed in %.3fs", time.Since(cellStart).Seconds())
 		allResults = append(allResults, struct {
-			check  checks.Check
+			cell   checks.Check
 			result checks.Result
-		}{check: check, result: result})
+		}{cell: cell, result: result})
 
 		// Print immediate result
 		statusSymbol := getStatusSymbol(result.Status)
-		fmt.Printf("        %s %s (%.2fs)\n", statusSymbol, result.Message, result.Duration.Seconds())
+		fmt.Printf("            %s %s (%.2fs)\n", statusSymbol, result.Message, result.Duration.Seconds())
 
 		// Show findings immediately
 		if len(result.Findings) > 0 {
 			for _, finding := range result.Findings {
-				fmt.Printf("          [*] %s\n", finding.Description)
+				fmt.Printf("              [*] %s\n", finding.Description)
 				if len(finding.Details) > 0 {
 					for key, value := range finding.Details {
-						fmt.Printf("              - %s: %s\n", key, value)
+						fmt.Printf("                  - %s: %s\n", key, value)
 					}
 				}
 			}
 		}
 
 		if err != nil {
-			fmt.Printf("        [*] Error: %v\n", err)
+			fmt.Printf("            [*] Error: %v\n", err)
 		}
 
 		fmt.Println()
@@ -145,9 +145,9 @@ func main() {
 
 	// Print summary report
 	fmt.Println(strings.Repeat("=", 70))
-	fmt.Println("SUMMARY REPORT")
+	fmt.Println("ZYGARDE CORE ANALYSIS - SUMMARY REPORT")
 	fmt.Println(strings.Repeat("=", 70))
-	fmt.Printf("Total Checks: %d\n", len(allChecks))
+	fmt.Printf("Total Cells Deployed: %d\n", len(allCells))
 	fmt.Printf("  [+] OK:         %d\n", okCount)
 	fmt.Printf("  [*] SUSPICIOUS: %d\n", suspiciousCount)
 	fmt.Printf("  [-] ERROR:      %d\n", errorCount)
@@ -160,11 +160,11 @@ func main() {
 	}
 
 	if totalFindings > 0 {
-		fmt.Println("DETAILED FINDINGS:")
+		fmt.Println("DETAILED FINDINGS FROM CELLS:")
 		fmt.Println(strings.Repeat("-", 70))
 		for _, ar := range allResults {
 			if len(ar.result.Findings) > 0 {
-				fmt.Printf("\n%s:\n", ar.check.Name())
+				fmt.Printf("\n%s Cell:\n", ar.cell.Name())
 				for i, finding := range ar.result.Findings {
 					fmt.Printf("  [%d] %s\n", i+1, finding.Description)
 					if len(finding.Details) > 0 {
@@ -178,35 +178,37 @@ func main() {
 		fmt.Println()
 	}
 
-	// Cleanup all checks
-	DebugLog("Starting cleanup phase...")
-	fmt.Println("Cleaning up...")
-	for _, check := range allChecks {
-		DebugLog("Cleaning up check: %s", check.Name())
-		if err := check.Cleanup(); err != nil {
-			fmt.Printf("  Warning: Failed to cleanup %s: %v\n", check.Name(), err)
-			DebugLog("Cleanup error for %s: %v", check.Name(), err)
+	// Deactivate all Cells
+	DebugLog("Deactivating Zygarde Cells...")
+	fmt.Println("Deactivating Cells...")
+	for _, cell := range allCells {
+		DebugLog("Deactivating Cell: %s", cell.Name())
+		if err := cell.Cleanup(); err != nil {
+			fmt.Printf("  Warning: Failed to deactivate %s Cell: %v\n", cell.Name(), err)
+			DebugLog("Deactivation error for %s: %v", cell.Name(), err)
 		} else {
-			DebugLog("Successfully cleaned up: %s", check.Name())
+			DebugLog("Successfully deactivated: %s Cell", cell.Name())
 		}
 	}
-	DebugLog("Cleanup phase completed")
+	DebugLog("Cell deactivation completed")
 
 	// Exit with appropriate code
 	if suspiciousCount > 0 {
 		fmt.Println(strings.Repeat("=", 70))
-		fmt.Println("[*] ALERT: Suspicious activity detected!")
-		fmt.Println("   Your system may be compromised. Review findings above.")
+		fmt.Println("[*] ⚠️  ECOSYSTEM THREAT DETECTED!")
+		fmt.Println("   Zygarde Complete Forme activation recommended.")
+		fmt.Println("   Review findings above and take immediate action.")
 		fmt.Println(strings.Repeat("=", 70))
 		os.Exit(2)
 	} else if errorCount > 0 {
 		fmt.Println(strings.Repeat("=", 70))
-		fmt.Println("[*] WARNING: Some checks failed to complete")
+		fmt.Println("[*] WARNING: Some Cells failed to complete analysis")
 		fmt.Println(strings.Repeat("=", 70))
 		os.Exit(1)
 	} else {
 		fmt.Println(strings.Repeat("=", 70))
-		fmt.Println("[+] System appears clean - no rootkit activity detected")
+		fmt.Println("[+] ✓ Ecosystem stable - no threats detected")
+		fmt.Println("   Zygarde Cells report: All clear")
 		fmt.Println(strings.Repeat("=", 70))
 		os.Exit(0)
 	}

@@ -50,23 +50,25 @@ type Result struct {
 	Error error
 }
 
-// Check defines the interface that all forensic checks must implement
+// Check defines the interface that all Zygarde Cells must implement.
+// Each Cell is a specialized monitoring unit that observes a specific aspect
+// of the kernel for rootkit activity.
 type Check interface {
-	// Name returns the short name of the check
+	// Name returns the short name of the Cell
 	Name() string
-	
-	// Description returns a human-readable description of what this check does
+
+	// Description returns a human-readable description of what this Cell monitors
 	Description() string
-	
-	// Run executes the check and returns the result
+
+	// Run activates the Cell and returns the result of its observation
 	Run() (Result, error)
-	
-	// Cleanup performs any necessary cleanup (closing eBPF programs, etc.)
+
+	// Cleanup deactivates the Cell and releases resources (closing eBPF programs, etc.)
 	Cleanup() error
 }
 
-// Debuggable is an optional interface for checks that support debug logging
+// Debuggable is an optional interface for Cells that support debug logging
 type Debuggable interface {
-	// SetDebug enables or disables debug mode
+	// SetDebug enables or disables debug mode for this Cell
 	SetDebug(bool)
 }
