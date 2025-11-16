@@ -85,6 +85,7 @@ func main() {
 		checks.NewModulesCheck(),
 		checks.NewHiddenFilesCheck(),
 		checks.NewHiddenProcessesCheck(),
+		checks.NewSysBpfInterferenceCheck(), // stub cell
 	}
 	DebugLog("Activated %d Cells", len(allCells))
 
