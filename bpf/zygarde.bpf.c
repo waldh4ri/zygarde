@@ -30,7 +30,7 @@ const struct cfg_paths zygarde_cfg SEC(".rodata") = {
     .prefix_count = 0,
 };
 // ============================================================================
-// Feature 1: System Call Table Integrity Check
+// Cell 1: System Call Table Integrity Check
 // ============================================================================
 
 // Event structure for syscall table entries
@@ -98,15 +98,15 @@ int check_syscall_table(struct pt_regs *ctx)
 }
 
 // ============================================================================
-// Feature 2: Hidden Kernel Module Detection
+// Cell 2: Hidden Kernel Module Detection
 // ============================================================================
 
 // Note: BPF iterator for modules may not be available on all kernels
-// This feature will be implemented in user-space using /proc/modules
+// This Cell will be implemented in user-space using /proc/modules
 // and comparing with kernel symbols from /proc/kallsyms
 
 // ============================================================================
-// Feature 3: Hidden File Detection in $PATH
+// Cell 3: Hidden File Detection in $PATH
 // ============================================================================
 
 // Event structure for file access tracking
@@ -338,7 +338,7 @@ int trace_openat2(struct trace_event_raw_sys_enter *ctx)
 }
 
 // ============================================================================
-// Feature 4: Hidden Process Detection using Task Iterator
+// Cell 4: Hidden Process Detection using Task Iterator
 // ============================================================================
 
 // Event structure for process/thread information
@@ -396,7 +396,7 @@ int dump_task(struct bpf_iter__task *ctx)
 }
 
 // ============================================================================
-// Feature 5: sys_bpf Enumeration Interference Detection
+// Cell 5: sys_bpf Enumeration Interference Detection
 // ============================================================================
 // Detect attempts to prematurely terminate BPF object enumeration by forcing
 // -ENOENT on NEXT_ID commands while objects still exist (e.g., hidden programs).
