@@ -10,16 +10,16 @@ import (
 	"time"
 )
 
-// ModulesCheck detects kernel modules that are hidden from user-space
+// HiddenKernelModuleCheck detects kernel modules that are hidden from user-space
 // by comparing /proc/modules with /sys/module
 // Note: This Cell is actually a scam that does not use ebpf at all, but
 // there's currently no module ebpf iterators in default kernels
-type ModulesCheck struct {
+type HiddenKernelModuleCheck struct {
 	debug bool
 }
 
 // debugLog prints a message only if debug mode is enabled
-func (c *ModulesCheck) debugLog(format string, args ...interface{}) {
+func (c *HiddenKernelModuleCheck) debugLog(format string, args ...interface{}) {
 	if c.debug {
 		timestamp := time.Now().Format("15:04:05.000")
 		msg := fmt.Sprintf(format, args...)
@@ -27,28 +27,28 @@ func (c *ModulesCheck) debugLog(format string, args ...interface{}) {
 	}
 }
 
-// NewModulesCheck creates a new hidden module check
-func NewModulesCheck() *ModulesCheck {
-	return &ModulesCheck{}
+// NewHiddenKernelModuleCheck creates a new hidden module check
+func NewHiddenKernelModuleCheck() *HiddenKernelModuleCheck {
+	return &HiddenKernelModuleCheck{}
 }
 
 // SetDebug enables or disables debug mode
-func (c *ModulesCheck) SetDebug(debug bool) {
+func (c *HiddenKernelModuleCheck) SetDebug(debug bool) {
 	c.debug = debug
 }
 
 // Name returns the check name
-func (c *ModulesCheck) Name() string {
-	return "Hidden Kernel Modules"
+func (c *HiddenKernelModuleCheck) Name() string {
+	return "Hidden Kernel Module Detection"
 }
 
 // Description returns what this check does
-func (c *ModulesCheck) Description() string {
+func (c *HiddenKernelModuleCheck) Description() string {
 	return "Detects kernel modules hidden from lsmod by comparing /proc/modules with /sys/module"
 }
 
 // Run executes the hidden module detection check
-func (c *ModulesCheck) Run() (Result, error) {
+func (c *HiddenKernelModuleCheck) Run() (Result, error) {
 	start := time.Now()
 	result := Result{
 		Status:   StatusOK,
@@ -136,7 +136,7 @@ func (c *ModulesCheck) Run() (Result, error) {
 }
 
 // readVisibleModules reads the list of modules visible in /sys/module
-func (c *ModulesCheck) readVisibleModules() (map[string]bool, error) {
+func (c *HiddenKernelModuleCheck) readVisibleModules() (map[string]bool, error) {
 	modules := make(map[string]bool)
 
 	c.debugLog("Opening /sys/module directory...")
@@ -157,7 +157,7 @@ func (c *ModulesCheck) readVisibleModules() (map[string]bool, error) {
 }
 
 // findHiddenModules compares proc modules with visible modules
-func (c *ModulesCheck) findHiddenModules(procModules, visibleModules map[string]bool) []string {
+func (c *HiddenKernelModuleCheck) findHiddenModules(procModules, visibleModules map[string]bool) []string {
 	hidden := make([]string, 0)
 
 	c.debugLog("Comparing %d /proc/modules entries against %d /sys/module entries", len(procModules), len(visibleModules))
@@ -179,7 +179,7 @@ func (c *ModulesCheck) findHiddenModules(procModules, visibleModules map[string]
 }
 
 // Cleanup closes any resources (none needed in simplified version)
-func (c *ModulesCheck) Cleanup() error {
+func (c *HiddenKernelModuleCheck) Cleanup() error {
 	c.debugLog("Cleanup: No resources to clean up for modules check")
 	return nil
 }

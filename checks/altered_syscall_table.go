@@ -18,9 +18,9 @@ import (
 	"github.com/cilium/ebpf/ringbuf"
 )
 
-// SyscallCheck verifies the integrity of the sys_call_table
+// AlteredSyscallTableCheck verifies the integrity of the sys_call_table
 // by comparing kernel memory with /proc/kallsyms values
-type SyscallCheck struct {
+type AlteredSyscallTableCheck struct {
 	objs   *bpfObjects
 	link   link.Link
 	reader *ringbuf.Reader
@@ -28,7 +28,7 @@ type SyscallCheck struct {
 }
 
 // debugLog prints a message only if debug mode is enabled
-func (c *SyscallCheck) debugLog(format string, args ...interface{}) {
+func (c *AlteredSyscallTableCheck) debugLog(format string, args ...interface{}) {
 	if c.debug {
 		timestamp := time.Now().Format("15:04:05.000")
 		msg := fmt.Sprintf(format, args...)
@@ -43,28 +43,28 @@ type syscallEvent struct {
 	_           uint32 // padding
 }
 
-// NewSyscallCheck creates a new syscall integrity check
-func NewSyscallCheck() *SyscallCheck {
-	return &SyscallCheck{}
+// NewAlteredSyscallTableCheck creates a new syscall integrity check
+func NewAlteredSyscallTableCheck() *AlteredSyscallTableCheck {
+	return &AlteredSyscallTableCheck{}
 }
 
 // SetDebug enables or disables debug mode
-func (c *SyscallCheck) SetDebug(debug bool) {
+func (c *AlteredSyscallTableCheck) SetDebug(debug bool) {
 	c.debug = debug
 }
 
 // Name returns the check name
-func (c *SyscallCheck) Name() string {
+func (c *AlteredSyscallTableCheck) Name() string {
 	return "Syscall Table Integrity"
 }
 
 // Description returns what this check does
-func (c *SyscallCheck) Description() string {
+func (c *AlteredSyscallTableCheck) Description() string {
 	return "Detects sys_call_table hooking by comparing kernel memory with expected addresses from /proc/kallsyms"
 }
 
 // Run executes the syscall integrity check
-func (c *SyscallCheck) Run() (Result, error) {
+func (c *AlteredSyscallTableCheck) Run() (Result, error) {
 	start := time.Now()
 	result := Result{
 		Status:   StatusOK,
@@ -308,7 +308,7 @@ func (c *SyscallCheck) Run() (Result, error) {
 }
 
 // Cleanup closes the eBPF resources
-func (c *SyscallCheck) Cleanup() error {
+func (c *AlteredSyscallTableCheck) Cleanup() error {
 	c.debugLog("Starting cleanup...")
 	var errs []error
 

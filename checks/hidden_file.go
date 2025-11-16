@@ -15,10 +15,10 @@ import (
 	"github.com/cilium/ebpf/ringbuf"
 )
 
-// HiddenFilesCheck detects files that can be accessed but are hidden from directory listings
+// HiddenFileCheck detects files that can be accessed but are hidden from directory listings
 // This is a common rootkit technique where getdents64 is hooked to hide files
 // We monitor execve, openat, open, and openat2 syscalls to detect hidden files
-type HiddenFilesCheck struct {
+type HiddenFileCheck struct {
 	objs            *bpfObjects
 	links           []link.Link
 	reader          *ringbuf.Reader
@@ -28,7 +28,7 @@ type HiddenFilesCheck struct {
 }
 
 // debugLog prints a message only if debug mode is enabled
-func (c *HiddenFilesCheck) debugLog(format string, args ...interface{}) {
+func (c *HiddenFileCheck) debugLog(format string, args ...interface{}) {
 	if c.debug {
 		timestamp := time.Now().Format("15:04:05.000")
 		msg := fmt.Sprintf(format, args...)
@@ -43,36 +43,36 @@ type fileAccessEvent struct {
 	Filename    [256]byte
 }
 
-// NewHiddenFilesCheck creates a new hidden file detection check
-func NewHiddenFilesCheck() *HiddenFilesCheck {
-	return &HiddenFilesCheck{
+// NewHiddenFileCheck creates a new hidden file detection check
+func NewHiddenFileCheck() *HiddenFileCheck {
+	return &HiddenFileCheck{
 		done:            make(chan struct{}),
 		monitorDuration: 5 * time.Second, // Default 5 seconds
 	}
 }
 
 // SetDebug enables or disables debug mode
-func (c *HiddenFilesCheck) SetDebug(debug bool) {
+func (c *HiddenFileCheck) SetDebug(debug bool) {
 	c.debug = debug
 }
 
 // SetMonitorDuration sets the monitoring duration for the check
-func (c *HiddenFilesCheck) SetMonitorDuration(duration time.Duration) {
+func (c *HiddenFileCheck) SetMonitorDuration(duration time.Duration) {
 	c.monitorDuration = duration
 }
 
 // Name returns the check name
-func (c *HiddenFilesCheck) Name() string {
-	return "Hidden Files in PATH"
+func (c *HiddenFileCheck) Name() string {
+	return "Hidden File Detection"
 }
 
 // Description returns what this check does
-func (c *HiddenFilesCheck) Description() string {
+func (c *HiddenFileCheck) Description() string {
 	return "Detects files that are hidden from directory listings by monitoring execve, openat, open, and openat2 syscalls on PATH directories"
 }
 
 // Run executes the hidden file detection check
-func (c *HiddenFilesCheck) Run() (Result, error) {
+func (c *HiddenFileCheck) Run() (Result, error) {
 	start := time.Now()
 	result := Result{
 		Status:   StatusOK,
@@ -357,7 +357,7 @@ func (c *HiddenFilesCheck) Run() (Result, error) {
 }
 
 // Cleanup closes the eBPF resources
-func (c *HiddenFilesCheck) Cleanup() error {
+func (c *HiddenFileCheck) Cleanup() error {
 	c.debugLog("Starting cleanup...")
 	var errs []error
 

@@ -81,11 +81,11 @@ func main() {
 	// Activate Zygarde Cells
 	DebugLog("Activating Zygarde Cells...")
 	allCells := []checks.Check{
-		checks.NewSyscallCheck(),
-		checks.NewModulesCheck(),
-		checks.NewHiddenFilesCheck(),
-		checks.NewHiddenProcessesCheck(),
-		checks.NewSysBpfInterferenceCheck(), // stub cell
+		checks.NewAlteredSyscallTableCheck(),
+		checks.NewHiddenKernelModuleCheck(),
+		checks.NewHiddenFileCheck(),
+		checks.NewHiddenProcessCheck(),
+		checks.NewHiddenEbpfProgramCheck(),
 	}
 	DebugLog("Activated %d Cells", len(allCells))
 
@@ -96,8 +96,8 @@ func main() {
 			DebugLog("Enabled debug mode for Cell: %s", cell.Name())
 		}
 		// Configure hidden files check duration
-		if hiddenFilesCheck, ok := cell.(*checks.HiddenFilesCheck); ok {
-			hiddenFilesCheck.SetMonitorDuration(*hiddenFilesDuration)
+		if hiddenFileCheck, ok := cell.(*checks.HiddenFileCheck); ok {
+			hiddenFileCheck.SetMonitorDuration(*hiddenFilesDuration)
 			DebugLog("Set hidden files monitoring duration to %v for Cell: %s", *hiddenFilesDuration, cell.Name())
 		}
 	}

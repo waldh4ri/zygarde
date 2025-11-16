@@ -17,27 +17,27 @@ import (
 	"github.com/cilium/ebpf/ringbuf"
 )
 
-// SysBpfInterferenceCheck detects attempts to hide BPF programs/maps/links
+// HiddenEbpfProgramCheck detects attempts to hide BPF programs/maps/links
 // by forcing premature -ENOENT returns on *GET_NEXT_ID sys_bpf commands while
 // objects remain accessible via pinned paths. It correlates syscall events
 // (captured with tracepoints) with an independent walk of bpffs pinned objects.
-type SysBpfInterferenceCheck struct {
+type HiddenEbpfProgramCheck struct {
 	objs   *bpfObjects
 	links  []link.Link
 	reader *ringbuf.Reader
 	debug  bool
 }
 
-// NewSysBpfInterferenceCheck creates a new sys_bpf interference detection check.
-func NewSysBpfInterferenceCheck() *SysBpfInterferenceCheck {
-	return &SysBpfInterferenceCheck{}
+// NewHiddenEbpfProgramCheck creates a new sys_bpf interference detection check.
+func NewHiddenEbpfProgramCheck() *HiddenEbpfProgramCheck {
+	return &HiddenEbpfProgramCheck{}
 }
 
 // SetDebug toggles debug output.
-func (c *SysBpfInterferenceCheck) SetDebug(d bool) { c.debug = d }
+func (c *HiddenEbpfProgramCheck) SetDebug(d bool) { c.debug = d }
 
 // debugLog prints only when debug enabled.
-func (c *SysBpfInterferenceCheck) debugLog(format string, args ...any) {
+func (c *HiddenEbpfProgramCheck) debugLog(format string, args ...any) {
 	if c.debug {
 		timestamp := time.Now().Format("15:04:05.000")
 		log.Printf("[HIDDEN-EBPF %s] "+format, append([]any{timestamp}, args...)...)
@@ -45,10 +45,10 @@ func (c *SysBpfInterferenceCheck) debugLog(format string, args ...any) {
 }
 
 // Name returns the Cell name.
-func (c *SysBpfInterferenceCheck) Name() string { return "sys_bpf Interference" }
+func (c *HiddenEbpfProgramCheck) Name() string { return "Hidden eBPF Program Detection" }
 
 // Description explains the purpose of the Cell.
-func (c *SysBpfInterferenceCheck) Description() string {
+func (c *HiddenEbpfProgramCheck) Description() string {
 	return "Detects hidden BPF objects by correlating sys_bpf NEXT_ID enumeration with pinned program IDs"
 }
 
@@ -69,7 +69,7 @@ type bpfProgKernelInfo struct {
 }
 
 // Run performs detection of enumeration interference.
-func (c *SysBpfInterferenceCheck) Run() (Result, error) {
+func (c *HiddenEbpfProgramCheck) Run() (Result, error) {
 	start := time.Now()
 	res := Result{Status: StatusOK, Findings: []Finding{}}
 
@@ -420,7 +420,7 @@ func (c *SysBpfInterferenceCheck) Run() (Result, error) {
 
 // getKernelPrograms reads all BPF programs from the kernel using a BPF iterator.
 // This provides the ground truth that cannot be hidden by syscall manipulation.
-func (c *SysBpfInterferenceCheck) getKernelPrograms() (map[uint32]bpfProgKernelInfo, error) {
+func (c *HiddenEbpfProgramCheck) getKernelPrograms() (map[uint32]bpfProgKernelInfo, error) {
 	// Create iterator link
 	iter, err := link.AttachIter(link.IterOptions{
 		Program: c.objs.DumpBpfProg,
@@ -470,7 +470,7 @@ func (c *SysBpfInterferenceCheck) getKernelPrograms() (map[uint32]bpfProgKernelI
 }
 
 // Cleanup releases all allocated resources (ringbuffer reader, tracepoint links, BPF objects).
-func (c *SysBpfInterferenceCheck) Cleanup() error {
+func (c *HiddenEbpfProgramCheck) Cleanup() error {
 	if c.reader != nil {
 		c.reader.Close()
 	}

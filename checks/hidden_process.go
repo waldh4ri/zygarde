@@ -14,10 +14,10 @@ import (
 	"github.com/cilium/ebpf/link"
 )
 
-// HiddenProcessesCheck detects hidden processes by comparing
+// HiddenProcessCheck detects hidden processes by comparing
 // kernel-level process enumeration (via BPF iterator) with
 // userspace process listing (via /proc)
-type HiddenProcessesCheck struct {
+type HiddenProcessCheck struct {
 	objs  *bpfObjects
 	iter  link.Link
 	debug bool
@@ -41,18 +41,18 @@ type ProcessInfo struct {
 	Comm  string
 }
 
-// NewHiddenProcessesCheck creates a new hidden process detection check
-func NewHiddenProcessesCheck() *HiddenProcessesCheck {
-	return &HiddenProcessesCheck{}
+// NewHiddenProcessCheck creates a new hidden process detection check
+func NewHiddenProcessCheck() *HiddenProcessCheck {
+	return &HiddenProcessCheck{}
 }
 
 // SetDebug enables or disables debug mode
-func (c *HiddenProcessesCheck) SetDebug(debug bool) {
+func (c *HiddenProcessCheck) SetDebug(debug bool) {
 	c.debug = debug
 }
 
 // debugLog prints a message only if debug mode is enabled
-func (c *HiddenProcessesCheck) debugLog(format string, args ...interface{}) {
+func (c *HiddenProcessCheck) debugLog(format string, args ...interface{}) {
 	if c.debug {
 		timestamp := time.Now().Format("15:04:05.000")
 		msg := fmt.Sprintf(format, args...)
@@ -61,17 +61,17 @@ func (c *HiddenProcessesCheck) debugLog(format string, args ...interface{}) {
 }
 
 // Name returns the check name
-func (c *HiddenProcessesCheck) Name() string {
+func (c *HiddenProcessCheck) Name() string {
 	return "Hidden Process Detection"
 }
 
 // Description returns what this check does
-func (c *HiddenProcessesCheck) Description() string {
+func (c *HiddenProcessCheck) Description() string {
 	return "Detects hidden processes/threads by comparing kernel task list (BPF iterator) with userspace /proc enumeration"
 }
 
 // Run executes the hidden process detection check
-func (c *HiddenProcessesCheck) Run() (Result, error) {
+func (c *HiddenProcessCheck) Run() (Result, error) {
 	start := time.Now()
 	result := Result{
 		Status:   StatusOK,
@@ -245,7 +245,7 @@ func (c *HiddenProcessesCheck) Run() (Result, error) {
 }
 
 // getProcPids returns a map of PIDs found in /proc
-func (c *HiddenProcessesCheck) getProcPids() (map[uint32]bool, error) {
+func (c *HiddenProcessCheck) getProcPids() (map[uint32]bool, error) {
 	pids := make(map[uint32]bool)
 
 	entries, err := os.ReadDir("/proc")
@@ -273,7 +273,7 @@ func (c *HiddenProcessesCheck) getProcPids() (map[uint32]bool, error) {
 }
 
 // Cleanup releases resources
-func (c *HiddenProcessesCheck) Cleanup() error {
+func (c *HiddenProcessCheck) Cleanup() error {
 	c.debugLog("Cleaning up hidden process check resources...")
 
 	var errs []error
