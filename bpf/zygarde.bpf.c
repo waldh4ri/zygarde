@@ -28,7 +28,8 @@ struct cfg_paths {
 const struct cfg_paths zygarde_cfg SEC(".rodata") = {
     .use_custom_paths = false,
     .prefix_count = 0,
-};// ============================================================================
+};
+// ============================================================================
 // Feature 1: System Call Table Integrity Check
 // ============================================================================
 
@@ -391,5 +392,97 @@ int dump_task(struct bpf_iter__task *ctx)
 		return 1;
 	}
 	
+	return 0;
+}
+
+// ============================================================================
+// Feature 5: sys_bpf Enumeration Interference Detection
+// ============================================================================
+// Detect attempts to prematurely terminate BPF object enumeration by forcing
+// -ENOENT on NEXT_ID commands while objects still exist (e.g., hidden programs).
+
+// Commands of interest (mirror linux/bpf.h) relevant to enumeration hiding
+#define CMD_PROG_GET_NEXT_ID 11
+#define CMD_MAP_GET_NEXT_ID 12
+#define CMD_BTF_GET_NEXT_ID 23
+#define CMD_LINK_GET_NEXT_ID 27
+
+struct bpf_enter_ctx {
+	__u32 cmd;
+	__u32 start_id;
+	__u64 attr_ptr;
+};
+
+struct bpf_enum_event {
+	__u32 pid;
+	__u32 cmd;
+	__u32 start_id;
+	__s32 ret;
+	__u32 next_id;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 1024);
+	__type(key, __u32);
+	__type(value, struct bpf_enter_ctx);
+} bpf_enum_ctx SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_RINGBUF);
+	__uint(max_entries, 128 * 1024);
+} bpf_enum_events SEC(".maps");
+
+static __always_inline int is_enum_cmd(__u32 cmd) {
+	if (cmd == CMD_PROG_GET_NEXT_ID || cmd == CMD_MAP_GET_NEXT_ID ||
+		cmd == CMD_BTF_GET_NEXT_ID || cmd == CMD_LINK_GET_NEXT_ID) return 1;
+	return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_bpf")
+int trace_sys_enter_bpf(struct trace_event_raw_sys_enter *ctx)
+{
+	__u32 pid = bpf_get_current_pid_tgid() >> 32;
+	__u64 attr_ptr = ctx->args[1];
+	__u32 cmd = (__u32)ctx->args[0];
+	if (!is_enum_cmd(cmd))
+		return 0;
+
+	struct bpf_enter_ctx enter = {};
+	enter.cmd = cmd;
+	enter.attr_ptr = attr_ptr;
+	__u32 start_id = 0;
+	bpf_probe_read_user(&start_id, sizeof(start_id), (void *)attr_ptr);
+	enter.start_id = start_id;
+	bpf_map_update_elem(&bpf_enum_ctx, &pid, &enter, BPF_ANY);
+	return 0;
+}
+
+SEC("tracepoint/syscalls/sys_exit_bpf")
+int trace_sys_exit_bpf(struct trace_event_raw_sys_exit *ctx)
+{
+	__u32 pid = bpf_get_current_pid_tgid() >> 32;
+	struct bpf_enter_ctx *enter = bpf_map_lookup_elem(&bpf_enum_ctx, &pid);
+	if (!enter)
+		return 0;
+	__s32 ret = (__s32)ctx->ret;
+
+	struct bpf_enum_event *e = bpf_ringbuf_reserve(&bpf_enum_events, sizeof(*e), 0);
+	if (!e) {
+		bpf_map_delete_elem(&bpf_enum_ctx, &pid);
+		return 0;
+	}
+	e->pid = pid;
+	e->cmd = enter->cmd;
+	e->start_id = enter->start_id;
+	e->ret = ret;
+	e->next_id = 0;
+	if (ret == 0) {
+		__u32 next_id = 0;
+		bpf_probe_read_user(&next_id, sizeof(next_id), (void *)enter->attr_ptr);
+		e->next_id = next_id;
+	}
+	bpf_ringbuf_submit(e, 0);
+	bpf_map_delete_elem(&bpf_enum_ctx, &pid);
 	return 0;
 }
