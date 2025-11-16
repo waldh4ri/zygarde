@@ -127,6 +127,22 @@ struct {
 	__uint(max_entries, 256 * 1024);
 } execve_events SEC(".maps");
 
+// Manual string prefix comparison for kernel compatibility (pre-5.17)
+// Returns 1 if filename starts with prefix, 0 otherwise
+static __always_inline int str_has_prefix(const char *filename, const char *prefix, __u16 prefix_len)
+{
+	#pragma unroll
+	for (__u16 i = 0; i < 256; i++) {
+		if (i >= prefix_len)
+			return 1;  // Match: we've compared all prefix chars successfully
+		if (filename[i] != prefix[i])
+			return 0;  // Mismatch
+		if (filename[i] == '\0')
+			return 0;  // filename ended before prefix
+	}
+	return 0;
+}
+
 // Helper function to check if a path is in monitored directories
 static __always_inline int should_monitor_path(const char *filename)
 {
@@ -143,8 +159,8 @@ static __always_inline int should_monitor_path(const char *filename)
 				continue;
 			// Cast to remove volatile qualifier
 			const char *prefix_ptr = (const char *)&zygarde_cfg.prefixes[i][0];
-			// bpf_strncmp returns 0 if strings match up to n characters
-			if (bpf_strncmp(filename, plen, prefix_ptr) == 0)
+			// Use manual prefix comparison for kernel compatibility
+			if (str_has_prefix(filename, prefix_ptr, plen))
 				return 1;
 		}
 		return 0;
@@ -152,14 +168,14 @@ static __always_inline int should_monitor_path(const char *filename)
 
 	// Default set of common PATH directories
 	if (filename[0] == '/') {
-		// bpf_strncmp(s1, s1_sz, s2) compares first s1_sz chars of s1 with s2
-		if (bpf_strncmp(filename, 5, "/bin/") == 0 ||
-			bpf_strncmp(filename, 6, "/sbin/") == 0 ||
-			bpf_strncmp(filename, 9, "/usr/bin/") == 0 ||
-			bpf_strncmp(filename, 10, "/usr/sbin/") == 0 ||
-			bpf_strncmp(filename, 15, "/usr/local/bin/") == 0 ||
-			bpf_strncmp(filename, 16, "/usr/local/sbin/") == 0 ||
-			bpf_strncmp(filename, 5, "/opt/") == 0) {
+		// Manual prefix matching for kernel compatibility (pre-5.17)
+		if (str_has_prefix(filename, "/bin/", 5) ||
+			str_has_prefix(filename, "/sbin/", 6) ||
+			str_has_prefix(filename, "/usr/bin/", 9) ||
+			str_has_prefix(filename, "/usr/sbin/", 10) ||
+			str_has_prefix(filename, "/usr/local/bin/", 15) ||
+			str_has_prefix(filename, "/usr/local/sbin/", 16) ||
+			str_has_prefix(filename, "/opt/", 5)) {
 			return 1;
 		}
 	}
