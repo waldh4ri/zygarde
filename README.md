@@ -45,7 +45,7 @@ Zygarde has been tested on the following Linux distributions and kernel versions
 
 ### The Cells
 
-Zygarde implements four specialized Cells (checks) for rootkit detection:
+Zygarde implements five specialized Cells (checks) for rootkit detection:
 
 #### **Cell 1: Syscall Integrity Cell**
 Monitors the system call table for unauthorized modifications.
@@ -74,6 +74,13 @@ Detects files hidden from directory listings.
 - Monitors file access syscalls (`execve`, `openat`, `open`, `openat2`) via tracepoints
 - Verifies file visibility from user-space directory listings
 - **Rootkit Technique Detected**: `getdents64` hooking
+
+#### **Cell 5: Hidden eBPF Programs Cell**
+Detects attempts to hide eBPF programs from enumeration.
+- Monitors `sys_bpf` syscalls for enumeration interference via tracepoints
+- Correlates `BPF_PROG_GET_NEXT_ID` results with pinned programs in `/sys/fs/bpf`
+- Identifies BPF programs that are pinned but not returned during enumeration
+- **Rootkit Technique Detected**: `sys_bpf` hooking, premature -ENOENT returns on GET_NEXT_ID commands
 
 ## Prerequisites
 
@@ -241,30 +248,34 @@ The duration accepts any valid Go duration format (e.g., `10s`, `1m`, `1m30s`, `
  Guardian of the Kernel - eBPF Rootkit Detection
  Version 0.0.1 - 10% Form
 
-Deploying 4 Zygarde Cells for system analysis...
+Deploying 5 Zygarde Cells for system analysis...
 
-[Cell 1/4] Executing: Syscall Table Integrity
+[Cell 1/5] Executing: Syscall Table Integrity
             Detects sys_call_table hooking by comparing kernel memory with expected addresses
             [+] sys_call_table entry for __x64_sys_getdents64 is intact (0xffffffff81234567) (0.12s)
 
-[Cell 2/4] Executing: Hidden Kernel Modules
+[Cell 2/5] Executing: Hidden Kernel Modules
             Detects kernel modules hidden from lsmod by comparing kernel module list with /sys/module
             [+] All 145 kernel modules are visible (0.08s)
 
-[Cell 3/4] Executing: Hidden Process Detection
+[Cell 3/5] Executing: Hidden Process Detection
             Detects hidden processes/threads by comparing kernel task list (BPF iterator) with userspace /proc enumeration
             [+] No hidden processes detected (428 kernel tasks, 428 /proc entries) (0.15s)
 
-[Cell 4/4] Executing: Hidden Files in PATH
+[Cell 4/5] Executing: Hidden Files in PATH
             Detects files that are hidden from directory listings by monitoring execve, openat, open, and openat2 syscalls on PATH directories
             [*] Monitoring file access syscalls for 20s...
             [+] No hidden files detected (monitored 87 events: map[execve:23 openat:58 open:6]) (20.11s)
 
+[Cell 5/5] Executing: sys_bpf Interference
+            Detects hidden BPF objects by correlating sys_bpf NEXT_ID enumeration with pinned program IDs
+            [+] Enumerated 56 BPF program(s); no pinned hidden programs (ENOENT events=1) (0.28s)
+
 ======================================================================
 ZYGARDE CORE ANALYSIS - SUMMARY REPORT
 ======================================================================
-Total Cells Deployed: 4
-  [+] OK:         3
+Total Cells Deployed: 5
+  [+] OK:         5
   [*] SUSPICIOUS: 0
   [-] ERROR:      0
 
@@ -293,7 +304,8 @@ zygarde/
 │   ├── syscall.go          # Syscall Integrity Cell
 │   ├── modules.go          # Module Visibility Cell
 │   ├── hidden_processes.go # Hidden Process Detection Cell
-│   └── hidden_files.go     # File Visibility Cell
+│   ├── hidden_files.go     # File Visibility Cell
+│   └── hidden_ebpf.go      # Hidden eBPF Programs Cell
 └── bpf/
     ├── zygarde.bpf.c       # eBPF programs (C)
     └── vmlinux.h           # Kernel type definitions (generated)

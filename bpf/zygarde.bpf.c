@@ -403,8 +403,8 @@ int dump_task(struct bpf_iter__task *ctx)
 
 // Commands of interest (mirror linux/bpf.h) relevant to enumeration hiding
 #define CMD_PROG_GET_NEXT_ID 11
-#define CMD_MAP_GET_NEXT_ID 12
-#define CMD_BTF_GET_NEXT_ID 23
+#define CMD_MAP_GET_NEXT_ID  12
+#define CMD_BTF_GET_NEXT_ID  23
 #define CMD_LINK_GET_NEXT_ID 27
 
 struct bpf_enter_ctx {
