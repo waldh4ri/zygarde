@@ -67,8 +67,9 @@ func (c *AlteredSyscallTableCheck) Description() string {
 func (c *AlteredSyscallTableCheck) Run() (Result, error) {
 	start := time.Now()
 	result := Result{
-		Status:   StatusOK,
-		Findings: make([]Finding, 0),
+		Cell:       "altered_syscall_table",
+		Status:     StatusOK,
+		Suspicious: make([]Finding, 0),
 	}
 
 	c.debugLog("Starting syscall table integrity check")
@@ -79,8 +80,8 @@ func (c *AlteredSyscallTableCheck) Run() (Result, error) {
 	if err != nil {
 		c.debugLog("ERROR: Failed to load eBPF spec: %v", err)
 		result.Status = StatusError
-		result.Error = fmt.Errorf("failed to load eBPF spec: %w", err)
-		result.Duration = time.Since(start)
+		result.SetError(fmt.Errorf("failed to load eBPF spec: %w", err))
+		result.SetDuration(time.Since(start))
 		return result, err
 	}
 
@@ -89,8 +90,8 @@ func (c *AlteredSyscallTableCheck) Run() (Result, error) {
 	if err := spec.LoadAndAssign(objs, nil); err != nil {
 		c.debugLog("ERROR: Failed to load eBPF objects: %v", err)
 		result.Status = StatusError
-		result.Error = fmt.Errorf("failed to load eBPF objects: %w", err)
-		result.Duration = time.Since(start)
+		result.SetError(fmt.Errorf("failed to load eBPF objects: %w", err))
+		result.SetDuration(time.Since(start))
 		return result, err
 	}
 	c.objs = objs
@@ -106,8 +107,8 @@ func (c *AlteredSyscallTableCheck) Run() (Result, error) {
 	if err != nil {
 		c.debugLog("ERROR: Failed to find sys_call_table: %v", err)
 		result.Status = StatusError
-		result.Error = fmt.Errorf("failed to find sys_call_table: %w", err)
-		result.Duration = time.Since(start)
+		result.SetError(fmt.Errorf("failed to find sys_call_table: %w", err))
+		result.SetDuration(time.Since(start))
 		return result, err
 	}
 	c.debugLog("Found sys_call_table at address: 0x%x", sysCallTableAddr)
@@ -154,8 +155,8 @@ func (c *AlteredSyscallTableCheck) Run() (Result, error) {
 	if err != nil {
 		c.debugLog("ERROR: Failed to open ring buffer: %v", err)
 		result.Status = StatusError
-		result.Error = fmt.Errorf("failed to open ring buffer: %w", err)
-		result.Duration = time.Since(start)
+		result.SetError(fmt.Errorf("failed to open ring buffer: %w", err))
+		result.SetDuration(time.Since(start))
 		return result, err
 	}
 	c.reader = rd
@@ -173,8 +174,8 @@ func (c *AlteredSyscallTableCheck) Run() (Result, error) {
 		if err != nil {
 			c.debugLog("ERROR: Failed to attach kprobe: %v", err)
 			result.Status = StatusError
-			result.Error = fmt.Errorf("failed to attach kprobe: %w", err)
-			result.Duration = time.Since(start)
+			result.SetError(fmt.Errorf("failed to attach kprobe: %w", err))
+			result.SetDuration(time.Since(start))
 			return result, err
 		}
 	}
@@ -213,16 +214,16 @@ func (c *AlteredSyscallTableCheck) Run() (Result, error) {
 		if err := objs.SyscallConfig.Put(&key0, &sysCallTableAddr); err != nil {
 			c.debugLog("ERROR: Failed to configure sys_call_table address: %v", err)
 			result.Status = StatusError
-			result.Error = fmt.Errorf("failed to configure sys_call_table address: %w", err)
-			result.Duration = time.Since(start)
+			result.SetError(fmt.Errorf("failed to configure sys_call_table address: %w", err))
+			result.SetDuration(time.Since(start))
 			return result, err
 		}
 		c.debugLog("Writing syscall number (%d) to BPF map at key 1", syscallNum)
 		if err := objs.SyscallConfig.Put(&key1, &syscallNum); err != nil {
 			c.debugLog("ERROR: Failed to configure syscall number: %v", err)
 			result.Status = StatusError
-			result.Error = fmt.Errorf("failed to configure syscall number: %w", err)
-			result.Duration = time.Since(start)
+			result.SetError(fmt.Errorf("failed to configure syscall number: %w", err))
+			result.SetDuration(time.Since(start))
 			return result, err
 		}
 		c.debugLog("SUCCESS: BPF maps configured with kernel addresses")
@@ -245,14 +246,14 @@ func (c *AlteredSyscallTableCheck) Run() (Result, error) {
 			if errors.Is(err, ringbuf.ErrClosed) {
 				c.debugLog("ERROR: Ring buffer closed unexpectedly")
 				result.Status = StatusError
-				result.Error = fmt.Errorf("ring buffer closed unexpectedly")
-				result.Duration = time.Since(start)
+				result.SetError(fmt.Errorf("ring buffer closed unexpectedly"))
+				result.SetDuration(time.Since(start))
 				return result, err
 			}
 			c.debugLog("ERROR: Failed to read from ring buffer: %v", err)
 			result.Status = StatusError
-			result.Error = fmt.Errorf("failed to read from ring buffer: %w", err)
-			result.Duration = time.Since(start)
+			result.SetError(fmt.Errorf("failed to read from ring buffer: %w", err))
+			result.SetDuration(time.Since(start))
 			return result, err
 		}
 		c.debugLog("SUCCESS: Received event from kernel (size: %d bytes)", len(record.RawSample))
@@ -264,8 +265,8 @@ func (c *AlteredSyscallTableCheck) Run() (Result, error) {
 		if err := binary.Read(bytes.NewReader(record.RawSample), binary.LittleEndian, &event); err != nil {
 			c.debugLog("ERROR: Failed to parse event: %v", err)
 			result.Status = StatusError
-			result.Error = fmt.Errorf("failed to parse event: %w", err)
-			result.Duration = time.Since(start)
+			result.SetError(fmt.Errorf("failed to parse event: %w", err))
+			result.SetDuration(time.Since(start))
 			return result, err
 		}
 		c.debugLog("Parsed event: syscall_num=%d, syscall_addr=0x%x", event.SyscallNum, event.SyscallAddr)
@@ -278,7 +279,7 @@ func (c *AlteredSyscallTableCheck) Run() (Result, error) {
 		if event.SyscallAddr != expectedAddr {
 			c.debugLog("ALERT: Address mismatch detected! Difference: 0x%x", int64(event.SyscallAddr)-int64(expectedAddr))
 			result.Status = StatusSuspicious
-			result.Findings = append(result.Findings, Finding{
+			result.Suspicious = append(result.Suspicious, Finding{
 				Description: fmt.Sprintf("Syscall table entry for %s (syscall %d) has been modified", syscallName, syscallNum),
 				Details: map[string]string{
 					"syscall":          syscallName,
@@ -298,12 +299,12 @@ func (c *AlteredSyscallTableCheck) Run() (Result, error) {
 
 	// Generate final result message
 	if result.Status == StatusSuspicious {
-		result.Message = fmt.Sprintf("ALERT: %d syscall(s) hooked in sys_call_table!", len(result.Findings))
+		result.Message = fmt.Sprintf("ALERT: %d syscall(s) hooked in sys_call_table!", len(result.Suspicious))
 	} else {
 		result.Message = fmt.Sprintf("All %d checked syscalls are intact", checkedCount)
 	}
 
-	result.Duration = time.Since(start)
+	result.SetDuration(time.Since(start))
 	return result, nil
 }
 

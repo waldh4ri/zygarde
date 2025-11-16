@@ -74,8 +74,9 @@ func (c *HiddenProcessCheck) Description() string {
 func (c *HiddenProcessCheck) Run() (Result, error) {
 	start := time.Now()
 	result := Result{
-		Status:   StatusOK,
-		Findings: make([]Finding, 0),
+		Cell:       "hidden_process",
+		Status:     StatusOK,
+		Suspicious: make([]Finding, 0),
 	}
 
 	c.debugLog("Starting hidden process detection")
@@ -86,8 +87,8 @@ func (c *HiddenProcessCheck) Run() (Result, error) {
 	if err != nil {
 		c.debugLog("ERROR: Failed to load eBPF spec: %v", err)
 		result.Status = StatusError
-		result.Error = fmt.Errorf("failed to load eBPF spec: %w", err)
-		result.Duration = time.Since(start)
+		result.SetError(fmt.Errorf("failed to load eBPF spec: %w", err))
+		result.SetDuration(time.Since(start))
 		return result, err
 	}
 
@@ -96,8 +97,8 @@ func (c *HiddenProcessCheck) Run() (Result, error) {
 	if err := spec.LoadAndAssign(objs, nil); err != nil {
 		c.debugLog("ERROR: Failed to load eBPF objects: %v", err)
 		result.Status = StatusError
-		result.Error = fmt.Errorf("failed to load eBPF objects: %w", err)
-		result.Duration = time.Since(start)
+		result.SetError(fmt.Errorf("failed to load eBPF objects: %w", err))
+		result.SetDuration(time.Since(start))
 		return result, err
 	}
 	c.objs = objs
@@ -112,8 +113,8 @@ func (c *HiddenProcessCheck) Run() (Result, error) {
 	if err != nil {
 		c.debugLog("ERROR: Failed to attach iterator: %v", err)
 		result.Status = StatusError
-		result.Error = fmt.Errorf("failed to attach BPF iterator: %w", err)
-		result.Duration = time.Since(start)
+		result.SetError(fmt.Errorf("failed to attach BPF iterator: %w", err))
+		result.SetDuration(time.Since(start))
 		return result, err
 	}
 	c.iter = iter
@@ -125,8 +126,8 @@ func (c *HiddenProcessCheck) Run() (Result, error) {
 	if err != nil {
 		c.debugLog("ERROR: Failed to open BPF iterator: %v", err)
 		result.Status = StatusError
-		result.Error = fmt.Errorf("failed to open BPF iterator: %w", err)
-		result.Duration = time.Since(start)
+		result.SetError(fmt.Errorf("failed to open BPF iterator: %w", err))
+		result.SetDuration(time.Since(start))
 		return result, err
 	}
 	defer iterFile.Close()
@@ -184,8 +185,8 @@ func (c *HiddenProcessCheck) Run() (Result, error) {
 	if err != nil {
 		c.debugLog("ERROR: Failed to enumerate /proc: %v", err)
 		result.Status = StatusError
-		result.Error = fmt.Errorf("failed to enumerate /proc: %w", err)
-		result.Duration = time.Since(start)
+		result.SetError(fmt.Errorf("failed to enumerate /proc: %w", err))
+		result.SetDuration(time.Since(start))
 		return result, err
 	}
 	c.debugLog("Found %d processes in /proc", len(procPids))
@@ -202,7 +203,7 @@ func (c *HiddenProcessCheck) Run() (Result, error) {
 		if !procPids[pid] {
 			hiddenCount++
 			c.debugLog("SUSPICIOUS: PID %d (%s) found in kernel but NOT in /proc", pid, proc.Comm)
-			result.Findings = append(result.Findings, Finding{
+			result.Suspicious = append(result.Suspicious, Finding{
 				Description: fmt.Sprintf("Process hidden from userspace: PID %d (%s)", pid, proc.Comm),
 				Details: map[string]string{
 					"pid":         fmt.Sprintf("%d", pid),
@@ -240,7 +241,7 @@ func (c *HiddenProcessCheck) Run() (Result, error) {
 		c.debugLog("RESULT: OK - No hidden processes detected")
 	}
 
-	result.Duration = time.Since(start)
+	result.SetDuration(time.Since(start))
 	return result, nil
 }
 

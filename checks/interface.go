@@ -1,17 +1,20 @@
 package checks
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Status represents the result status of a forensic check
 type Status int
 
 const (
-	// StatusOK indicates the check passed without issues
-	StatusOK Status = iota
-	// StatusSuspicious indicates potential rootkit activity detected
-	StatusSuspicious
-	// StatusError indicates the check encountered an error
-	StatusError
+	// StatusOK indicates the check passed without issues (0)
+	StatusOK Status = 0
+	// StatusError indicates the check encountered an error (1)
+	StatusError Status = 1
+	// StatusSuspicious indicates potential rootkit activity detected (2)
+	StatusSuspicious Status = 2
 )
 
 // String returns the string representation of the status
@@ -19,35 +22,79 @@ func (s Status) String() string {
 	switch s {
 	case StatusOK:
 		return "OK"
-	case StatusSuspicious:
-		return "SUSPICIOUS"
 	case StatusError:
 		return "ERROR"
+	case StatusSuspicious:
+		return "SUSPICIOUS"
 	default:
 		return "UNKNOWN"
 	}
 }
 
+// MarshalJSON implements json.Marshaler for Status
+func (s Status) MarshalJSON() ([]byte, error) {
+	return json.Marshal(int(s))
+}
+
 // Finding represents a single suspicious discovery
 type Finding struct {
 	// Description of what was found
-	Description string
+	Description string `json:"description"`
 	// Details provides additional context
-	Details map[string]string
+	Details map[string]string `json:"details"`
 }
 
 // Result represents the outcome of running a check
 type Result struct {
-	// Status is the overall status of the check
-	Status Status
+	// Cell is the name of the check that produced this result
+	Cell string `json:"cell"`
+	// Status is the overall status of the check (0=OK, 1=Error, 2=Suspicious)
+	Status Status `json:"status"`
 	// Message provides a summary of the check result
-	Message string
-	// Findings contains detailed suspicious items found
-	Findings []Finding
-	// Duration is how long the check took to run
-	Duration time.Duration
-	// Error contains any error that occurred
-	Error error
+	Message string `json:"message,omitempty"`
+	// Suspicious contains detailed suspicious items found
+	Suspicious []Finding `json:"suspicious,omitempty"`
+	// Duration is how long the check took to run (in seconds)
+	DurationSeconds float64 `json:"duration_seconds"`
+	// ErrorMessage contains the error message if an error occurred
+	ErrorMessage string `json:"error_message,omitempty"`
+
+	// Internal fields (not serialized)
+	duration time.Duration `json:"-"`
+	err      error         `json:"-"`
+}
+
+// SetDuration sets the duration and calculates DurationSeconds
+func (r *Result) SetDuration(d time.Duration) {
+	r.duration = d
+	r.DurationSeconds = d.Seconds()
+}
+
+// GetDuration returns the internal duration
+func (r *Result) GetDuration() time.Duration {
+	return r.duration
+}
+
+// SetError sets the error and ErrorMessage
+func (r *Result) SetError(err error) {
+	r.err = err
+	if err != nil {
+		r.ErrorMessage = err.Error()
+	}
+}
+
+// GetError returns the internal error
+func (r *Result) GetError() error {
+	return r.err
+}
+
+// ToJSON converts the Result to a JSON string
+func (r *Result) ToJSON() (string, error) {
+	data, err := json.MarshalIndent(r, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
 }
 
 // Check defines the interface that all Zygarde Cells must implement.

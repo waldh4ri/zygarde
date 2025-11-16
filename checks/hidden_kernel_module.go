@@ -51,8 +51,9 @@ func (c *HiddenKernelModuleCheck) Description() string {
 func (c *HiddenKernelModuleCheck) Run() (Result, error) {
 	start := time.Now()
 	result := Result{
-		Status:   StatusOK,
-		Findings: make([]Finding, 0),
+		Cell:       "hidden_kernel_module",
+		Status:     StatusOK,
+		Suspicious: make([]Finding, 0),
 	}
 
 	c.debugLog("Starting hidden kernel modules check")
@@ -63,8 +64,8 @@ func (c *HiddenKernelModuleCheck) Run() (Result, error) {
 	if err != nil {
 		c.debugLog("ERROR: Failed to read /proc/modules: %v", err)
 		result.Status = StatusError
-		result.Error = fmt.Errorf("failed to read /proc/modules: %w", err)
-		result.Duration = time.Since(start)
+		result.SetError(fmt.Errorf("failed to read /proc/modules: %w", err))
+		result.SetDuration(time.Since(start))
 		return result, err
 	}
 	c.debugLog("Found %d modules in /proc/modules", len(procModules))
@@ -87,8 +88,8 @@ func (c *HiddenKernelModuleCheck) Run() (Result, error) {
 	if err != nil {
 		c.debugLog("ERROR: Failed to read visible modules: %v", err)
 		result.Status = StatusError
-		result.Error = fmt.Errorf("failed to read visible modules: %w", err)
-		result.Duration = time.Since(start)
+		result.SetError(fmt.Errorf("failed to read visible modules: %w", err))
+		result.SetDuration(time.Since(start))
 		return result, err
 	}
 	c.debugLog("Found %d modules in /sys/module", len(visibleModules))
@@ -117,7 +118,7 @@ func (c *HiddenKernelModuleCheck) Run() (Result, error) {
 		}
 		result.Status = StatusSuspicious
 		for _, modName := range hiddenModules {
-			result.Findings = append(result.Findings, Finding{
+			result.Suspicious = append(result.Suspicious, Finding{
 				Description: fmt.Sprintf("Module '%s' is in /proc/modules but hidden from /sys/module", modName),
 				Details: map[string]string{
 					"module_name":    modName,
@@ -131,7 +132,7 @@ func (c *HiddenKernelModuleCheck) Run() (Result, error) {
 		result.Message = fmt.Sprintf("All %d kernel modules are visible", len(procModules))
 	}
 
-	result.Duration = time.Since(start)
+	result.SetDuration(time.Since(start))
 	return result, nil
 }
 

@@ -75,8 +75,9 @@ func (c *HiddenFileCheck) Description() string {
 func (c *HiddenFileCheck) Run() (Result, error) {
 	start := time.Now()
 	result := Result{
-		Status:   StatusOK,
-		Findings: make([]Finding, 0),
+		Cell:       "hidden_file",
+		Status:     StatusOK,
+		Suspicious: make([]Finding, 0),
 	}
 
 	c.debugLog("Starting hidden files detection check")
@@ -87,8 +88,8 @@ func (c *HiddenFileCheck) Run() (Result, error) {
 	if err != nil {
 		c.debugLog("ERROR: Failed to load eBPF spec: %v", err)
 		result.Status = StatusError
-		result.Error = fmt.Errorf("failed to load eBPF spec: %w", err)
-		result.Duration = time.Since(start)
+		result.SetError(fmt.Errorf("failed to load eBPF spec: %w", err))
+		result.SetDuration(time.Since(start))
 		return result, err
 	}
 
@@ -147,8 +148,8 @@ func (c *HiddenFileCheck) Run() (Result, error) {
 	if err := spec.LoadAndAssign(objs, nil); err != nil {
 		c.debugLog("ERROR: Failed to load eBPF objects: %v", err)
 		result.Status = StatusError
-		result.Error = fmt.Errorf("failed to load eBPF objects: %w", err)
-		result.Duration = time.Since(start)
+		result.SetError(fmt.Errorf("failed to load eBPF objects: %w", err))
+		result.SetDuration(time.Since(start))
 		return result, err
 	}
 	c.objs = objs
@@ -182,13 +183,12 @@ func (c *HiddenFileCheck) Run() (Result, error) {
 			// openat2 might not be available on older kernels, so we don't fail
 			if sc.name == "sys_enter_openat2" {
 				c.debugLog("WARNING: Could not attach to %s (might not be available on this kernel): %v", sc.name, err)
-				fmt.Printf("  [!] Warning: Could not attach to %s (might not be available on this kernel)\n", sc.name)
 				continue
 			}
 			c.debugLog("ERROR: Failed to attach tracepoint %s: %v", sc.name, err)
 			result.Status = StatusError
-			result.Error = fmt.Errorf("failed to attach tracepoint %s: %w", sc.name, err)
-			result.Duration = time.Since(start)
+			result.SetError(fmt.Errorf("failed to attach tracepoint %s: %w", sc.name, err))
+			result.SetDuration(time.Since(start))
 			return result, err
 		}
 		c.links = append(c.links, tp)
@@ -197,7 +197,6 @@ func (c *HiddenFileCheck) Run() (Result, error) {
 	}
 
 	c.debugLog("Successfully attached to %d/%d tracepoints", attachedCount, len(syscalls))
-	fmt.Printf("  [*] Attached to %d syscall tracepoint(s)\n", attachedCount)
 
 	c.debugLog("Step 3: Opening ring buffer to receive events...")
 
@@ -206,8 +205,8 @@ func (c *HiddenFileCheck) Run() (Result, error) {
 	if err != nil {
 		c.debugLog("ERROR: Failed to open ring buffer: %v", err)
 		result.Status = StatusError
-		result.Error = fmt.Errorf("failed to open ring buffer: %w", err)
-		result.Duration = time.Since(start)
+		result.SetError(fmt.Errorf("failed to open ring buffer: %w", err))
+		result.SetDuration(time.Since(start))
 		return result, err
 	}
 	c.reader = rd
@@ -226,7 +225,6 @@ func (c *HiddenFileCheck) Run() (Result, error) {
 		pathDirsStr = pathDirsStr[:100] + "..."
 	}
 	c.debugLog("Monitoring file access in PATH directories: %s", pathDirsStr)
-	fmt.Printf("  [*] Monitoring file access syscalls for %v (in %d PATH dirs)...\n", c.monitorDuration, len(pathDirs))
 
 	// Read events from the ring buffer
 	go func() {
@@ -307,7 +305,7 @@ func (c *HiddenFileCheck) Run() (Result, error) {
 						hiddenFiles[filename] = true
 						c.debugLog("**ALERT** Hidden file detected: %s (accessible via stat but hidden from directory listing)", filename)
 						result.Status = StatusSuspicious
-						result.Findings = append(result.Findings, Finding{
+						result.Suspicious = append(result.Suspicious, Finding{
 							Description: fmt.Sprintf("File '%s' is accessible but hidden from directory listings - possible rootkit", filename),
 							Details: map[string]string{
 								"file_path":      filename,
@@ -352,7 +350,7 @@ func (c *HiddenFileCheck) Run() (Result, error) {
 			eventCount, syscallCounts)
 	}
 
-	result.Duration = time.Since(start)
+	result.SetDuration(time.Since(start))
 	return result, nil
 }
 

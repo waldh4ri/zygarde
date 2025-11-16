@@ -71,21 +71,25 @@ type bpfProgKernelInfo struct {
 // Run performs detection of enumeration interference.
 func (c *HiddenEbpfProgramCheck) Run() (Result, error) {
 	start := time.Now()
-	res := Result{Status: StatusOK, Findings: []Finding{}}
+	res := Result{
+		Cell:       "hidden_ebpf_program",
+		Status:     StatusOK,
+		Suspicious: []Finding{},
+	}
 
 	// Load BPF spec (already contains programs) and assign.
 	spec, err := loadBpf()
 	if err != nil {
 		res.Status = StatusError
-		res.Error = fmt.Errorf("failed to load BPF spec: %w", err)
-		res.Duration = time.Since(start)
+		res.SetError(fmt.Errorf("failed to load BPF spec: %w", err))
+		res.SetDuration(time.Since(start))
 		return res, err
 	}
 	objs := &bpfObjects{}
 	if err := spec.LoadAndAssign(objs, nil); err != nil {
 		res.Status = StatusError
-		res.Error = fmt.Errorf("failed to load BPF objects: %w", err)
-		res.Duration = time.Since(start)
+		res.SetError(fmt.Errorf("failed to load BPF objects: %w", err))
+		res.SetDuration(time.Since(start))
 		return res, err
 	}
 	c.objs = objs
@@ -97,8 +101,8 @@ func (c *HiddenEbpfProgramCheck) Run() (Result, error) {
 	kernelProgs, err := c.getKernelPrograms()
 	if err != nil {
 		res.Status = StatusError
-		res.Error = fmt.Errorf("failed to read kernel programs via iterator: %w", err)
-		res.Duration = time.Since(start)
+		res.SetError(fmt.Errorf("failed to read kernel programs via iterator: %w", err))
+		res.SetDuration(time.Since(start))
 		return res, err
 	}
 	if c.debug {
@@ -144,8 +148,8 @@ func (c *HiddenEbpfProgramCheck) Run() (Result, error) {
 		rd, err := ringbuf.NewReader(objs.BpfEnumEvents)
 		if err != nil {
 			res.Status = StatusError
-			res.Error = fmt.Errorf("failed to open ringbuf: %w", err)
-			res.Duration = time.Since(start)
+			res.SetError(fmt.Errorf("failed to open ringbuf: %w", err))
+			res.SetDuration(time.Since(start))
 			return res, err
 		}
 		c.reader = rd
@@ -225,12 +229,12 @@ func (c *HiddenEbpfProgramCheck) Run() (Result, error) {
 			}
 			// Unexpected error.
 			res.Status = StatusError
-			res.Error = fmt.Errorf("program enumeration failed: %w", err)
+			res.SetError(fmt.Errorf("program enumeration failed: %w", err))
 			close(done)
 			if c.reader != nil {
 				c.reader.Close()
 			}
-			res.Duration = time.Since(start)
+			res.SetDuration(time.Since(start))
 			return res, err
 		}
 
@@ -390,7 +394,7 @@ func (c *HiddenEbpfProgramCheck) Run() (Result, error) {
 				pinnedPath = "not pinned"
 			}
 
-			res.Findings = append(res.Findings, Finding{
+			res.Suspicious = append(res.Suspicious, Finding{
 				Description: fmt.Sprintf("BPF program ID %d (%s) exists in kernel but hidden from ProgramGetNextID enumeration", id, name),
 				Details: map[string]string{
 					"program_id":        fmt.Sprintf("%d", id),
@@ -414,7 +418,7 @@ func (c *HiddenEbpfProgramCheck) Run() (Result, error) {
 			len(kernelProgs), len(enumerated), len(pinnedProgIDs), enoentCount)
 	}
 
-	res.Duration = time.Since(start)
+	res.SetDuration(time.Since(start))
 	return res, nil
 }
 

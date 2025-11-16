@@ -36,3 +36,4 @@ checks/bpf_bpfel_x86.o
 bpf/bpf_co-re_explanation.txt
 docs/forensic_structs.md
 docs/linkpro_analysis.txt
+examples/jq_examples.sh
