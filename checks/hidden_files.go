@@ -109,11 +109,13 @@ func (c *HiddenFilesCheck) Run() (Result, error) {
 	// Configure monitored paths via .rodata constants
 	if len(pathPrefixes) > 0 && len(pathPrefixes) <= 8 {
 		// Build the configuration struct matching the BPF-side layout
+		// IMPORTANT: Must match struct cfg_paths in zygarde.bpf.c exactly
 		type cfgPaths struct {
-			UseCustomPaths bool
-			PrefixCount    uint32
-			PrefixLens     [8]uint16
-			Prefixes       [8][256]byte
+			UseCustomPaths bool         // 1 byte
+			_              [3]byte      // 3 bytes padding
+			PrefixCount    uint32       // 4 bytes
+			PrefixLens     [8]uint16    // 16 bytes
+			Prefixes       [8][256]byte // 2048 bytes
 		}
 
 		cfg := cfgPaths{

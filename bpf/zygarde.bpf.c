@@ -17,17 +17,22 @@ struct task_struct___old {
 };
 
 // Read-only configuration for monitored paths (populated by userspace if needed)
+// IMPORTANT: Field layout must match Go's binary representation exactly for RewriteConstants
 struct cfg_paths {
-    bool use_custom_paths;               // if true, use prefixes below; otherwise built-in defaults
-    __u32 prefix_count;                  // number of valid prefixes
-    __u16 prefix_lens[8];                // length of each prefix
-    char prefixes[8][MAX_PATH_LEN];      // up to 8 path prefixes
-};
+    bool use_custom_paths;               // 1 byte
+    __u8 _pad1[3];                       // 3 bytes padding to align prefix_count
+    __u32 prefix_count;                  // 4 bytes: number of valid prefixes
+    __u16 prefix_lens[8];                // 16 bytes: length of each prefix
+    char prefixes[8][MAX_PATH_LEN];      // 2048 bytes: up to 8 path prefixes
+} __attribute__((packed));
 
 // Placed in .rodata so verifier treats as read-only constant memory
-const struct cfg_paths zygarde_cfg SEC(".rodata") = {
+// The volatile const combination allows userspace to rewrite this via RewriteConstants
+const volatile struct cfg_paths zygarde_cfg = {
     .use_custom_paths = false,
+    ._pad1 = {0, 0, 0},
     .prefix_count = 0,
+    .prefix_lens = {0, 0, 0, 0, 0, 0, 0, 0},
 };
 // ============================================================================
 // Cell 1: System Call Table Integrity Check
@@ -134,9 +139,12 @@ static __always_inline int should_monitor_path(const char *filename)
 			if ((__u32)i >= zygarde_cfg.prefix_count)
 				break;
 			__u16 plen = zygarde_cfg.prefix_lens[i];
-			if (plen == 0)
+			if (plen == 0 || plen > 255)
 				continue;
-			if (__builtin_memcmp(filename, zygarde_cfg.prefixes[i], plen) == 0)
+			// Cast to remove volatile qualifier
+			const char *prefix_ptr = (const char *)&zygarde_cfg.prefixes[i][0];
+			// bpf_strncmp returns 0 if strings match up to n characters
+			if (bpf_strncmp(filename, plen, prefix_ptr) == 0)
 				return 1;
 		}
 		return 0;
@@ -144,13 +152,14 @@ static __always_inline int should_monitor_path(const char *filename)
 
 	// Default set of common PATH directories
 	if (filename[0] == '/') {
-		if (__builtin_memcmp(filename, "/bin/", 5) == 0 ||
-			__builtin_memcmp(filename, "/sbin/", 6) == 0 ||
-			__builtin_memcmp(filename, "/usr/bin/", 9) == 0 ||
-			__builtin_memcmp(filename, "/usr/sbin/", 10) == 0 ||
-			__builtin_memcmp(filename, "/usr/local/bin/", 15) == 0 ||
-			__builtin_memcmp(filename, "/usr/local/sbin/", 16) == 0 ||
-			__builtin_memcmp(filename, "/opt/", 5) == 0) {
+		// bpf_strncmp(s1, s1_sz, s2) compares first s1_sz chars of s1 with s2
+		if (bpf_strncmp(filename, 5, "/bin/") == 0 ||
+			bpf_strncmp(filename, 6, "/sbin/") == 0 ||
+			bpf_strncmp(filename, 9, "/usr/bin/") == 0 ||
+			bpf_strncmp(filename, 10, "/usr/sbin/") == 0 ||
+			bpf_strncmp(filename, 15, "/usr/local/bin/") == 0 ||
+			bpf_strncmp(filename, 16, "/usr/local/sbin/") == 0 ||
+			bpf_strncmp(filename, 5, "/opt/") == 0) {
 			return 1;
 		}
 	}
