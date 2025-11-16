@@ -54,7 +54,7 @@ Monitors the system call table for unauthorized modifications.
 - Uses kprobes to safely read kernel memory
 - **Rootkit Technique Detected**: Syscall table modification
 
-#### **Cell 2: Hidden Kernel Module Check** (`hidden_kernel_module`)
+#### **Cell 2: Hidden Kernel Module Check** (`hidden_kernel_module`) (WIP)
 Reveals kernel modules hidden from user-space.
 - Compares `/proc/modules` with `/sys/module` directory
 - Identifies modules visible in kernel but hidden from userspace
