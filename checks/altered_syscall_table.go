@@ -12,6 +12,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/cilium/ebpf/link"
@@ -122,6 +123,7 @@ func (c *AlteredSyscallTableCheck) Run() (Result, error) {
 	}
 
 	syscallsToCheck := []syscallInfo{
+		// File system visibility (highest priority for hiding files/rootkits)
 		{
 			name:        "__x64_sys_getdents64",
 			altName:     "sys_getdents64",
@@ -135,16 +137,104 @@ func (c *AlteredSyscallTableCheck) Run() (Result, error) {
 			description: "Directory listing (32-bit)",
 		},
 		{
+			name:        "__x64_sys_newstat",
+			altName:     "__x64_sys_stat",
+			number:      4,
+			description: "File metadata lookup",
+		},
+		{
+			name:        "__x64_sys_newlstat",
+			altName:     "__x64_sys_lstat",
+			number:      6,
+			description: "Symlink-aware file metadata",
+		},
+		{
+			name:        "__x64_sys_openat",
+			altName:     "sys_openat",
+			number:      257,
+			description: "Modern file opening",
+		},
+
+		// Network communication (hide C&C traffic and backdoors)
+		{
+			name:        "__x64_sys_recvfrom",
+			altName:     "sys_recvfrom",
+			number:      45,
+			description: "Receive network packets",
+		},
+		{
+			name:        "__x64_sys_sendto",
+			altName:     "sys_sendto",
+			number:      44,
+			description: "Send network packets",
+		},
+		{
+			name:        "__x64_sys_accept",
+			altName:     "sys_accept",
+			number:      43,
+			description: "Accept network connections",
+		},
+
+		// Process visibility and control
+		{
 			name:        "__x64_sys_kill",
 			altName:     "sys_kill",
 			number:      62,
 			description: "Process signaling",
 		},
 		{
+			name:        "__x64_sys_getpriority",
+			altName:     "sys_getpriority",
+			number:      140,
+			description: "Process priority lookup",
+		},
+		{
+			name:        "__x64_sys_prctl",
+			altName:     "sys_prctl",
+			number:      157,
+			description: "Process control operations",
+		},
+
+		// Kernel module operations (detect rootkit loading)
+		{
+			name:        "__x64_sys_init_module",
+			altName:     "sys_init_module",
+			number:      175,
+			description: "Load kernel module",
+		},
+		{
+			name:        "__x64_sys_finit_module",
+			altName:     "sys_finit_module",
+			number:      313,
+			description: "Load kernel module (modern)",
+		},
+		{
+			name:        "__x64_sys_delete_module",
+			altName:     "sys_delete_module",
+			number:      176,
+			description: "Unload kernel module",
+		},
+
+		// Anti-debugging and security
+		{
+			name:        "__x64_sys_ptrace",
+			altName:     "sys_ptrace",
+			number:      101,
+			description: "Process tracing/debugging",
+		},
+
+		// Basic I/O (foundational operations)
+		{
 			name:        "__x64_sys_read",
 			altName:     "sys_read",
 			number:      0,
 			description: "File reading",
+		},
+		{
+			name:        "__x64_sys_write",
+			altName:     "sys_write",
+			number:      1,
+			description: "File writing",
 		},
 	}
 
@@ -231,45 +321,66 @@ func (c *AlteredSyscallTableCheck) Run() (Result, error) {
 		c.debugLog("Triggering check by calling getuid()...")
 
 		// Trigger the check by calling getuid (which will trigger our kprobe)
-		uid := os.Getuid()
-		c.debugLog("Called getuid(), returned UID: %d", uid)
+		// Use syscall.Getuid() to ensure we make an actual syscall, not cached libc version
+		_ = syscall.Getuid()
+		c.debugLog("Called getuid() syscall")
 		c.debugLog("Kprobe should have executed, reading event from ring buffer...")
 
 		// Wait a bit for the event to be processed
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 
 		c.debugLog("Reading syscall table entry from ring buffer...")
 
-		// Read the event from the ring buffer
-		record, err := rd.Read()
-		if err != nil {
-			if errors.Is(err, ringbuf.ErrClosed) {
-				c.debugLog("ERROR: Ring buffer closed unexpectedly")
+		// Read events until we get one for our syscall (or timeout)
+		var event syscallEvent
+		maxRetries := 50
+		for retryCount := 0; retryCount < maxRetries; retryCount++ {
+			record, err := rd.Read()
+			if err != nil {
+				if errors.Is(err, ringbuf.ErrClosed) {
+					c.debugLog("ERROR: Ring buffer closed unexpectedly")
+					result.Status = StatusError
+					result.SetError(fmt.Errorf("ring buffer closed unexpectedly"))
+					result.SetDuration(time.Since(start))
+					return result, err
+				}
+				c.debugLog("ERROR: Failed to read from ring buffer: %v", err)
 				result.Status = StatusError
-				result.SetError(fmt.Errorf("ring buffer closed unexpectedly"))
+				result.SetError(fmt.Errorf("failed to read from ring buffer: %w", err))
 				result.SetDuration(time.Since(start))
 				return result, err
 			}
-			c.debugLog("ERROR: Failed to read from ring buffer: %v", err)
-			result.Status = StatusError
-			result.SetError(fmt.Errorf("failed to read from ring buffer: %w", err))
-			result.SetDuration(time.Since(start))
-			return result, err
-		}
-		c.debugLog("SUCCESS: Received event from kernel (size: %d bytes)", len(record.RawSample))
+			c.debugLog("SUCCESS: Received event from kernel (size: %d bytes)", len(record.RawSample))
 
-		c.debugLog("Parsing event data...")
+			c.debugLog("Parsing event data...")
 
-		// Parse the event
-		var event syscallEvent
-		if err := binary.Read(bytes.NewReader(record.RawSample), binary.LittleEndian, &event); err != nil {
-			c.debugLog("ERROR: Failed to parse event: %v", err)
-			result.Status = StatusError
-			result.SetError(fmt.Errorf("failed to parse event: %w", err))
-			result.SetDuration(time.Since(start))
-			return result, err
+			// Parse the event
+			if err := binary.Read(bytes.NewReader(record.RawSample), binary.LittleEndian, &event); err != nil {
+				c.debugLog("ERROR: Failed to parse event: %v", err)
+				result.Status = StatusError
+				result.SetError(fmt.Errorf("failed to parse event: %w", err))
+				result.SetDuration(time.Since(start))
+				return result, err
+			}
+			c.debugLog("Parsed event: syscall_num=%d, syscall_addr=0x%x", event.SyscallNum, event.SyscallAddr)
+
+			// Check if this is the event we're waiting for
+			if event.SyscallNum == uint32(syscallNum) {
+				c.debugLog("Found matching event for syscall %d", syscallNum)
+				break
+			} else {
+				c.debugLog("Event mismatch (expected %d, got %d), reading next event...", syscallNum, event.SyscallNum)
+			}
 		}
-		c.debugLog("Parsed event: syscall_num=%d, syscall_addr=0x%x", event.SyscallNum, event.SyscallAddr)
+
+		// Verify we got the event for the correct syscall
+		if event.SyscallNum != uint32(syscallNum) {
+			c.debugLog("ERROR: Never received event for syscall %d after %d retries", syscallNum, maxRetries)
+			result.Status = StatusError
+			result.SetError(fmt.Errorf("timeout waiting for event for syscall %d", syscallNum))
+			result.SetDuration(time.Since(start))
+			return result, fmt.Errorf("timeout waiting for event")
+		}
 
 		c.debugLog("Comparing addresses...")
 		c.debugLog("  Expected address (from kallsyms): 0x%x", expectedAddr)
