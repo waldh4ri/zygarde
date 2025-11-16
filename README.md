@@ -11,15 +11,13 @@
  ╚══════╝   ╚═╝    ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝ ╚══════╝
 ```
 
-**Guardian of the Kernel - Advanced Linux Rootkit Detection using eBPF CO-RE**
-
-*"When the ecosystem is threatened, the Cells gather to protect."*
+**Advanced Linux Rootkit Detection using eBPF CO-RE**
 
 </div>
 
 ## Overview
 
-Zygarde is a powerful, portable forensic analysis tool inspired by the Pokémon guardian of the ecosystem. Just as Zygarde's Cells monitor the environment from deep within, this tool uses eBPF (Extended Berkeley Packet Filter) with CO-RE (Compile Once - Run Everywhere) to detect rootkit techniques from deep within the Linux kernel.
+Zygarde is a portable forensic analysis tool inspired by the Pokémon guardian of the ecosystem. Just as Zygarde's Cells monitor the environment from deep within, this tool uses eBPF (Extended Berkeley Packet Filter) with CO-RE (Compile Once - Run Everywhere) to detect rootkit techniques from deep within the Linux kernel.
 
 The tool compiles into a single static binary with no runtime dependencies, making it ideal for incident response and security auditing on most recent Linux systems.
 
