@@ -175,7 +175,13 @@ static __always_inline int should_monitor_path(const char *filename)
 			str_has_prefix(filename, "/usr/sbin/", 10) ||
 			str_has_prefix(filename, "/usr/local/bin/", 15) ||
 			str_has_prefix(filename, "/usr/local/sbin/", 16) ||
-			str_has_prefix(filename, "/opt/", 5)) {
+			str_has_prefix(filename, "/opt/", 5) ||
+			str_has_prefix(filename, "/tmp/", 5) ||
+			str_has_prefix(filename, "/lib/", 5) ||
+			str_has_prefix(filename, "/lib64/", 7) ||
+			str_has_prefix(filename, "/usr/lib/", 9) ||
+			str_has_prefix(filename, "/usr/lib64/", 11) ||
+			str_has_prefix(filename, "/usr/local/lib/", 15)) {
 			return 1;
 		}
 	}

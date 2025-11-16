@@ -430,18 +430,25 @@ func getSyscallName(syscallType uint32) string {
 // getPathDirectories returns a list of directories from the PATH environment variable
 func getPathDirectories() []string {
 	pathEnv := os.Getenv("PATH")
+
+	// Always include common library and temp directories in addition to PATH
+	commonDirs := []string{"/tmp", "/lib", "/lib64", "/usr/lib", "/usr/lib64", "/usr/local/lib"}
+
 	if pathEnv == "" {
 		// Default PATH
-		return []string{"/bin", "/usr/bin", "/sbin", "/usr/sbin", "/usr/local/bin"}
+		defaultPath := []string{"/bin", "/usr/bin", "/sbin", "/usr/sbin", "/usr/local/bin"}
+		return append(defaultPath, commonDirs...)
 	}
 
 	dirs := strings.Split(pathEnv, ":")
-	result := make([]string, 0, len(dirs))
+	result := make([]string, 0, len(dirs)+len(commonDirs))
 	for _, dir := range dirs {
 		dir = strings.TrimSpace(dir)
 		if dir != "" {
 			result = append(result, dir)
 		}
 	}
+	// Add common directories that might not be in PATH
+	result = append(result, commonDirs...)
 	return result
 }
