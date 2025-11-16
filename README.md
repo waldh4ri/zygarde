@@ -75,12 +75,14 @@ Detects files hidden from directory listings.
 - Verifies file visibility from user-space directory listings
 - **Rootkit Technique Detected**: `getdents64` hooking
 
-#### **Cell 5: Hidden eBPF Programs Cell**
-Detects attempts to hide eBPF programs from enumeration.
-- Monitors `sys_bpf` syscalls for enumeration interference via tracepoints
-- Correlates `BPF_PROG_GET_NEXT_ID` results with pinned programs in `/sys/fs/bpf`
-- Identifies BPF programs that are pinned but not returned during enumeration
-- **Rootkit Technique Detected**: `sys_bpf` hooking, premature -ENOENT returns on GET_NEXT_ID commands
+#### **Cell 5: sys_bpf Interference Cell**
+Detects attempts to hide eBPF programs from enumeration using three-way comparison.
+- **Ground Truth**: Uses BPF program iterator to enumerate all programs directly from kernel memory (cannot be hidden)
+- **Userspace Enumeration**: Calls `BPF_PROG_GET_NEXT_ID` syscalls which rootkits may intercept
+- **Pinned Programs**: Walks `/sys/fs/bpf` to discover pinned programs
+- Monitors `sys_bpf` syscalls via tracepoints to detect suspicious ENOENT patterns
+- Identifies programs visible to kernel but hidden from userspace enumeration
+- **Rootkit Technique Detected**: `sys_bpf` syscall hooking, premature -ENOENT returns forcing early termination of enumeration
 
 ## Prerequisites
 
@@ -269,7 +271,7 @@ Deploying 5 Zygarde Cells for system analysis...
 
 [Cell 5/5] Executing: sys_bpf Interference
             Detects hidden BPF objects by correlating sys_bpf NEXT_ID enumeration with pinned program IDs
-            [+] Enumerated 56 BPF program(s); no pinned hidden programs (ENOENT events=1) (0.28s)
+            [+] No hidden programs detected (kernel:56, enum:56, pinned:12, ENOENT:1) (0.28s)
 
 ======================================================================
 ZYGARDE CORE ANALYSIS - SUMMARY REPORT
@@ -371,6 +373,44 @@ Zygarde uses eBPF CO-RE, which allows the same eBPF bytecode to run on different
 - **Kernel Lockdown**: May be restricted on systems with kernel lockdown enabled
 - **KASLR**: Addresses from `/proc/kallsyms` require root to read
 - **False Positives**: Some legitimate kernel modifications may trigger alerts
+
+### Detection Methodology Details
+
+#### sys_bpf Interference Detection (Cell 5)
+
+This Cell uses a sophisticated three-way comparison to detect hidden BPF programs:
+
+**1. Kernel Ground Truth (BPF Iterator)**
+- Uses `iter/bpf_prog` BPF iterator to enumerate programs directly from kernel memory
+- Accesses `struct bpf_prog` and `struct bpf_prog_aux` internal kernel structures
+- **Cannot be hidden** by syscall-level rootkit hooks
+- Provides authoritative list of all BPF programs in the kernel
+
+**2. Userspace Enumeration (Syscall-based)**
+- Repeatedly calls `ebpf.ProgramGetNextID()` to enumerate programs
+- Uses `BPF_PROG_GET_NEXT_ID` command of `sys_bpf` syscall
+- **Can be manipulated** by rootkits hooking the syscall handler
+- Rootkits may return premature `-ENOENT` to hide programs from enumeration
+
+**3. Filesystem Discovery (bpffs)**
+- Walks `/sys/fs/bpf` directory tree to find pinned programs
+- Opens pinned programs and retrieves their IDs
+- Provides additional visibility into persistent BPF programs
+
+**Detection Logic**:
+- Programs in kernel ground truth but missing from userspace enumeration = **HIDDEN**
+- Premature `-ENOENT` returns while programs still exist = **SUSPICIOUS**
+- Multiple `-ENOENT` errors during enumeration = **INTERFERENCE**
+
+**Metrics Reported**:
+- `kernel_count`: Total programs from BPF iterator (ground truth)
+- `enum_count`: Programs successfully enumerated via syscalls
+- `enum_coverage`: Percentage of kernel programs found via syscalls
+- `enoent_total`: Total `-ENOENT` syscall returns captured
+- `enoent_suspicious`: ENOENT returns that occurred prematurely
+- `enum_attempts`: Total enumeration attempts (including retries)
+
+This approach is resilient because even if a rootkit hooks `sys_bpf`, the BPF iterator runs in kernel context and accesses data structures directly, bypassing syscall manipulation.
 
 ### Limitations
 
