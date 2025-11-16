@@ -75,7 +75,7 @@ Detects files hidden from directory listings.
 - Verifies file visibility from user-space directory listings
 - **Rootkit Technique Detected**: `getdents64` hooking
 
-#### **Cell 5: sys_bpf Interference Cell**
+#### **Cell 5: Hidden eBPF Detection Cell**
 Detects attempts to hide eBPF programs from enumeration using three-way comparison.
 - **Ground Truth**: Uses BPF program iterator to enumerate all programs directly from kernel memory (cannot be hidden)
 - **Userspace Enumeration**: Calls `BPF_PROG_GET_NEXT_ID` syscalls which rootkits may intercept
@@ -269,7 +269,7 @@ Deploying 5 Zygarde Cells for system analysis...
             [*] Monitoring file access syscalls for 20s...
             [+] No hidden files detected (monitored 87 events: map[execve:23 openat:58 open:6]) (20.11s)
 
-[Cell 5/5] Executing: sys_bpf Interference
+[Cell 5/5] Executing: Hidden eBPF Detection
             Detects hidden BPF objects by correlating sys_bpf NEXT_ID enumeration with pinned program IDs
             [+] No hidden programs detected (kernel:56, enum:56, pinned:12, ENOENT:1) (0.28s)
 
@@ -376,7 +376,7 @@ Zygarde uses eBPF CO-RE, which allows the same eBPF bytecode to run on different
 
 ### Detection Methodology Details
 
-#### sys_bpf Interference Detection (Cell 5)
+#### Hidden eBPF Detection (Cell 5)
 
 This Cell uses a sophisticated three-way comparison to detect hidden BPF programs:
 
