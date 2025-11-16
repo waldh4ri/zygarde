@@ -426,6 +426,13 @@ int dump_task(struct bpf_iter__task *ctx)
 // Detect attempts to prematurely terminate BPF object enumeration by forcing
 // -ENOENT on NEXT_ID commands while objects still exist (e.g., hidden programs).
 
+// Kernel-side program info exported to userspace (ground truth)
+struct bpf_prog_kernel_info {
+	__u32 id;
+	__u32 prog_type;
+	char name[16];
+};
+
 // Commands of interest (mirror linux/bpf.h) relevant to enumeration hiding
 #define CMD_PROG_GET_NEXT_ID 11
 #define CMD_MAP_GET_NEXT_ID  12
@@ -457,6 +464,36 @@ struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
 	__uint(max_entries, 128 * 1024);
 } bpf_enum_events SEC(".maps");
+
+// BPF iterator to walk all BPF programs in the kernel (ground truth)
+// This cannot be hidden by rootkits that only manipulate syscalls
+SEC("iter/bpf_prog")
+int dump_bpf_prog(struct bpf_iter__bpf_prog *ctx)
+{
+	struct seq_file *seq = ctx->meta->seq;
+	struct bpf_prog *prog = ctx->prog;
+	struct bpf_prog_kernel_info info = {};
+	
+	// If prog is NULL, we've finished iterating
+	if (prog == NULL)
+		return 0;
+	
+	// Read program information using BPF CO-RE
+	struct bpf_prog_aux *aux = BPF_CORE_READ(prog, aux);
+	if (!aux)
+		return 0;
+	
+	info.id = BPF_CORE_READ(aux, id);
+	info.prog_type = BPF_CORE_READ(prog, type);
+	
+	// Copy program name
+	bpf_probe_read_kernel_str(&info.name, sizeof(info.name), &aux->name);
+	
+	// Submit the data to the iterator's seq_file
+	bpf_seq_write(seq, &info, sizeof(info));
+	
+	return 0;
+}
 
 static __always_inline int is_enum_cmd(__u32 cmd) {
 	if (cmd == CMD_PROG_GET_NEXT_ID || cmd == CMD_MAP_GET_NEXT_ID ||
