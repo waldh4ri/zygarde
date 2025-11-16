@@ -47,37 +47,35 @@ Zygarde has been tested on the following Linux distributions and kernel versions
 
 Zygarde implements five specialized Cells (checks) for rootkit detection:
 
-#### **Cell 1: Syscall Integrity Cell**
+#### **Cell 1: Altered Syscall Table Check** (`altered_syscall_table`)
 Monitors the system call table for unauthorized modifications.
 - Detects `sys_call_table` hooking by rootkits
 - Compares kernel memory with expected values from `/proc/kallsyms`
 - Uses kprobes to safely read kernel memory
 - **Rootkit Technique Detected**: Syscall table modification
 
-#### **Cell 2: Module Visibility Cell**
+#### **Cell 2: Hidden Kernel Module Check** (`hidden_kernel_module`)
 Reveals kernel modules hidden from user-space.
-- ~Finds kernel modules hidden from `lsmod` and `/sys/module`~
-- ~Uses BPF iterators to traverse the kernel's internal module list~
-- ~Compares kernel ground truth with user-space visibility~
-- Exists somehow for now
+- Compares `/proc/modules` with `/sys/module` directory
+- Identifies modules visible in kernel but hidden from userspace
 - **Rootkit Technique Detected**: Module list manipulation (list_del)
 
-#### **Cell 3: Hidden Process Detection Cell**
+#### **Cell 3: Hidden Process Detection** (`hidden_process`)
 Detects processes and threads hidden from user-space.
 - Enumerates tasks from kernel using BPF task iterator
 - Compares with `/proc` filesystem enumeration
 - Identifies processes visible to kernel but hidden from userspace tools
 - **Rootkit Technique Detected**: `/proc` manipulation, process hiding
 
-#### **Cell 4: File Visibility Cell**
+#### **Cell 4: Hidden File Detection** (`hidden_file`)
 Detects files hidden from directory listings.
 - Monitors file access syscalls (`execve`, `openat`, `open`, `openat2`) via tracepoints
 - Verifies file visibility from user-space directory listings
 - **Rootkit Technique Detected**: `getdents64` hooking
 
-#### **Cell 5: Hidden eBPF Detection Cell**
+#### **Cell 5: Hidden eBPF Program Detection** (`hidden_ebpf_program`)
 Detects attempts to hide eBPF programs from enumeration using three-way comparison.
-- **Ground Truth**: Uses BPF program iterator to enumerate all programs directly from kernel memory (cannot be hidden)
+- **Ground Truth**: Uses BPF program iterator to enumerate all programs directly from kernel memory 
 - **Userspace Enumeration**: Calls `BPF_PROG_GET_NEXT_ID` syscalls which rootkits may intercept
 - **Pinned Programs**: Walks `/sys/fs/bpf` to discover pinned programs
 - Monitors `sys_bpf` syscalls via tracepoints to detect suspicious ENOENT patterns
@@ -197,6 +195,37 @@ sudo ./zygarde
 
 ### Command-Line Options
 
+#### JSON Output Mode
+
+For machine-readable output that can be piped to `jq` or other JSON processors:
+
+```bash
+# Output results as JSON only (no banner, progress, or colors)
+sudo ./zygarde --json
+
+# Pretty-print with jq
+sudo ./zygarde --json | jq '.'
+
+# Filter only suspicious findings (status=2)
+sudo ./zygarde --json | jq '.[] | select(.status == 2)'
+
+# Get summary of all checks
+sudo ./zygarde --json | jq '[.[] | {cell, status, findings: (.suspicious // [] | length)}]'
+
+# Extract specific cell results
+sudo ./zygarde --json | jq '.[] | select(.cell == "hidden_process")'
+```
+
+**JSON Output Format:**
+- `cell`: Cell identifier (e.g., `"hidden_process"`, `"altered_syscall_table"`)
+- `status`: Result status (`0` = OK, `1` = Error, `2` = Suspicious)
+- `message`: Human-readable summary
+- `suspicious`: Array of suspicious findings with descriptions and details
+- `duration_seconds`: Execution time in seconds
+- `error_message`: Error description (only if status=1)
+
+See `examples/jq_examples.sh` for more advanced jq queries.
+
 #### Debug Mode
 
 For detailed verbose output showing every step of the detection process:
@@ -217,6 +246,8 @@ Debug mode provides detailed information about:
 - Event processing and parsing
 - Cell activation and deactivation
 
+**Note:** Debug mode is automatically disabled when using `--json` to keep JSON output clean.
+
 #### Hidden Files Monitoring Duration
 
 Configure how long the Hidden Files Cell monitors for file access:
@@ -228,11 +259,8 @@ sudo ./zygarde --hidden-files-duration=10s
 # Monitor for 1 minute
 sudo ./zygarde --hidden-files-duration=1m
 
-# Monitor for 30 seconds
-sudo ./zygarde --hidden-files-duration=30s
-
-# Combine with debug mode
-sudo ./zygarde --debug --hidden-files-duration=15s
+# Combine with JSON output
+sudo ./zygarde --json --hidden-files-duration=30s
 ```
 
 The duration accepts any valid Go duration format (e.g., `10s`, `1m`, `1m30s`, `500ms`).
@@ -252,24 +280,23 @@ The duration accepts any valid Go duration format (e.g., `10s`, `1m`, `1m30s`, `
 
 Deploying 5 Zygarde Cells for system analysis...
 
-[Cell 1/5] Executing: Syscall Table Integrity
+[Cell 1/5] Executing: Altered Syscall Table Check
             Detects sys_call_table hooking by comparing kernel memory with expected addresses
-            [+] sys_call_table entry for __x64_sys_getdents64 is intact (0xffffffff81234567) (0.12s)
+            [+] All 4 checked syscalls are intact (0.12s)
 
-[Cell 2/5] Executing: Hidden Kernel Modules
-            Detects kernel modules hidden from lsmod by comparing kernel module list with /sys/module
+[Cell 2/5] Executing: Hidden Kernel Module Detection
+            Detects kernel modules hidden from lsmod by comparing /proc/modules with /sys/module
             [+] All 145 kernel modules are visible (0.08s)
 
 [Cell 3/5] Executing: Hidden Process Detection
             Detects hidden processes/threads by comparing kernel task list (BPF iterator) with userspace /proc enumeration
             [+] No hidden processes detected (428 kernel tasks, 428 /proc entries) (0.15s)
 
-[Cell 4/5] Executing: Hidden Files in PATH
+[Cell 4/5] Executing: Hidden File Detection
             Detects files that are hidden from directory listings by monitoring execve, openat, open, and openat2 syscalls on PATH directories
-            [*] Monitoring file access syscalls for 20s...
             [+] No hidden files detected (monitored 87 events: map[execve:23 openat:58 open:6]) (20.11s)
 
-[Cell 5/5] Executing: Hidden eBPF Detection
+[Cell 5/5] Executing: Hidden eBPF Program Detection
             Detects hidden BPF objects by correlating sys_bpf NEXT_ID enumeration with pinned program IDs
             [+] No hidden programs detected (kernel:56, enum:56, pinned:12, ENOENT:1) (0.28s)
 
@@ -299,18 +326,22 @@ Deactivating Cells...
 
 ```
 zygarde/
-├── main.go                 # Zygarde Core - entry point 
-├── go.mod                  # Go module definition
+├── main.go                    # Zygarde Core - entry point 
+├── go.mod                     # Go module definition
+├── build.sh                   # Automated build script
 ├── checks/
-│   ├── interface.go        # Cell interface definition
-│   ├── syscall.go          # Syscall Integrity Cell
-│   ├── modules.go          # Module Visibility Cell
-│   ├── hidden_processes.go # Hidden Process Detection Cell
-│   ├── hidden_files.go     # File Visibility Cell
-│   └── hidden_ebpf.go      # Hidden eBPF Programs Cell
-└── bpf/
-    ├── zygarde.bpf.c       # eBPF programs (C)
-    └── vmlinux.h           # Kernel type definitions (generated)
+│   ├── interface.go           # Cell interface definition
+│   ├── altered_syscall_table.go   # Altered Syscall Table Check
+│   ├── hidden_kernel_module.go    # Hidden Kernel Module Check
+│   ├── hidden_process.go          # Hidden Process Detection
+│   ├── hidden_file.go             # Hidden File Detection
+│   └── hidden_ebpf_program.go     # Hidden eBPF Program Detection
+├── bpf/
+│   ├── zygarde.bpf.c          # eBPF programs (C)
+│   └── vmlinux.h              # Kernel type definitions (generated)
+└── examples/
+    ├── test_json_output.go    # JSON serialization examples
+    └── jq_examples.sh         # jq query examples for JSON output
 ```
 
 ### Adding New Cells
