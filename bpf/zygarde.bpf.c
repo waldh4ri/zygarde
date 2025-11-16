@@ -83,8 +83,8 @@ int check_syscall_table(struct pt_regs *ctx)
 	// sys_call_table[syscall_num]
 	table_entry_ptr = (void *)(*sys_call_table_addr + (*syscall_num_ptr * sizeof(void *)));
 	
-	// Read the actual function pointer from the syscall table
-	if (bpf_probe_read_kernel(&syscall_entry_addr, sizeof(syscall_entry_addr), table_entry_ptr) != 0)
+	// Read the actual function pointer from the syscall table (CO-RE relocatable)
+	if (bpf_core_read(&syscall_entry_addr, sizeof(syscall_entry_addr), table_entry_ptr) != 0)
 		return 0;
 	
 	// Reserve space in the ring buffer
@@ -393,12 +393,8 @@ int dump_task(struct bpf_iter__task *ctx)
 	info.pid = BPF_CORE_READ(task, tgid);
 	info.tid = BPF_CORE_READ(task, pid);
 	
-	// Get parent PID
-	struct task_struct *parent = BPF_CORE_READ(task, real_parent);
-	if (parent)
-		info.ppid = BPF_CORE_READ(parent, tgid);
-	else
-		info.ppid = 0;
+	// Get parent PID using CO-RE chained read
+	info.ppid = BPF_CORE_READ(task, real_parent, tgid);
 	
 	// Get task state with CO-RE guards: __state (newer) or state (older)
     unsigned long st = 0;
@@ -407,8 +403,8 @@ int dump_task(struct bpf_iter__task *ctx)
     } else if (bpf_core_field_exists(task->__state)) {
         st = BPF_CORE_READ(task, __state);
     }
-    info.state = st;	// Copy command name
-	bpf_probe_read_kernel_str(&info.comm, sizeof(info.comm), &task->comm);
+    info.state = st;	// Copy command name (CO-RE relocatable)
+	bpf_core_read_str(&info.comm, sizeof(info.comm), &task->comm);
 	
 	// Submit the data to the iterator's seq_file
 	ret = bpf_seq_write(seq, &info, sizeof(info));
@@ -486,8 +482,8 @@ int dump_bpf_prog(struct bpf_iter__bpf_prog *ctx)
 	info.id = BPF_CORE_READ(aux, id);
 	info.prog_type = BPF_CORE_READ(prog, type);
 	
-	// Copy program name
-	bpf_probe_read_kernel_str(&info.name, sizeof(info.name), &aux->name);
+	// Copy program name (CO-RE relocatable)
+	bpf_core_read_str(&info.name, sizeof(info.name), &aux->name);
 	
 	// Submit the data to the iterator's seq_file
 	bpf_seq_write(seq, &info, sizeof(info));
