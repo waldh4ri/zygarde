@@ -448,6 +448,7 @@ This project is licensed under the Dual BSD/GPL License - see the LICENSE file f
 ## References
 
 - [eBPF Documentation](https://ebpf.io/)
+- [Andrii Nakryiko blogposts](https://nakryiko.com/posts/bpf-portability-and-co-re)
 - [Cilium eBPF Library](https://github.com/cilium/ebpf)
 - [BPF CO-RE](https://nakryiko.com/posts/bpf-portability-and-co-re/)
 - [Linux Rootkit Techniques](https://www.kernel.org/doc/html/latest/security/)
