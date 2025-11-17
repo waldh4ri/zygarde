@@ -19,7 +19,7 @@
 
 Zygarde is a portable forensic analysis tool inspired by the Pokémon guardian of the ecosystem. Just as Zygarde's Cells monitor the environment from deep within, this tool uses eBPF (Extended Berkeley Packet Filter) with CO-RE (Compile Once - Run Everywhere) to detect rootkit techniques from deep within the Linux kernel.
 
-The tool compiles into a single static binary with no runtime dependencies, making it ideal for incident response and security auditing on most recent Linux systems.
+The tool compiles into a single static binary with no runtime dependencies, making it ideal for incident response and security auditing on most recent Linux systems. This is done thanks to CO-RE magic and BTF-enabled eBPF programs. Kernel structures memory layouts are patched at runtime inside the program to ensure maximum compatibility with most post-2020 kernels. All this is made possible by the [Cilium eBPF Go library](https://github.com/cilium/ebpf) to easily compile and load eBPF programs into various kernels. 
 
 > **Note:** *This is an early-stage tool primarily aimed at testing what's feasible with eBPF for DFIR (Digital Forensics and Incident Response). It is under active development and should be considered experimental. For now it supports x86_64 only.*
 
