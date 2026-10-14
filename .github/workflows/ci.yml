@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # Regenerate with the pinned toolchain image: other clang versions
+      # produce different (equally valid) bytecode.
+      - name: Check generated BPF bindings are up to date
+        run: |
+          make docker-generate
+          git diff --exit-code -- cells/
+      - run: go vet ./...
+      - run: go test ./...
+      - run: make dist
+      - name: Smoke test on the runner's kernel
+        # Exit 1 means a Cell failed to run; 0 and 2 are valid outcomes.
+        run: sudo ./dist/zygarde-linux-amd64 || [ $? -ne 1 ]
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zygarde
+          path: dist/
+
+  # Boots each upstream LTS kernel from ghcr.io/cilium/ci-kernels and runs
+  # zygarde in it (test/vm/upstream.sh). Fails on any ERROR, SUSPICIOUS
+  # result or missed canary.
+  kernels:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@v4
+        with:
+          name: zygarde
+          path: dist/
+      - run: install -m 755 dist/zygarde-linux-amd64 zygarde
+      - name: Install QEMU and vimto
+        run: |
+          sudo apt-get update && sudo apt-get install -y qemu-system-x86
+          sudo chmod 0666 /dev/kvm
+          CGO_ENABLED=0 go install lmb.io/vimto@v0.4.0
+      - run: bash test/vm/upstream.sh
+      - run: go run ./test/vm/report test/vm/out >> "$GITHUB_STEP_SUMMARY"

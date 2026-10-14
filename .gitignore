@@ -1,23 +1,11 @@
 # Binaries
-zygarde
-*.exe
-*.exe~
-*.dll
-*.so
-*.dylib
-
-# Test binary, built with `go test -c`
+/zygarde
+/dist/
 *.test
-
-# Output of the go coverage tool
 *.out
 
-# eBPF generated files
-bpf_bpfeb_arm64.go
-bpf_bpfeb_arm64.o
-bpf_bpfeb_x86.go
-bpf_bpfeb_x86.o
-
+# Generated BPF objects and bindings (cells/**/*_bpfel.{go,o}) are committed
+# on purpose: `go build` then works without clang.
 
 # IDE
 .vscode/
@@ -29,13 +17,10 @@ bpf_bpfeb_x86.o
 # OS
 .DS_Store
 
-checks/bpf_bpfel_arm64.go
-checks/bpf_bpfel_arm64.o
-checks/bpf_bpfel_x86.go
-checks/bpf_bpfel_x86.o
-bpf/bpf_co-re_explanation.txt
-docs/forensic_structs.md
-docs/linkpro_analysis.txt
-examples/jq_examples.sh
-docs/bpf_co-re_explanation.txt
-docs/bpf_co-re_guide.txt
+# Local notes
+docs/
+examples/
+/test/vm/out/
+
+# Secrets
+.env

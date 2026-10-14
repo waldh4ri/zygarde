@@ -1,91 +1,92 @@
-.PHONY: help generate build clean test install vmlinux
+# Zygarde - eBPF rootkit detection
+#
+# Native targets need Go and clang on Linux. The docker-* targets run the same
+# steps in a toolchain container, from any OS with Docker.
 
-# Default target
+GO       ?= go
+ARCHES   := amd64 arm64
+LDFLAGS  := -s -w
+IMAGE    := zygarde-build
+DOCKER   := docker run --rm -v "$(CURDIR):/src" -v zygarde-gomod:/go/pkg/mod -w /src $(IMAGE)
+
+.PHONY: all help generate build dist test vet fmt clean \
+        docker-image docker-generate docker-build docker-dist docker-test docker-run
+
 all: build
 
-# Help target
 help:
-	@echo "Zygarde - eBPF Rootkit Detection Tool"
-	@echo "Guardian of the Kernel"
-	@echo ""
-	@echo "Available targets:"
-	@echo "  make generate    - Generate vmlinux.h and eBPF Go bindings"
-	@echo "  make build       - Build the zygarde binary"
-	@echo "  make clean       - Remove generated files and binaries"
-	@echo "  make test        - Run tests"
-	@echo "  make install     - Install zygarde to /usr/local/bin"
-	@echo "  make vmlinux     - Generate vmlinux.h from running kernel"
-	@echo "  make fmt         - Format Go code"
-	@echo "  make vet         - Run go vet"
-	@echo ""
+	@echo "make generate        compile BPF programs and Go bindings (needs clang)"
+	@echo "make build           build ./zygarde for the host architecture"
+	@echo "make dist            build static binaries for $(ARCHES) into dist/"
+	@echo "make test            run unit tests"
+	@echo "make vet             run go vet"
+	@echo "make docker-<target> run generate/build/test inside the toolchain image"
+	@echo "make docker-run      run ./zygarde in a privileged container (local smoke test)"
 
-# Generate vmlinux.h from the running kernel
-vmlinux:
-	@echo "Generating vmlinux.h from running kernel..."
-	@if ! command -v bpftool >/dev/null 2>&1; then \
-		echo "Error: bpftool not found. Please install it:"; \
-		echo "  Ubuntu/Debian: sudo apt-get install linux-tools-common linux-tools-$$(uname -r)"; \
-		echo "  Fedora/RHEL:   sudo dnf install bpftool"; \
-		echo "  Arch:          sudo pacman -S bpf"; \
-		exit 1; \
-	fi
-	@sudo bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
-	@echo "[+] Generated bpf/vmlinux.h"
+generate:
+	$(GO) generate ./...
 
-# Generate eBPF Go bindings
-generate: vmlinux
-	@echo "Generating eBPF Go bindings..."
-	@if ! command -v clang >/dev/null 2>&1; then \
-		echo "Error: clang not found. Please install it."; \
-		exit 1; \
-	fi
-	cd checks && go generate
-	@echo "[+] Generated eBPF bindings"
+build:
+	CGO_ENABLED=0 GOOS=linux $(GO) build -trimpath -ldflags="$(LDFLAGS)" -o zygarde ./cmd/zygarde
 
-# Build the binary
-build: generate
-	@echo "Building zygarde..."
-	CGO_ENABLED=0 go build -ldflags="-s -w" -o zygarde .
-	@echo "[+] Built zygarde binary"
-	@ls -lh zygarde
+dist:
+	@mkdir -p dist
+	@for arch in $(ARCHES); do \
+		echo "building dist/zygarde-linux-$$arch"; \
+		CGO_ENABLED=0 GOOS=linux GOARCH=$$arch $(GO) build -trimpath -ldflags="$(LDFLAGS)" \
+			-o dist/zygarde-linux-$$arch ./cmd/zygarde || exit 1; \
+	done
 
-# Clean generated files and binaries
-clean:
-	@echo "Cleaning..."
-	rm -f zygarde
-	rm -f checks/bpf_bpfel.go checks/bpf_bpfeb.go
-	rm -f checks/bpf_bpfel.o checks/bpf_bpfeb.o
-	@echo "[+] Cleaned"
-
-# Run tests
 test:
-	@echo "Running tests..."
-	go test -v ./...
+	$(GO) test ./...
 
-# Format Go code
-fmt:
-	@echo "Formatting code..."
-	go fmt ./...
-	@echo "[+] Code formatted"
-
-# Run go vet
 vet:
-	@echo "Running go vet..."
-	go vet ./...
-	@echo "[+] Vet passed"
+	$(GO) vet ./...
 
-# Install to system
-install: build
-	@echo "Installing zygarde to /usr/local/bin..."
-	sudo install -m 755 zygarde /usr/local/bin/zygarde
-	@echo "[+] Installed zygarde"
+fmt:
+	$(GO) fmt ./...
 
-# Check prerequisites
-check-prereqs:
-	@echo "Checking prerequisites..."
-	@echo -n "Go:      "; which go && go version || echo "[-] Not found"
-	@echo -n "Clang:   "; which clang && clang --version | head -1 || echo "[-] Not found"
-	@echo -n "bpftool: "; which bpftool && bpftool version || echo "[-] Not found"
-	@echo -n "Kernel:  "; uname -r
-	@echo -n "BTF:     "; test -f /sys/kernel/btf/vmlinux && echo "[+] Available" || echo "[-] Not available"
-	@echo ""
+clean:
+	rm -rf zygarde dist
+
+docker-image:
+	docker build -q -t $(IMAGE) build/
+
+docker-generate: docker-image
+	$(DOCKER) $(GO) generate ./...
+
+docker-dist: docker-image
+	$(DOCKER) make dist
+
+docker-build: docker-image
+	$(DOCKER) make build
+
+docker-test: docker-image
+	$(DOCKER) sh -c '$(GO) vet ./... && $(GO) test ./...'
+
+# The container shares the Docker host's kernel (on Docker Desktop, its VM).
+docker-run: docker-build
+	docker run --rm --privileged --pid=host -v "$(CURDIR):/src" -w /src debian:13 ./zygarde $(ARGS)
+
+# --- Kernel matrix (QEMU/KVM inside a privileged container) -----------------
+# vm-upstream: upstream LTS kernels from ghcr.io/cilium/ci-kernels, via vimto.
+# vm-distro:   official distribution cloud images (test/vm/distros.txt).
+# Pass KERNELS="6.1.188 ..." or DISTROS="debian-12 ..." to run a subset.
+VMTEST := docker run --rm --privileged -v "$(CURDIR):/src" -v zygarde-gomod:/go/pkg/mod \
+          -v zygarde-vmimages:/images -e JOBS -w /src zygarde-vmtest
+
+.PHONY: vm-image vm-upstream vm-distro vm-report
+
+vm-image:
+	docker build -q -t zygarde-vmtest -f build/vmtest.Dockerfile build/
+
+vm-upstream: docker-build vm-image
+	$(VMTEST) bash test/vm/upstream.sh $(KERNELS)
+	$(VMTEST) go run ./test/vm/report test/vm/out
+
+vm-distro: docker-dist vm-image
+	$(VMTEST) bash test/vm/distro.sh $(DISTROS)
+	$(VMTEST) go run ./test/vm/report test/vm/out
+
+vm-report:
+	$(VMTEST) go run ./test/vm/report test/vm/out

@@ -5,465 +5,171 @@
 ```
  ███████╗██╗   ██╗ ██████╗  █████╗ ██████╗ ██████╗ ███████╗
  ╚══███╔╝╚██╗ ██╔╝██╔════╝ ██╔══██╗██╔══██╗██╔══██╗██╔════╝
-   ███╔╝  ╚████╔╝ ██║  ███╗███████║██████╔╝██║  ██║█████╗  
-  ███╔╝    ╚██╔╝  ██║   ██║██╔══██║██╔══██╗██║  ██║██╔══╝  
+   ███╔╝  ╚████╔╝ ██║  ███╗███████║██████╔╝██║  ██║█████╗
+  ███╔╝    ╚██╔╝  ██║   ██║██╔══██║██╔══██╗██║  ██║██╔══╝
  ███████╗   ██║   ╚██████╔╝██║  ██║██║  ██║██████╔╝███████╗
  ╚══════╝   ╚═╝    ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝ ╚══════╝
 ```
 
-**Advanced Linux Rootkit Detection using eBPF CO-RE**
+**Linux rootkit detection using eBPF CO-RE**
 
 </div>
 
 ## Overview
 
-Zygarde is a portable forensic analysis tool inspired by the Pokémon guardian of the ecosystem. Just as Zygarde's Cells monitor the environment from deep within, this tool uses eBPF (Extended Berkeley Packet Filter) with CO-RE (Compile Once - Run Everywhere) to detect rootkit techniques from deep within the Linux kernel.
+Zygarde is a portable forensic triage tool for Linux. It is organised in detection modules called *Cells*, each comparing two views of the same thing: what the kernel actually holds, read with eBPF, and what userspace is shown through the usual syscalls and files. A rootkit that hides a process, file, module or eBPF program leaves a gap between the two.
 
-The tool compiles into a single static binary with no runtime dependencies, making it ideal for incident response and security auditing on most recent Linux systems. This is done thanks to CO-RE magic and BTF-enabled eBPF programs. Kernel structures memory layouts are patched at runtime inside the program to ensure maximum compatibility with most post-2020 kernels. All this is made possible by the [Cilium eBPF Go library](https://github.com/cilium/ebpf) to easily compile and load eBPF programs into various kernels. 
+It ships as a single static binary with no runtime dependencies, for x86_64 and arm64. Thanks to CO-RE and BTF, the same eBPF bytecode is relocated at load time for the running kernel. It is built on the [cilium/ebpf](https://github.com/cilium/ebpf) Go library.
 
-> **Note:** *This is an early-stage tool primarily aimed at testing what's feasible with eBPF for DFIR (Digital Forensics and Incident Response). It is under active development and should be considered experimental. For now it supports x86_64 only.*
+> **Note:** *Zygarde is experimental, aimed at exploring what eBPF can do for DFIR. A clean result raises the bar for an attacker; it cannot prove that a kernel-level compromise is absent. If you suspect one, capture memory (e.g. AVML/LiME) and analyse it offline (e.g. Volatility 3).*
 
-## Tested Platforms
+## The Cells
 
-Zygarde has been tested on the following Linux distributions and kernel versions:
+| Cell | Kernel view | Userspace view | Needs |
+|------|-------------|----------------|-------|
+| `ebpf_integrity` | canary program and map loaded by Zygarde | `BPF_PROG/MAP_GET_NEXT_ID`, `GET_FD_BY_ID` | root |
+| `altered_syscall_table` | `sys_call_table` entries read with a kprobe | handler addresses in `/proc/kallsyms` | x86_64, `CONFIG_KALLSYMS_ALL`, a kernel that still dispatches through the table |
+| `hook_inventory` | ftrace's list of patched functions (`enabled_functions`) with each hook's handler | — (attribution: kernel, visible module, BPF, livepatch) | dynamic ftrace, tracefs (mounted temporarily if needed) |
+| `hidden_kernel_module` | module kobjects in `/sys/module` | module list in `/proc/modules` | — |
+| `kernel_taint` | kernel taint flags (`/proc/sys/kernel/tainted`) | per-module taint (`/sys/module/*/taint`) | — |
+| `hidden_process` | BPF task iterator | `/proc` directory listing | BTF, Linux 5.8+ |
+| `hidden_file` | entries the filesystem produces (kprobe on `filldir64`) | entries `getdents64` returns, for sensitive directories, `/proc` and `/sys/module` | BTF, Linux 5.8+ |
+| `hidden_ebpf_program` | BPF program iterator, plus Zygarde's own `bpf()` calls traced at syscall exit | `BPF_PROG_GET_NEXT_ID`, `/sys/fs/bpf` pins | BTF, Linux 5.9+ |
 
-| Distribution | Kernel Version | Architecture |
-|-------------|----------------|--------------|
-| Ubuntu 22.04 | 5.15.0-91-generic | x86_64 |
-| Fedora 39 | 6.6.9-200.fc39.x86_64 | x86_64 |
-| Rocky Linux 9 | 5.14.0-362.13.1.el9_3.x86_64 | x86_64 |
-| Debian 12 | 6.1.0-17-amd64 | x86_64 |
-| RHEL 9 | 5.14.0-362.8.1.el9_3.x86_64 | x86_64 |
+Notes:
 
-## The Zygarde Architecture
+- **Syscall table:** since Linux 6.9 (backported to 6.8.5, 6.6.26, 6.1.85 and 5.15.154), x86_64 dispatches syscalls through a `switch` in `x64_sys_call()`, so the table is no longer used and hooking it does nothing. On those kernels the Cell reports SKIPPED, and `hook_inventory` covers how syscalls are hooked there instead.
+- **Hooks:** an ftrace callback can only hijack a function if it sets `FTRACE_OPS_FL_IPMODIFY` (flag `I`), and the only legitimate user of that is livepatch. A hook whose handler resolves to no symbol runs in code outside the kernel, visible modules and named BPF programs. Both are SUSPICIOUS. Everything else (BPF trampolines, kprobes, livepatch) is listed as observations. The Cell plants its own fentry (or kprobe) hook as a canary.
+- **Taint:** loading a module taints the kernel (out-of-tree `O`, unsigned `E`, …) until reboot. A module taint that no visible module carries means a module hid itself, or was loaded and later unloaded.
+- **Kernel modules:** rootkits unlink themselves from the module list (`list_del`, which hides them from `lsmod`) or delete their kobject (`kobject_del`). Only loadable modules have `/sys/module/<name>/initstate`, which separates them from built-ins.
+- **Processes:** `/proc` lists only processes, not threads, so the comparison is per process. The kernel view is taken before and after reading `/proc`, which rules out processes that start or exit mid-scan. PIDs are translated into Zygarde's PID namespace, so it also works inside containers.
+- **Files:** Zygarde lists sensitive directories (binaries, libraries, persistence locations, `/tmp`, `/dev/shm`, home directories), `/proc` and `/sys/module` itself. A kprobe on `filldir64`, the callback that copies each entry into the `getdents64` buffer, records what the filesystem produced. An entry produced but not returned was filtered afterwards, by a hooked `getdents64` or by a program rewriting the result buffer. Hiding inside the filesystem code itself is not covered.
 
-### Core Concept
-- **Zygarde Core**: The main orchestrator (`main.go`) that coordinates all Cells
-- **Zygarde Cells**: Individual detection modules that monitor specific aspects of the kernel
+## Resisting tampering
 
-### The Cells
+A rootkit can attack the scanner itself. Zygarde is built to make that visible:
 
-Zygarde implements five specialized Cells (checks) for rootkit detection:
-
-#### **Cell 1: Altered Syscall Table Check** (`altered_syscall_table`)
-Monitors the system call table for unauthorized modifications.
-- Detects `sys_call_table` hooking by rootkits
-- Compares kernel memory with expected values from `/proc/kallsyms`
-- Uses kprobes to safely read kernel memory
-- **Rootkit Technique Detected**: Syscall table modification
-
-#### **Cell 2: Hidden Kernel Module Check** (`hidden_kernel_module`) (WIP)
-Reveals kernel modules hidden from user-space.
-- Compares `/proc/modules` with `/sys/module` directory
-- Identifies modules visible in kernel but hidden from userspace
-- **Rootkit Technique Detected**: Module list manipulation (list_del)
-
-#### **Cell 3: Hidden Process Detection** (`hidden_process`)
-Detects processes and threads hidden from user-space.
-- Enumerates tasks from kernel using BPF task iterator
-- Compares with `/proc` filesystem enumeration
-- Identifies processes visible to kernel but hidden from userspace tools
-- **Rootkit Technique Detected**: `/proc` manipulation, process hiding
-
-#### **Cell 4: Hidden File Detection** (`hidden_file`)
-Detects files hidden from directory listings.
-- Monitors file access syscalls (`execve`, `openat`, `open`, `openat2`) via tracepoints
-- Verifies file visibility from user-space directory listings
-- **Rootkit Technique Detected**: `getdents64` hooking
-
-#### **Cell 5: Hidden eBPF Program Detection** (`hidden_ebpf_program`)
-Detects attempts to hide eBPF programs from enumeration using three-way comparison.
-- **Ground Truth**: Uses BPF program iterator to enumerate all programs directly from kernel memory 
-- **Userspace Enumeration**: Calls `BPF_PROG_GET_NEXT_ID` syscalls which rootkits may intercept
-- **Pinned Programs**: Walks `/sys/fs/bpf` to discover pinned programs
-- Monitors `sys_bpf` syscalls via tracepoints to detect suspicious ENOENT patterns
-- Identifies programs visible to kernel but hidden from userspace enumeration
-- **Rootkit Technique Detected**: `sys_bpf` syscall hooking, premature -ENOENT returns forcing early termination of enumeration
-
-## Prerequisites
-
-### Build Requirements
-- Go 1.21 or later
-- Clang 11 or later
-- Linux kernel headers
- - `bpftool` (optional; only if generating `vmlinux.h` locally)
-- `libbpf-dev` (for eBPF headers)
-
-### Runtime Requirements
-- Linux kernel 5.8+ with BTF enabled (`CONFIG_DEBUG_INFO_BTF=y`)
-- Root privileges (for loading eBPF programs)
-
-### Pre-compiled binary
-If you're brave enough to run a pre-compiled binary as sudo you can find it
-on the [releases page](https://github.com/waldh4ri/zygarde/releases).
-
-### Installing Prerequisites
-
-**Ubuntu/Debian:**
-```bash
-sudo apt update
-sudo apt install -y golang clang llvm libbpf-dev linux-headers-$(uname -r)
-# Optional: only needed if you want to generate vmlinux.h from this system
-sudo apt install -y bpftool
-```
-
-**Fedora/RHEL:**
-```bash
-sudo dnf install -y golang clang llvm libbpf-devel kernel-devel
-sudo dnf install -y bpftool
-```
-
-**Arch Linux:**
-```bash
-sudo pacman -S go clang llvm libbpf linux-headers
-sudo pacman -S bpf
-```
-
-## Building
-
-### Quick Build (Automated)
-
-The easiest way to build Zygarde is using the included `build.sh` script, which handles all steps automatically:
-
-```bash
-./build.sh
-```
-
-This script will:
-- Generate the `vmlinux.h` kernel header (if needed)
-- Create eBPF Go bindings
-- Compile the static binary
-
-### Step-by-Step Build
-
-#### Step 1: Generate vmlinux.h
-
-The `vmlinux.h` file contains kernel type definitions for CO-RE:
-
-Note:
-- You do not need `bpftool` or root to build if you already have a suitable `bpf/vmlinux.h`. You can bring your own `vmlinux.h` (from any kernel with BTF enabled) and skip this step entirely.
-- `bpftool` is only required if you want to generate `vmlinux.h` from the current machine. Reading `/sys/kernel/btf/vmlinux` typically requires root.
-
-```bash
-# Generate vmlinux.h from your running kernel
-sudo bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
-```
-
-#### Step 2: Generate eBPF Go Bindings
-
-```bash
-# Install bpf2go tool
-go install github.com/cilium/ebpf/cmd/bpf2go@latest
-
-# Generate eBPF bindings (from checks directory)
-cd checks
-go generate
-cd ..
-```
-
-Or use the Makefile:
-
-```bash
-make generate
-```
-
-#### Step 3: Build the Binary
-
-```bash
-# Static build for maximum portability
-CGO_ENABLED=0 go build -ldflags="-s -w" -o zygarde .
-```
-
-Or use the Makefile:
-
-```bash
-make build
-```
-
-The resulting `zygarde` binary is completely standalone and can be copied to any Linux system with a compatible kernel.
+- **Canaries.** Cells plant objects they know exist (a child process, a file, their own BPF programs, their own syscalls) and look for them in every view. A canary missing from a view means that view is filtered: SUSPICIOUS.
+- **Blocked eBPF is a finding.** A `bpf()` permission error is reported as SUSPICIOUS when every other source says it should work: root, no seccomp filter, and a lockdown mode that allows it. A kernel that simply lacks a feature gives SKIPPED instead.
+- **Supervised worker.** Cells run in a child process. If it is killed mid-Cell, the parent reports the signal (SUSPICIOUS), cleans up, and resumes the remaining Cells in a new worker. A Cell that hangs past its timeout is reported too.
+- **No libc.** The binary is static Go and makes syscalls directly, so `LD_PRELOAD` and libc-hooking rootkits don't affect it.
 
 ## Usage
 
-### Basic Usage
-
 ```bash
-# Must be run as root
-sudo ./zygarde
-```
-
-### Command-Line Options
-
-#### JSON Output Mode
-
-For machine-readable output that can be piped to `jq` or other JSON processors:
-
-```bash
-# Output results as JSON only (no banner, progress, or colors)
-sudo ./zygarde --json
-
-# Pretty-print with jq
-sudo ./zygarde --json | jq '.'
-
-# Filter only suspicious findings (status=2)
+sudo ./zygarde                          # run all Cells
 sudo ./zygarde --json | jq '.[] | select(.status == 2)'
-
-# Get summary of all checks
-sudo ./zygarde --json | jq '[.[] | {cell, status, findings: (.suspicious // [] | length)}]'
-
-# Extract specific cell results
-sudo ./zygarde --json | jq '.[] | select(.cell == "hidden_process")'
+sudo ./zygarde --cells hidden_process,hidden_kernel_module
+sudo ./zygarde -d                       # debug logs on stderr
+./zygarde --list                        # list Cells
 ```
 
-**JSON Output Format:**
-- `cell`: Cell identifier (e.g., `"hidden_process"`, `"altered_syscall_table"`)
-- `status`: Result status (`0` = OK, `1` = Error, `2` = Suspicious)
-- `message`: Human-readable summary
-- `suspicious`: Array of suspicious findings with descriptions and details
-- `duration_seconds`: Execution time in seconds
-- `error_message`: Error description (only if status=1)
+| Flag | Meaning |
+|------|---------|
+| `--json` | print results as a JSON array on stdout |
+| `--cells a,b` | run only these Cells (see `--list`) |
+| `--btf <file>` | external BTF for kernels without `/sys/kernel/btf/vmlinux` |
+| `--no-isolation` | run Cells in-process instead of in a supervised worker |
+| `-d`, `--debug` | debug logging on stderr |
 
-See `examples/jq_examples.sh` for more advanced jq queries.
+### Statuses and exit codes
 
-#### Debug Mode
+| Status | JSON `status` | Meaning |
+|--------|---------------|---------|
+| OK | 0 | the Cell ran and found nothing |
+| ERROR | 1 | the Cell could not complete |
+| SUSPICIOUS | 2 | evidence of hiding or tampering |
+| SKIPPED | 3 | the Cell does not apply to this system (reason in `message`) |
 
-For detailed verbose output showing every step of the detection process:
+Results may also carry `observations`: context such as the inventory of legitimate hooks, which never changes the status.
+
+The exit code is `2` if anything is SUSPICIOUS, `1` if any Cell errored, and `0` otherwise.
+
+Each JSON result has `cell`, `name`, `status`, `status_text`, `message`, `findings` (with `description` and `details`), `canaries` (`canary`, `view`, `observed`), `error` and `duration_seconds`.
+
+## Building
+
+The generated eBPF objects and Go bindings (`cells/*/*_bpfel.{go,o}`) are committed, so a plain Go build needs no clang:
 
 ```bash
-# Enable debug mode
-sudo ./zygarde -d
-# or
-sudo ./zygarde --debug
+make build      # ./zygarde for this machine (CGO_ENABLED=0, static)
+make dist       # dist/zygarde-linux-{amd64,arm64}
 ```
 
-Debug mode provides detailed information about:
-- eBPF program loading and CO-RE relocations
-- Kernel symbol resolution
-- BPF map configuration
-- Kprobe/tracepoint attachment
-- Ring buffer operations
-- Event processing and parsing
-- Cell activation and deactivation
-
-**Note:** Debug mode is automatically disabled when using `--json` to keep JSON output clean.
-
-#### Hidden Files Monitoring Duration
-
-Configure how long the Hidden Files Cell monitors for file access:
+After changing a `.bpf.c` file, regenerate the bindings with clang:
 
 ```bash
-# Monitor for 10 seconds (default is 5 seconds)
-sudo ./zygarde --hidden-files-duration=10s
-
-# Monitor for 1 minute
-sudo ./zygarde --hidden-files-duration=1m
-
-# Combine with JSON output
-sudo ./zygarde --json --hidden-files-duration=30s
+make generate         # needs clang and llvm
+make docker-generate  # or inside the pinned toolchain image (build/Dockerfile)
 ```
 
-The duration accepts any valid Go duration format (e.g., `10s`, `1m`, `1m30s`, `500ms`).
+CI regenerates the bindings in that image and fails if they differ from what is committed.
 
-### Example Output
+### Developing without a Linux machine
 
-```
- ███████╗██╗   ██╗ ██████╗  █████╗ ██████╗ ██████╗ ███████╗
- ╚══███╔╝╚██╗ ██╔╝██╔════╝ ██╔══██╗██╔══██╗██╔══██╗██╔════╝
-   ███╔╝  ╚████╔╝ ██║  ███╗███████║██████╔╝██║  ██║█████╗  
-  ███╔╝    ╚██╔╝  ██║   ██║██╔══██║██╔══██╗██║  ██║██╔══╝  
- ███████╗   ██║   ╚██████╔╝██║  ██║██║  ██║██████╔╝███████╗
- ╚══════╝   ╚═╝    ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝ ╚══════╝
-                                                                  
- Guardian of the Kernel - eBPF Rootkit Detection
- Version 0.0.1 - 10% Form
+Every target has a `docker-` variant that runs in the toolchain image, from Linux, macOS or Windows:
 
-Deploying 5 Zygarde Cells for system analysis...
-
-[Cell 1/5] Executing: Altered Syscall Table Check
-            Detects sys_call_table hooking by comparing kernel memory with expected addresses
-            [+] All 4 checked syscalls are intact (0.12s)
-
-[Cell 2/5] Executing: Hidden Kernel Module Detection
-            Detects kernel modules hidden from lsmod by comparing /proc/modules with /sys/module
-            [+] All 145 kernel modules are visible (0.08s)
-
-[Cell 3/5] Executing: Hidden Process Detection
-            Detects hidden processes/threads by comparing kernel task list (BPF iterator) with userspace /proc enumeration
-            [+] No hidden processes detected (428 kernel tasks, 428 /proc entries) (0.15s)
-
-[Cell 4/5] Executing: Hidden File Detection
-            Detects files that are hidden from directory listings by monitoring execve, openat, open, and openat2 syscalls on PATH directories
-            [+] No hidden files detected (monitored 87 events: map[execve:23 openat:58 open:6]) (20.11s)
-
-[Cell 5/5] Executing: Hidden eBPF Program Detection
-            Detects hidden BPF objects by correlating sys_bpf NEXT_ID enumeration with pinned program IDs
-            [+] No hidden programs detected (kernel:56, enum:56, pinned:12, ENOENT:1) (0.28s)
-
-======================================================================
-ZYGARDE CORE ANALYSIS - SUMMARY REPORT
-======================================================================
-Total Cells Deployed: 5
-  [+] OK:         5
-  [*] SUSPICIOUS: 0
-  [-] ERROR:      0
-
-Deactivating Cells...
-======================================================================
-[+] Ecosystem stable - no threats detected
-======================================================================
+```bash
+make docker-test     # go vet + unit tests
+make docker-build
+make docker-run ARGS="--cells hidden_file"   # privileged container on the Docker host's kernel
 ```
 
-### Exit Codes
+## Compatibility
 
-- `0`: All checks passed, no suspicious activity (Ecosystem stable)
-- `1`: One or more Cells failed with errors
-- `2`: Suspicious activity detected - potential rootkit (Threat detected!)
+- **Runtime:** Linux 5.8+ with BTF (`CONFIG_DEBUG_INFO_BTF=y`) for most Cells, root privileges, x86_64 or arm64. Cells probe for the kernel features they need (BTF types rather than version numbers, so distribution backports are honoured) and report SKIPPED when something is missing.
+- **Kernel lockdown:** in `confidentiality` mode, BPF may not read kernel memory, so `altered_syscall_table`, `hidden_process` and `hidden_file` skip, and `hook_inventory` skips because tracefs is locked. `hidden_ebpf_program` skips too: it only reads user memory, which lockdown allows, but cilium/ebpf detects helper support by probing `bpf_probe_read_kernel()`, gets denied, and downgrades `bpf_probe_read_user()` to the legacy `bpf_probe_read()`, which lockdown forbids. `ebpf_integrity`, `hidden_kernel_module` and `kernel_taint` still run. `integrity` mode (the usual Secure Boot default) affects nothing.
+- **No tracefs needed:** syscall tracing uses BTF-typed raw tracepoints (`tp_btf`), which work where tracefs isn't mounted, such as in containers.
+- **Verified so far:** x86_64, Linux 6.6.87 (WSL2), inside a privileged container. arm64 binaries build but are untested. Testing across a kernel matrix is the next milestone.
+
+## Testing across kernels
+
+Unit tests (`make test`) cover parsing and decision logic. Compatibility is tested by booting real kernels with QEMU/KVM inside a privileged container (`build/vmtest.Dockerfile`), then running Zygarde in each:
+
+```bash
+make vm-upstream                        # upstream LTS kernels (ghcr.io/cilium/ci-kernels via vimto), ~1 min
+make vm-distro                          # official cloud images from test/vm/distros.txt, first run downloads them
+make vm-distro DISTROS="rocky-8 debian-12" JOBS=4
+make vm-report                          # Markdown matrix of test/vm/out
+```
+
+On a clean VM every Cell must be OK or SKIPPED, with every canary observed. The report exits non-zero otherwise. Distro targets can raise kernel lockdown before running, to test lockdown handling. CI runs the upstream matrix on every push.
 
 ## Development
 
-### Project Structure
+### Layout
 
 ```
-zygarde/
-├── main.go                    # Zygarde Core - entry point 
-├── go.mod                     # Go module definition
-├── build.sh                   # Automated build script
-├── checks/
-│   ├── interface.go           # Cell interface definition
-│   ├── altered_syscall_table.go   # Altered Syscall Table Check
-│   ├── hidden_kernel_module.go    # Hidden Kernel Module Check
-│   ├── hidden_process.go          # Hidden Process Detection
-│   ├── hidden_file.go             # Hidden File Detection
-│   └── hidden_ebpf_program.go     # Hidden eBPF Program Detection
-├── bpf/
-│   ├── zygarde.bpf.c          # eBPF programs (C)
-│   └── vmlinux.h              # Kernel type definitions (generated)
-└── examples/
-    ├── test_json_output.go    # JSON serialization examples
-    └── jq_examples.sh         # jq query examples for JSON output
+cmd/zygarde/            CLI, output, supervisor wiring
+internal/core/          Cell interface, Result/Status, Env probing, error classification
+internal/supervisor/    parent/worker process split and protocol
+internal/canary/        canary processes and files
+internal/bpfutil/       loading, iterators, enumeration helpers
+internal/kernel/        kallsyms, lockdown, /proc/self/status parsing
+cells/<name>/           one package per Cell: <name>.bpf.c + generated bindings + Go logic
+test/vm/                kernel matrix harness: upstream.sh, distro.sh, inside.sh, report/
+bpf/include/            vendored libbpf headers, per-arch vmlinux.h, zygarde.h
+build/Dockerfile        pinned toolchain (Go, clang)
+build/vmtest.Dockerfile VM test harness (QEMU, vimto, cloud-image tools)
 ```
 
-### Adding New Cells
+### Adding a Cell
 
-1. Implement the `Check` interface in a new file under `checks/`
-2. Add your eBPF program to `bpf/zygarde.bpf.c` with a unique section name
-3. Register your Cell in `main.go` (in the `allCells` slice)
-4. Run `go generate` to update eBPF bindings
-
-Example:
-
-```go
-type MyCell struct{}
-
-func NewMyCell() *MyCell {
-    return &MyCell{}
-}
-
-func (c *MyCell) Name() string {
-    return "My Custom Cell"
-}
-
-func (c *MyCell) Description() string {
-    return "Describes what this Cell monitors"
-}
-
-func (c *MyCell) Run() (Result, error) {
-    // Implementation
-}
-
-func (c *MyCell) Cleanup() error {
-    // Cleanup resources
-}
-```
-
-## Makefile Targets
-
-```bash
-make help         # Show all available targets
-make generate     # Generate vmlinux.h and eBPF bindings
-make build        # Build the zygarde binary
-make clean        # Remove built artifacts
-make test         # Run tests
-make install      # Install to /usr/local/bin
-```
-
-## Technical Details
-
-### CO-RE (Compile Once - Run Everywhere)
-
-Zygarde uses eBPF CO-RE, which allows the same eBPF bytecode to run on different kernel versions without recompilation. This is achieved through:
-
-1. **BTF (BPF Type Format)**: Kernel type information available at `/sys/kernel/btf/vmlinux`
-2. **CO-RE Relocations**: The `libbpf` loader adjusts field offsets at load time
-3. **vmlinux.h**: Generated header with all kernel types
-
-### Security Considerations
-
-- **Root Required**: eBPF programs require `CAP_BPF` and `CAP_PERFMON` capabilities
-- **Kernel Lockdown**: May be restricted on systems with kernel lockdown enabled
-- **KASLR**: Addresses from `/proc/kallsyms` require root to read
-- **False Positives**: Some legitimate kernel modifications may trigger alerts
-
-### Limitations
-
-- Requires kernel 5.8+ with BTF support
-- Cannot detect all rootkit techniques (e.g., firmware rootkits)
-- Sophisticated rootkits may evade detection by hooking eBPF subsystem
-- Hidden file detection requires active process execution
-- Hidden process detection may have timing-related false positives due to process lifecycle races
-
-## Troubleshooting
-
-### "failed to load eBPF objects"
-
-**Cause**: Kernel doesn't support required eBPF features
-
-**Solution**: 
-```bash
-# Check kernel version
-uname -r  # Should be 5.8+
-
-# Check BTF support
-ls -la /sys/kernel/btf/vmlinux
-
-# Check eBPF features
-sudo bpftool feature
-```
-
-### "operation not permitted"
-
-**Cause**: Not running as root
-
-**Solution**: Run with `sudo ./zygarde`
-
-### "symbol not found in /proc/kallsyms"
-
-**Cause**: Kernel symbol not available or KASLR hiding addresses
-
-**Solution**: Ensure running as root to see KASLR addresses
-
-## License
-
-This project is licensed under the Dual BSD/GPL License - see the LICENSE file for details.
+1. Create `cells/<name>/` with a `.bpf.c` file (start it with `//go:build ignore`) and a `//go:generate go tool bpf2go ...` line, copying an existing Cell.
+2. Implement `core.Cell`:
+   - `Supported(env)` returns `core.Skip(...)` when the kernel lacks what the Cell needs; prefer `env.RequireBTFType`.
+   - `Run(ctx, env, rec)` records results with `rec.Suspicious`, `rec.Canary` and `rec.Message`. Wrap failing bpf() operations with `core.WrapBPF` so denials are classified correctly. Release every kernel resource before returning.
+3. Load only your own objects with `bpfutil.Load`, and filter on Zygarde's own process with `is_target()` and `bpfutil.SetTarget`.
+4. Register the Cell in `cmd/zygarde/main.go` and run `make generate`.
 
 ## References
 
-- [eBPF Documentation](https://ebpf.io/)
-- [Andrii Nakryiko blogposts](https://nakryiko.com/posts/bpf-portability-and-co-re)
-- [Cilium eBPF Library](https://github.com/cilium/ebpf)
-- [BPF CO-RE](https://nakryiko.com/posts/bpf-portability-and-co-re/)
-- [Linux Rootkit Techniques](https://www.kernel.org/doc/html/latest/security/)
-- [Zygarde Pokémon](https://bulbapedia.bulbagarden.net/wiki/Zygarde) - Inspiration for the name
+- [cilium/ebpf](https://github.com/cilium/ebpf)
+- [BPF CO-RE (Andrii Nakryiko)](https://nakryiko.com/posts/bpf-portability-and-co-re/)
+- [BPF iterators](https://docs.kernel.org/bpf/bpf_iterators.html)
+- [x86/syscall: Don't force use of indirect calls for system calls](https://git.kernel.org/torvalds/c/1e3ad78334a6)
+- [libbpf/vmlinux.h](https://github.com/libbpf/vmlinux.h) (source of `bpf/include/arm64/vmlinux.h`)
 
-## Acknowledgments
+## License
 
-- The Cilium team for the excellent Go eBPF library
-- The Linux kernel eBPF community
-
----
-
-<div align="center">
-
-*"Order must be maintained in the ecosystem."* - Zygarde
-
-</div>
-
+Dual BSD/GPL; see LICENSE. The vendored libbpf headers are LGPL-2.1 OR BSD-2-Clause.
