@@ -19,6 +19,8 @@ import (
 	"github.com/waldh4ri/zygarde/cells/inlinehook"
 	"github.com/waldh4ri/zygarde/cells/integrity"
 	"github.com/waldh4ri/zygarde/cells/kmodule"
+	"github.com/waldh4ri/zygarde/cells/kptr"
+	"github.com/waldh4ri/zygarde/cells/netfilter"
 	"github.com/waldh4ri/zygarde/cells/process"
 	"github.com/waldh4ri/zygarde/cells/socket"
 	"github.com/waldh4ri/zygarde/cells/syscalltable"
@@ -69,12 +71,14 @@ func allCells(o options) []core.Cell {
 		syscalltable.New(),
 		hooks.New(),
 		inlinehook.New(),
+		kptr.New(),
 		kmodule.New(),
 		taint.New(),
 		process.New(),
 		file.New(),
 		bpfprog.New(),
 		socket.New(),
+		netfilter.New(),
 		userhooks.New(),
 	}
 }
