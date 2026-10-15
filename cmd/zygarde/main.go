@@ -30,7 +30,7 @@ import (
 	"github.com/waldh4ri/zygarde/internal/supervisor"
 )
 
-const version = "0.2.0"
+const version = "0.2.1"
 
 type options struct {
 	debug      bool
