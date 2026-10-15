@@ -16,10 +16,10 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
-	"golang.org/x/sys/unix"
 
 	"github.com/waldh4ri/zygarde/internal/bpfutil"
 	"github.com/waldh4ri/zygarde/internal/core"
+	"github.com/waldh4ri/zygarde/internal/kernel"
 )
 
 // canaryCandidates are harmless functions the canary may hook, in order of
@@ -62,7 +62,10 @@ func (*Cell) Supported(env *core.Env) error {
 }
 
 func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
-	dir, cleanup, err := tracefs()
+	dir, cleanup, err := kernel.Tracefs()
+	if errors.Is(err, kernel.ErrNoTracefs) {
+		return core.Skip("kernel has no tracefs")
+	}
 	if err != nil {
 		return err
 	}
@@ -295,57 +298,4 @@ func plantCanary(env *core.Env, rec *core.Recorder, target string) (string, stri
 		return "", "", nop
 	}
 	return target, "kprobe", func() { l.Close(); p.Prog.Close() }
-}
-
-// tracefs returns a tracefs directory, mounting one temporarily if needed.
-func tracefs() (string, func(), error) {
-	nop := func() {}
-	f, err := os.Open("/proc/self/mountinfo")
-	if err != nil {
-		return "", nop, err
-	}
-	defer f.Close()
-	var debugfs string
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		// "... <mount point> <options> ... - <fstype> <source> <super options>"
-		fields := strings.Fields(sc.Text())
-		sep := -1
-		for i, fld := range fields {
-			if fld == "-" {
-				sep = i
-				break
-			}
-		}
-		if sep < 0 || sep+1 >= len(fields) || len(fields) < 5 {
-			continue
-		}
-		switch fields[sep+1] {
-		case "tracefs":
-			return fields[4], nop, nil
-		case "debugfs":
-			debugfs = fields[4]
-		}
-	}
-	if debugfs != "" {
-		if _, err := os.Stat(filepath.Join(debugfs, "tracing", "enabled_functions")); err == nil {
-			return filepath.Join(debugfs, "tracing"), nop, nil
-		}
-	}
-
-	dir, err := os.MkdirTemp("", "zygarde-tracefs-")
-	if err != nil {
-		return "", nop, err
-	}
-	if err := unix.Mount("nodev", dir, "tracefs", unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC|unix.MS_RDONLY, ""); err != nil {
-		os.Remove(dir)
-		if errors.Is(err, unix.ENODEV) {
-			return "", nop, core.Skip("kernel has no tracefs")
-		}
-		return "", nop, fmt.Errorf("mounting tracefs: %w", err)
-	}
-	return dir, func() {
-		unix.Unmount(dir, 0)
-		os.Remove(dir)
-	}, nil
 }

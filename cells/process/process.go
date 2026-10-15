@@ -34,7 +34,7 @@ func (*Cell) ID() string             { return "hidden_process" }
 func (*Cell) Name() string           { return "Hidden Process Detection" }
 func (*Cell) Timeout() time.Duration { return 30 * time.Second }
 func (*Cell) Description() string {
-	return "Compares the kernel task list (BPF task iterator) with the processes listed in /proc"
+	return "Compares the kernel task list (BPF task iterator) with the processes listed in /proc, and flags processes disguised as kernel threads or running from deleted or memory-backed files"
 }
 
 func (*Cell) Supported(env *core.Env) error {
@@ -139,9 +139,25 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 		}
 	}
 
+	hidden := len(rec.Findings())
+
+	// Disguised processes, checked on the kernel's view of every process.
+	stable := make(map[uint32]processTaskInfo, len(before.procs))
+	for tgid, t := range before.procs {
+		if _, ok := after.procs[tgid]; ok && tgid != 0 {
+			stable[tgid] = t
+		}
+	}
+	checkMasquerade(rec, stable, map[uint32]bool{uint32(os.Getpid()): true, canaryPID: true})
+	disguised := len(rec.Findings()) - hidden
+
 	switch {
-	case len(rec.Findings()) > 0:
-		rec.Message("%d hidden process(es) or task(s)", len(rec.Findings()))
+	case hidden > 0 && disguised > 0:
+		rec.Message("%d hidden and %d disguised process(es)", hidden, disguised)
+	case hidden > 0:
+		rec.Message("%d hidden process(es) or task(s)", hidden)
+	case disguised > 0:
+		rec.Message("No hidden processes; %d disguised process(es)", disguised)
 	case sched != nil:
 		rec.Message("No hidden processes (%d kernel processes, %d /proc entries, %d threads seen running)", len(before.procs), len(listed), ran)
 	default:

@@ -16,18 +16,21 @@ import (
 	"github.com/waldh4ri/zygarde/cells/bpfprog"
 	"github.com/waldh4ri/zygarde/cells/file"
 	"github.com/waldh4ri/zygarde/cells/hooks"
+	"github.com/waldh4ri/zygarde/cells/inlinehook"
 	"github.com/waldh4ri/zygarde/cells/integrity"
 	"github.com/waldh4ri/zygarde/cells/kmodule"
 	"github.com/waldh4ri/zygarde/cells/process"
+	"github.com/waldh4ri/zygarde/cells/socket"
 	"github.com/waldh4ri/zygarde/cells/syscalltable"
 	"github.com/waldh4ri/zygarde/cells/taint"
+	"github.com/waldh4ri/zygarde/cells/userhooks"
 	"github.com/waldh4ri/zygarde/internal/canary"
 	"github.com/waldh4ri/zygarde/internal/core"
 	"github.com/waldh4ri/zygarde/internal/report"
 	"github.com/waldh4ri/zygarde/internal/supervisor"
 )
 
-const version = "0.1.0"
+const version = "0.2.0"
 
 type options struct {
 	debug      bool
@@ -65,11 +68,14 @@ func allCells(o options) []core.Cell {
 		integrity.New(), // first: later Cells' results depend on bpf() working
 		syscalltable.New(),
 		hooks.New(),
+		inlinehook.New(),
 		kmodule.New(),
 		taint.New(),
 		process.New(),
 		file.New(),
 		bpfprog.New(),
+		socket.New(),
+		userhooks.New(),
 	}
 }
 

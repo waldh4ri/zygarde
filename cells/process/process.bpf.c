@@ -24,6 +24,9 @@ struct task_info {
 	__u32 state;
 	__u32 global_tgid; // init-namespace IDs, to match the scheduler view
 	__u32 global_pid;
+	__u32 flags;       // PF_* (PF_KTHREAD: a kernel thread)
+	__u32 has_mm;      // has a user address space
+	__u32 euid;
 	char comm[16];
 };
 
@@ -123,6 +126,9 @@ int dump_task(struct bpf_iter__task *ctx)
 		info.state = BPF_CORE_READ(task, __state);
 	else
 		info.state = BPF_CORE_READ((struct task_struct___old *)task, state);
+	info.flags = BPF_CORE_READ(task, flags);
+	info.has_mm = BPF_CORE_READ(task, mm) != NULL;
+	info.euid = BPF_CORE_READ(task, cred, euid.val);
 	BPF_CORE_READ_STR_INTO(&info.comm, task, comm);
 
 	bpf_seq_write(ctx->meta->seq, &info, sizeof(info));

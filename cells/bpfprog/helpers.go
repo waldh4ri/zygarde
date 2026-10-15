@@ -67,7 +67,11 @@ func resolveHelpers(insns asm.Instructions, ks *kernel.Kallsyms, callBase uint64
 // auditHelpers records programs that call helpers able to modify the system.
 // selfID is zygarde's own iterator program, whose bpf_seq_write() call must
 // be resolved: a canary for the decoding itself.
-func auditHelpers(rec *core.Recorder, env *core.Env, progs map[uint32]bpfprogProgInfo, selfID uint32) {
+//
+// A program attached to a sensitive point (directory listing, bpf(), kill,
+// ptrace) that can rewrite user memory or return values is suspicious even
+// when the helper alone would only be an observation.
+func auditHelpers(rec *core.Recorder, env *core.Env, progs map[uint32]bpfprogProgInfo, selfID uint32, attach map[uint32][]attachment) {
 	ks, err := env.Kallsyms()
 	if err != nil {
 		rec.Limit("Capabilities of loaded BPF programs not audited: kernel symbols unavailable (%v)", err)
@@ -113,6 +117,12 @@ func auditHelpers(rec *core.Recorder, env *core.Env, progs map[uint32]bpfprogPro
 		}
 
 		p := progs[id]
+		var sens []string
+		for _, a := range attach[id] {
+			if s := sensitive(a.Name); s != "" {
+				sens = append(sens, a.Where+" ("+s+")")
+			}
+		}
 		for _, h := range helpers {
 			risk, ok := helperRisk[h]
 			if !ok {
@@ -128,6 +138,13 @@ func auditHelpers(rec *core.Recorder, env *core.Env, progs map[uint32]bpfprogPro
 				"all_helpers":  strings.Join(helpers, ", "),
 			}
 			desc := fmt.Sprintf("BPF program #%d (%s) calls %s: %s", id, name, h, risk.what)
+			if atts := attach[id]; len(atts) > 0 {
+				details["attached_to"] = wheres(atts)
+			}
+			modifies := h == "bpf_probe_write_user" || h == "bpf_override_return"
+			if modifies && len(sens) > 0 {
+				desc += "; attached to " + strings.Join(sens, ", ")
+			}
 			if risk.suspicious {
 				rec.Suspicious(core.Finding{
 					Description: desc,
@@ -137,6 +154,15 @@ func auditHelpers(rec *core.Recorder, env *core.Env, progs map[uint32]bpfprogPro
 						"and security tools almost never need it; eBPF rootkits rely on it.",
 					Benign: "Debugging or research tools that use it deliberately. Identify what loaded the program " +
 						"(bpftool prog show id <id> lists its owner and load time).",
+				})
+			} else if modifies && len(sens) > 0 {
+				rec.Suspicious(core.Finding{
+					Description: desc,
+					Details:     details,
+					Why: "This program hooks a point rootkits use to hide (directory listings, bpf(), signals, ptrace) " +
+						"and can change the value the hooked function returns, e.g. fail a lookup or cut a listing short.",
+					Benign: "Security tools that enforce policy with bpf_override_return (e.g. blocking a syscall). " +
+						"Identify what loaded the program (bpftool prog show id <id>).",
 				})
 			} else {
 				rec.Observe(desc, details)

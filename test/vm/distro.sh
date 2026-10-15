@@ -68,7 +68,7 @@ qemu_cmd() {
 }
 
 run_one() {
-	local name=$1 url=$2 lockdown=$3 arch=$4
+	local name=$1 url=$2 lockdown=$3 arch=$4 fixtures=$5
 	local vm=$work/$name dir=$outdir/$name
 	local results_tty=/dev/ttyS1 timeout=$vm_timeout
 	if [ "$arch" = arm64 ]; then
@@ -90,6 +90,12 @@ run_one() {
 
 	cp "$root/dist/zygarde-linux-$arch" "$vm/seed/zygarde"
 	cp "$root/test/vm/inside.sh" "$vm/seed/"
+	local fixture_env=""
+	if [ "$fixtures" = fixtures ]; then
+		cp "$work/fixture-$arch" "$vm/seed/zyg-fixture"
+		cp "$root/test/vm/fixtures.sh" "$vm/seed/"
+		fixture_env="FIXTURE=/usr/local/sbin/zyg-fixture"
+	fi
 	echo "instance-id: zygarde-$name" > "$vm/seed/meta-data"
 	cat > "$vm/seed/user-data" <<-EOF
 		#cloud-config
@@ -100,8 +106,10 @@ run_one() {
 		    mount -o ro -L cidata /run/zygseed || mount -o ro /dev/sr0 /run/zygseed
 		    cp /run/zygseed/zygarde /usr/local/sbin/zygarde-test  # /run is often noexec
 		    chmod 755 /usr/local/sbin/zygarde-test
-		    sh /run/zygseed/inside.sh /usr/local/sbin/zygarde-test /run/zygout $lockdown > /dev/console 2>&1
-		    for f in meta.env results.json stderr.log; do
+		    if [ -e /run/zygseed/zyg-fixture ]; then install -m 755 /run/zygseed/zyg-fixture /usr/local/sbin/zyg-fixture; fi
+		    $fixture_env sh /run/zygseed/inside.sh /usr/local/sbin/zygarde-test /run/zygout $lockdown > /dev/console 2>&1
+		    for f in meta.env results.json stderr.log fixtures.log; do
+		      [ -e /run/zygout/\$f ] || continue
 		      echo "--- \$f"; cat /run/zygout/\$f
 		    done > $results_tty
 		    echo "--- end" > $results_tty
@@ -133,17 +141,22 @@ run_one() {
 }
 
 targets=()
-while IFS='|' read -r name url lockdown arch; do
+while IFS='|' read -r name url lockdown arch fixtures; do
 	case $name in ''|'#'*) continue ;; esac
 	if [ $# -eq 0 ] || printf '%s\n' "$@" | grep -qx "$name"; then
-		targets+=("$name|$url|$lockdown|${arch:-amd64}")
+		targets+=("$name|$url|$lockdown|${arch:-amd64}|$fixtures")
 	fi
 done < "$root/test/vm/distros.txt"
 
+# The fixture helper (test/vm/fixture), for targets that plant fixtures.
+for arch in amd64 arm64; do
+	CGO_ENABLED=0 GOARCH=$arch go build -o "$work/fixture-$arch" ./test/vm/fixture
+done
+
 running=0
 for t in "${targets[@]}"; do
-	IFS='|' read -r name url lockdown arch <<< "$t"
-	run_one "$name" "$url" "$lockdown" "$arch" &
+	IFS='|' read -r name url lockdown arch fixtures <<< "$t"
+	run_one "$name" "$url" "$lockdown" "$arch" "$fixtures" &
 	running=$((running + 1))
 	if [ "$running" -ge "$jobs" ]; then
 		wait -n

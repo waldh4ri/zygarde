@@ -28,6 +28,9 @@ type processTaskInfo struct {
 	State      uint32
 	GlobalTgid uint32
 	GlobalPid  uint32
+	Flags      uint32
+	HasMm      uint32
+	Euid       uint32
 	Comm       [16]int8
 }
 

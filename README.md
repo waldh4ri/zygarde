@@ -28,20 +28,30 @@ It ships as a single static binary with no runtime dependencies, for x86_64 and 
 | `ebpf_integrity` | canary program and map loaded by Zygarde | `BPF_PROG/MAP_GET_NEXT_ID`, `GET_FD_BY_ID` | root |
 | `altered_syscall_table` | `sys_call_table` entries read with a kprobe | handler addresses in `/proc/kallsyms` | x86_64, `CONFIG_KALLSYMS_ALL`, a kernel that still dispatches through the table |
 | `hook_inventory` | ftrace's list of patched functions (`enabled_functions`) with each hook's handler | — (attribution: kernel, visible module, BPF, livepatch) | dynamic ftrace, tracefs (mounted temporarily if needed) |
-| `hidden_kernel_module` | module kobjects in `/sys/module` | module list in `/proc/modules` | — |
+| `inline_hook` | first instructions of syscall handlers and VFS, `/proc` and `/proc/net` functions, read from kernel memory | what the kernel writes there (ftrace NOP or call, `endbr64`), cross-checked with `enabled_functions` | x86_64, Linux 5.2+ |
+| `hidden_kernel_module` | module kobjects in `/sys/module`, module BTF | module list in `/proc/modules`; plus modules configured to load at boot | — |
 | `kernel_taint` | kernel taint flags (`/proc/sys/kernel/tainted`) | per-module taint (`/sys/module/*/taint`) | — |
-| `hidden_process` | BPF task iterator | `/proc` directory listing | BTF, Linux 5.8+ |
-| `hidden_file` | entries the filesystem produces (kprobe on `filldir64`) | entries `getdents64` returns, for sensitive directories, `/proc` and `/sys/module` | BTF, Linux 5.8+ |
-| `hidden_ebpf_program` | BPF program iterator, plus Zygarde's own `bpf()` calls traced at syscall exit | `BPF_PROG_GET_NEXT_ID`, `/sys/fs/bpf` pins | BTF, Linux 5.9+ |
+| `hidden_process` | BPF task iterator (with task flags and executable) | `/proc` directory listing; plus processes disguised as kernel threads or run from deleted or memory-backed files | BTF, Linux 5.8+ |
+| `hidden_file` | entries the filesystem produces (kprobe on `filldir64`) | entries `getdents64` returns, for sensitive directories, `/proc` and `/sys/module`; plus dot-entries in binary and library directories | BTF, Linux 5.8+ |
+| `hidden_ebpf_program` | BPF program iterator, plus Zygarde's own `bpf()` calls traced at syscall exit; holders read from every task's file table | `BPF_PROG_GET_NEXT_ID`, `/sys/fs/bpf` pins; plus where each program is attached (links, perf events, XDP, tc) | BTF, Linux 5.9+ |
+| `hidden_socket` | sockets reported over netlink `sock_diag` (what `ss` reads); holders read from every task's file table | `/proc/net/{tcp,udp}{,6}` (what `netstat` reads) | — (owners: BTF, Linux 5.8+) |
+| `userspace_hooks` | — (Zygarde doesn't use libc, so these hooks can't fool it) | dynamic linker injection: `/etc/ld.so.preload`, `ld.so.conf` directories, `LD_PRELOAD`/`LD_AUDIT` in process environments | — |
 
 Notes:
 
 - **Syscall table:** since Linux 6.9 (backported to 6.8.5, 6.6.26, 6.1.85 and 5.15.154), x86_64 dispatches syscalls through a `switch` in `x64_sys_call()`, so the table is no longer used and hooking it does nothing. On those kernels the Cell reports SKIPPED, and `hook_inventory` covers how syscalls are hooked there instead.
 - **Hooks:** an ftrace callback can only hijack a function if it sets `FTRACE_OPS_FL_IPMODIFY` (flag `I`), and the only legitimate user of that is livepatch. A hook whose handler resolves to no symbol runs in code outside the kernel, visible modules and named BPF programs. Both are SUSPICIOUS. Everything else (BPF trampolines, kprobes, livepatch) is listed as observations. The Cell plants its own fentry (or kprobe) hook as a canary.
 - **Taint:** loading a module taints the kernel (out-of-tree `O`, unsigned `E`, …) until reboot. A module taint that no visible module carries means a module hid itself, or was loaded and later unloaded.
+- **Inline hooks:** a hook that patches a function's first instructions directly (Reptile-family rootkits such as Mélofée, through khook) bypasses ftrace and kprobes, so `hook_inventory` can't see it. On x86_64 the kernel only ever puts an `endbr64` and a 5-byte ftrace site there: a NOP, or a call to ftrace or one of its trampolines. A jump out of the kernel's text, or a call that `enabled_functions` doesn't account for, is SUSPICIOUS. The reader's own kprobe on `getuid` serves as a canary: its patch must show up when that function is read.
 - **Kernel modules:** rootkits unlink themselves from the module list (`list_del`, which hides them from `lsmod`) or delete their kobject (`kobject_del`). Only loadable modules have `/sys/module/<name>/initstate`, which separates them from built-ins.
+- **Boot-time modules:** the same Cell lists modules configured to load at boot (`modules-load.d`, `/etc/modules`, `modprobe.d`, and `insmod`/`modprobe` lines in `rc.local`, `rc.modules` and shell profiles). It flags a module that isn't shipped with the running kernel (not in its `modules.dep`, `modules.builtin` or aliases), an `insmod` of a file outside `/lib/modules/$(uname -r)` (Mélofée loads `/etc/intel_audio/intel_audio.ko` from `rc.modules`), an `install` directive that runs something other than the usual `true`/`false`/`modprobe`/`sysctl`, and a configuration file hidden from its directory listing.
 - **Processes:** `/proc` lists only processes, not threads, so the comparison is per process. The kernel view is taken before and after reading `/proc`, which rules out processes that start or exit mid-scan. PIDs are translated into Zygarde's PID namespace, so it also works inside containers.
-- **Files:** Zygarde lists sensitive directories (binaries, libraries, persistence locations, `/tmp`, `/dev/shm`, home directories), `/proc` and `/sys/module` itself. A kprobe on `filldir64`, the callback that copies each entry into the `getdents64` buffer, records what the filesystem produced. An entry produced but not returned was filtered afterwards, by a hooked `getdents64` or by a program rewriting the result buffer. Hiding inside the filesystem code itself is not covered.
+- **Disguised processes:** a process named like a kernel thread (`kworker/…`, or a `[bracketed]` command line) that the kernel doesn't flag as one (`PF_KTHREAD`) is SUSPICIOUS: renaming can't fake the kernel's own flags. A process running from a `memfd`, `/dev/shm`, `/tmp` or a hidden directory, or from a deleted file, is an observation, and SUSPICIOUS when it runs as root (deleted binaries in package-managed directories, left behind by upgrades, stay observations). Command lines padded with long runs of blanks to push arguments out of view are observations.
+- **Files:** Zygarde lists sensitive directories (binaries, libraries, persistence locations, `/tmp`, `/dev/shm`, home directories), `/proc` and `/sys/module` itself. A kprobe on `filldir64`, the callback that copies each entry into the `getdents64` buffer, records what the filesystem produced. An entry produced but not returned was filtered afterwards, by a hooked `getdents64` or by a program rewriting the result buffer. Hiding inside the filesystem code itself is not covered (`inline_hook` checks that `filldir64` and its callers are unpatched).
+- **Dot-entries in system directories:** `/bin`, `/sbin`, `/usr/bin`, `/usr/sbin`, `/usr/local/bin`, `/lib*` and `/usr/lib*` hold no dot-entries on a stock install (except `.build-id`, FIPS `.hmac` files and Gentoo's `.keep*`). Others are observations, and SUSPICIOUS when they hold executables (Scales keeps a trojaned `sudo` in `/usr/bin/.local`).
+- **BPF attachments and owners:** eBPF rootkits (LinkPro, Scales) hide entries from programs attached to syscall tracepoints, which don't go through ftrace. The inventory lists where every program is attached, from BPF links (`BPF_LINK_GET_NEXT_ID`), BPF-running perf events (`BPF_TASK_FD_QUERY`, as `bpftool perf` does, which also covers attachments without a link) and network interfaces (XDP and tc filters over netlink). A BPF task-file iterator reads which processes hold each program and link straight from the kernel's file tables. A program held only by processes hidden from `/proc` is SUSPICIOUS; so is a program on a sensitive attach point (directory listing, `bpf()`, `kill`, `ptrace`, raw `sys_enter`/`sys_exit`) that can rewrite user memory or return values, and an XDP or tc program that is hidden or unnamed (covert channels, e.g. LinkPro's port knocking). Other attachments, unowned programs and `/sys/fs/bpf` pins (with the programs using each pinned map) are observations. Zygarde's own programs must be attributed to it (canary).
+- **Sockets:** `netstat` reads `/proc/net` and `ss` uses netlink `sock_diag`; rootkits usually filter only one (LinkPro hides its listener from `/proc/net`). A socket present in one view but not the other, in two snapshots, is SUSPICIOUS, as is a socket held only by processes hidden from `/proc` (how Sandfly found Scales). Zygarde's own TCP and UDP canary sockets must appear in both views and be attributed to it. Kernels built without `CONFIG_INET_DIAG` only get the ownership check. Only Zygarde's network namespace is covered.
+- **Userspace hooks:** `/etc/ld.so.preload` with entries is SUSPICIOUS (LinkPro falls back to it when its eBPF part can't load), as are `ld.so.conf` directories under `/tmp`, `/dev/shm`, hidden or world-writable directories, and preloaded libraries that are missing, live in such places or are hidden from their directory listing. Processes started with `LD_PRELOAD`/`LD_AUDIT` or an unusual `LD_LIBRARY_PATH` are observations (profilers, allocators and EDRs use them).
 
 ## Resisting tampering
 
@@ -50,7 +60,7 @@ A rootkit can attack the scanner itself. Zygarde is built to make that visible:
 - **Canaries.** Cells plant objects they know exist (a child process, a file, their own BPF programs, their own syscalls) and look for them in every view. A canary missing from a view means that view is filtered: SUSPICIOUS.
 - **Blocked eBPF is a finding.** A `bpf()` permission error is reported as SUSPICIOUS when every other source says it should work: root, no seccomp filter, and a lockdown mode that allows it. A kernel that simply lacks a feature gives SKIPPED instead.
 - **Supervised worker.** Cells run in a child process. If it is killed mid-Cell, the parent reports the signal (SUSPICIOUS), cleans up, and resumes the remaining Cells in a new worker. A Cell that hangs past its timeout is reported too.
-- **No libc.** The binary is static Go and makes syscalls directly, so `LD_PRELOAD` and libc-hooking rootkits don't affect it.
+- **No libc.** The binary is static Go and makes syscalls directly, so `LD_PRELOAD` and libc-hooking rootkits don't affect it. `userspace_hooks` reports those hooks instead, since they still fool every other tool.
 
 ## Usage
 
@@ -97,7 +107,7 @@ The exit code is `2` if anything is SUSPICIOUS, `1` if any check errored, and `0
 
 ## Building
 
-The generated eBPF objects and Go bindings (`cells/*/*_bpfel.{go,o}`) are committed, so a plain Go build needs no clang:
+The generated eBPF objects and Go bindings (`cells/*/*_bpfel.{go,o}`, `internal/fdowner/*_bpfel.{go,o}`) are committed, so a plain Go build needs no clang:
 
 ```bash
 make build      # ./zygarde for this machine (CGO_ENABLED=0, static)
@@ -126,9 +136,9 @@ make docker-run ARGS="--cells hidden_file"   # privileged container on the Docke
 ## Compatibility
 
 - **Runtime:** Linux 5.8+ with BTF (`CONFIG_DEBUG_INFO_BTF=y`) for most Cells, root privileges, x86_64 or arm64. Cells probe for the kernel features they need (BTF types rather than version numbers, so distribution backports are honoured) and report SKIPPED when something is missing.
-- **Kernel lockdown:** in `confidentiality` mode, BPF may not read kernel memory, so `altered_syscall_table`, `hidden_process` and `hidden_file` skip, and `hook_inventory` skips because tracefs is locked. `hidden_ebpf_program` skips too: it only reads user memory, which lockdown allows, but cilium/ebpf detects helper support by probing `bpf_probe_read_kernel()`, gets denied, and downgrades `bpf_probe_read_user()` to the legacy `bpf_probe_read()`, which lockdown forbids. `ebpf_integrity`, `hidden_kernel_module` and `kernel_taint` still run. `integrity` mode (the usual Secure Boot default) affects nothing.
+- **Kernel lockdown:** in `confidentiality` mode, BPF may not read kernel memory, so `altered_syscall_table`, `inline_hook`, `hidden_process` and `hidden_file` skip, and `hook_inventory` skips because tracefs is locked. `hidden_ebpf_program` skips too: it only reads user memory, which lockdown allows, but cilium/ebpf detects helper support by probing `bpf_probe_read_kernel()`, gets denied, and downgrades `bpf_probe_read_user()` to the legacy `bpf_probe_read()`, which lockdown forbids. `hidden_socket` runs without its ownership check. `ebpf_integrity`, `hidden_kernel_module`, `kernel_taint` and `userspace_hooks` still run. `integrity` mode (the usual Secure Boot default) affects nothing.
 - **No tracefs needed:** syscall tracing uses BTF-typed raw tracepoints (`tp_btf`), which work where tracefs isn't mounted, such as in containers.
-- **Verified so far:** x86_64, Linux 6.6.87 (WSL2), inside a privileged container. arm64 binaries build but are untested. Testing across a kernel matrix is the next milestone.
+- **Verified:** in VMs with no false positives: upstream 4.19, 5.4, 5.10, 5.15, 6.1, 6.6, 6.12, 6.18 and 7.2; Ubuntu 20.04 to 26.04, Debian 11 to 13, Rocky 8 to 10, Fedora 44, Amazon Linux 2023, openSUSE Leap 15.6 and 16.0; arm64 Debian 12 and 13, Ubuntu 22.04 and 24.04, Rocky 9 and Fedora 44 (emulated); kernel lockdown in integrity and confidentiality modes. Fixture targets confirm each detection fires (see [Testing across kernels](#testing-across-kernels)).
 
 ## Testing across kernels
 
@@ -143,6 +153,8 @@ make vm-report                          # Markdown matrix of test/vm/out
 
 On a clean VM every Cell must be OK or SKIPPED, with every canary observed. The report exits non-zero otherwise. Distro targets can raise kernel lockdown before running, to test lockdown handling. CI runs the upstream matrix on every push.
 
+Fixture targets (`*-fixtures` in `test/vm/distros.txt`) check that detections fire: `test/vm/fixtures.sh` plants benign stand-ins (a system-wide preload, a `sudo` in `/usr/bin/.local`, a Mélofée-style `insmod` in `rc.modules`, a `modprobe.d` install command, a root process running from a deleted file in `/tmp`), and `test/vm/fixture` attaches do-nothing programs to `sys_enter_getdents64`, a kprobe, XDP and tc egress on `lo` while running a child disguised as `[kworker/0:7]`. The report checks each target against `test/vm/fixtures.expect` instead of requiring a clean result.
+
 ## Development
 
 ### Layout
@@ -153,9 +165,12 @@ internal/core/          Cell interface, Result/Status, Env probing, error classi
 internal/supervisor/    parent/worker process split and protocol
 internal/canary/        canary processes and files
 internal/bpfutil/       loading, iterators, enumeration helpers
-internal/kernel/        kallsyms, lockdown, /proc/self/status parsing
+internal/fdowner/       BPF task-file iterator: which processes hold BPF objects and sockets
+internal/kernel/        kallsyms, lockdown, tracefs, /proc/self/status parsing
+internal/netlink/       minimal netlink dumps (sock_diag, links, qdiscs, tc filters)
 cells/<name>/           one package per Cell: <name>.bpf.c + generated bindings + Go logic
-test/vm/                kernel matrix harness: upstream.sh, distro.sh, inside.sh, report/
+test/vm/                kernel matrix harness: upstream.sh, distro.sh, inside.sh, report/,
+                        fixtures.sh + fixture/ + fixtures.expect (detections must fire)
 bpf/include/            vendored libbpf headers, per-arch vmlinux.h, zygarde.h
 build/Dockerfile        pinned toolchain (Go, clang)
 build/vmtest.Dockerfile VM test harness (QEMU, vimto, cloud-image tools)
@@ -177,6 +192,7 @@ build/vmtest.Dockerfile VM test harness (QEMU, vimto, cloud-image tools)
 - [BPF iterators](https://docs.kernel.org/bpf/bpf_iterators.html)
 - [x86/syscall: Don't force use of indirect calls for system calls](https://git.kernel.org/torvalds/c/1e3ad78334a6)
 - [libbpf/vmlinux.h](https://github.com/libbpf/vmlinux.h) (source of `bpf/include/arm64/vmlinux.h`)
+- Rootkits and detection guidance behind the inventory, ownership, socket, preload and inline-hook checks: Synacktiv, [LinkPro : analyse d'un rootkit eBPF](https://www.synacktiv.com/publications/linkpro-analyse-dun-rootkit-ebpf); Sandfly Security, [Linux Scales eBPF Rootkit Detection and Analysis](https://sandflysecurity.com/blog/linux-scales-ebpf-rootkit-detection-and-analysis); ExaTrack, [Mélofée](https://exatrack.com/publications/melofee.html); Elastic Security Labs, [Linux Rootkits 2: Caught in the Act](https://www.elastic.co/security-labs/threat-command/linux-rootkits-2-caught-in-the-act); LinuxSecurity, [Linux Rootkit Detection & Defense Guide](https://linuxsecurity.com/features/linux-rootkit-detection-defense-guide)
 
 ## License
 

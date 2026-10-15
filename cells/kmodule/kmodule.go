@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/waldh4ri/zygarde/internal/core"
+	"github.com/waldh4ri/zygarde/internal/kernel"
 )
 
 // Cell compares /proc/modules with /sys/module.
@@ -28,15 +29,22 @@ import (
 //
 // It does not use eBPF: there is no module iterator, and the ksym iterator
 // walks the same list as /proc/modules.
+//
+// It also lists modules configured to load at boot (modules-load.d, /etc/modules,
+// modprobe.d install directives, insmod/modprobe in rc scripts and shell
+// profiles) and flags those that don't come from the running kernel.
 type Cell struct {
 	procModules string
 	sysModule   string
 	sysBTF      string
+	// root prefixes the boot configuration paths (tests use a fixture tree).
+	root    string
+	release string
 }
 
 // New returns the hidden kernel module Cell.
 func New() *Cell {
-	return &Cell{procModules: "/proc/modules", sysModule: "/sys/module", sysBTF: "/sys/kernel/btf"}
+	return &Cell{procModules: "/proc/modules", sysModule: "/sys/module", sysBTF: "/sys/kernel/btf", release: kernel.Release()}
 }
 
 func (*Cell) ID() string                    { return "hidden_kernel_module" }
@@ -44,7 +52,7 @@ func (*Cell) Name() string                  { return "Hidden Kernel Module Detec
 func (*Cell) Timeout() time.Duration        { return 15 * time.Second }
 func (*Cell) Supported(env *core.Env) error { return nil }
 func (*Cell) Description() string {
-	return "Compares the module list (/proc/modules) with module kobjects (/sys/module) and module BTF (/sys/kernel/btf)"
+	return "Compares the module list (/proc/modules) with module kobjects (/sys/module) and module BTF (/sys/kernel/btf), and checks modules configured to load at boot"
 }
 
 // views are three independent records of the loaded modules.
@@ -117,9 +125,15 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 			Benign:      "A module loading or unloading during the scan; unlikely, since it was seen in two snapshots.",
 		})
 	}
-	if len(found) > 0 {
+	boot := c.checkAutoload(rec)
+	switch {
+	case len(found) > 0 && boot > 0:
+		rec.Message("%d hidden kernel module(s), %d suspicious boot-time module configuration(s)", len(found), boot)
+	case len(found) > 0:
 		rec.Message("%d hidden kernel module(s)", len(found))
-	} else {
+	case boot > 0:
+		rec.Message("No hidden modules; %d suspicious boot-time module configuration(s)", boot)
+	default:
 		rec.Message("All %d loaded modules are consistent across /proc/modules, /sys/module and module BTF", len(v.proc))
 	}
 	return nil

@@ -7,6 +7,8 @@
 # POSIX sh and coreutils so it also works on minimal distribution images.
 # If lockdown-mode is given ("integrity" or "confidentiality"), lockdown is
 # raised to it first; it can't be lowered again without a reboot.
+# If FIXTURE names the fixture helper binary (test/vm/fixture), fixtures.sh
+# plants the stand-ins listed in fixtures.expect before zygarde runs.
 set -u
 
 bin=$1
@@ -19,6 +21,10 @@ if [ -n "$lockdown" ]; then
 	if ! echo "$lockdown" > /sys/kernel/security/lockdown 2>/dev/null; then
 		echo "lockdown_error=could not set lockdown=$lockdown" >> "$out/meta.env"
 	fi
+fi
+
+if [ -n "${FIXTURE:-}" ]; then
+	sh "$(dirname "$0")/fixtures.sh" "$FIXTURE" "$out"
 fi
 
 "$bin" --json > "$out/results.json" 2> "$out/stderr.log"

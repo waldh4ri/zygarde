@@ -47,7 +47,7 @@ func fixture(t *testing.T, procModules []string, loadable, builtin []string, btf
 			t.Fatal(err)
 		}
 	}
-	return &Cell{procModules: proc, sysModule: sys, sysBTF: btfDir}
+	return &Cell{procModules: proc, sysModule: sys, sysBTF: btfDir, root: t.TempDir(), release: "test"}
 }
 
 func run(t *testing.T, c *Cell) []core.Finding {

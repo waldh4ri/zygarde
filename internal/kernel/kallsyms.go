@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -14,8 +15,9 @@ import (
 // Kallsyms holds core-kernel symbol addresses from /proc/kallsyms.
 // Module symbols are not included.
 type Kallsyms struct {
-	addrs map[string]uint64
-	names map[uint64]string // built on first Name() call
+	addrs  map[string]uint64
+	names  map[uint64]string // built on first Name() call
+	sorted []symbol          // built on first Lookup() call
 }
 
 // Name returns the symbol at exactly addr (the first one, if aliased).
@@ -101,4 +103,37 @@ func (k *Kallsyms) FirstWithPrefix(prefix string) (string, bool) {
 func (k *Kallsyms) Has(name string) bool {
 	_, ok := k.addrs[name]
 	return ok
+}
+
+// Lookup returns the symbol containing addr: the nearest one at or below it,
+// and addr's offset from it. Addresses below the first symbol are not found.
+func (k *Kallsyms) Lookup(addr uint64) (string, uint64, bool) {
+	if k.sorted == nil {
+		k.sorted = make([]symbol, 0, len(k.addrs))
+		for name, a := range k.addrs {
+			k.sorted = append(k.sorted, symbol{a, name})
+		}
+		sort.Slice(k.sorted, func(i, j int) bool {
+			if k.sorted[i].addr != k.sorted[j].addr {
+				return k.sorted[i].addr < k.sorted[j].addr
+			}
+			return k.sorted[i].name < k.sorted[j].name
+		})
+	}
+	i := sort.Search(len(k.sorted), func(i int) bool { return k.sorted[i].addr > addr })
+	if i == 0 {
+		return "", 0, false
+	}
+	s := k.sorted[i-1]
+	// Prefer the first name at that address (aliases sort by name).
+	for i-2 >= 0 && k.sorted[i-2].addr == s.addr {
+		i--
+		s = k.sorted[i-1]
+	}
+	return s.name, addr - s.addr, true
+}
+
+type symbol struct {
+	addr uint64
+	name string
 }

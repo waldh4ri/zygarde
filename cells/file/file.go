@@ -32,6 +32,9 @@ import (
 //
 // Hiding done inside the filesystem itself (before filldir64) is not covered;
 // hook_inventory reports hooks on the functions involved.
+//
+// It also flags dot-entries in binary and library directories, where stock
+// installs have none and rootkits stash trojaned tools.
 type Cell struct{}
 
 // New returns the hidden directory entry Cell.
@@ -105,7 +108,13 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 	}
 	defer cf.Remove()
 
-	listed, hidden := 0, 0
+	system := map[string]bool{}
+	for _, d := range systemDirs() {
+		system[d] = true
+	}
+	seenSystem := map[string]bool{}
+
+	listed, hidden, stashed := 0, 0, 0
 	for _, dir := range scanDirs() {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -123,6 +132,17 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 			name := filepath.Base(cf.Path)
 			rec.Canary(cf.Path, "filesystem (filldir64)", produced[name])
 			rec.Canary(cf.Path, "getdents64 result", returned[name])
+		}
+
+		if system[dir] {
+			all := map[string]bool{}
+			for n := range produced {
+				all[n] = true
+			}
+			for n := range returned {
+				all[n] = true
+			}
+			stashed += dotEntries(rec, dir, all, seenSystem)
 		}
 
 		missing := diff(produced, returned)
@@ -150,9 +170,14 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 		}
 	}
 
-	if hidden > 0 {
+	switch {
+	case hidden > 0 && stashed > 0:
+		rec.Message("%d hidden directory entries and %d executable dot-entries in system directories (%d directories)", hidden, stashed, listed)
+	case hidden > 0:
 		rec.Message("%d hidden directory entries in %d directories", hidden, listed)
-	} else {
+	case stashed > 0:
+		rec.Message("No filtered entries; %d executable dot-entries in system directories (%d directories)", stashed, listed)
+	default:
 		rec.Message("No hidden entries in %d directories (including /proc)", listed)
 	}
 	return nil
@@ -237,6 +262,7 @@ func scanDirs() []string {
 		"/root", "/root/.ssh", "/home", "/opt", "/srv",
 		"/var/tmp", "/dev/shm", "/dev", "/run",
 	}
+	dirs = append(dirs, systemDirs()...)
 	if rel := kernel.Release(); rel != "unknown" {
 		dirs = append(dirs, "/lib/modules/"+rel, "/lib/modules/"+rel+"/extra", "/lib/modules/"+rel+"/updates")
 	}

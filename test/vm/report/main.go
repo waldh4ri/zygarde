@@ -79,6 +79,11 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
+	expects, err := loadExpectations(filepath.Join(filepath.Dir(os.Args[1]), "fixtures.expect"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 	var targets []target
 	var cells []string
 	for _, e := range entries {
@@ -110,10 +115,12 @@ func main() {
 				continue
 			}
 			row = append(row, symbols[r.Status])
-			switch r.Status {
-			case core.StatusSkipped:
+			switch {
+			case r.Status == core.StatusSkipped:
 				skips = append(skips, fmt.Sprintf("%s / %s: %s", t.name(), c, r.Message))
-			case core.StatusError, core.StatusSuspicious:
+			case r.Status == core.StatusSuspicious && t.fixtures() && expectsFindings(expects, c):
+				// Expected: checked against fixtures.expect below.
+			case r.Status == core.StatusError || r.Status == core.StatusSuspicious:
 				detail := r.Error
 				for _, f := range r.Findings {
 					detail += "; " + f.Description
@@ -128,6 +135,13 @@ func main() {
 		}
 		if t.err != "" {
 			problems = append(problems, fmt.Sprintf("%s: %s", t.name(), t.err))
+		}
+		if t.fixtures() && t.err == "" {
+			for _, e := range expects {
+				if !e.met(byCell[e.cell]) {
+					problems = append(problems, fmt.Sprintf("%s / %s: expected %s not reported: %s", t.name(), e.cell, e.kind, e.line))
+				}
+			}
 		}
 		fmt.Printf("| %s |\n", strings.Join(row, " | "))
 	}
@@ -146,4 +160,63 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Printf("\nAll %d targets clean.\n", len(targets))
+}
+
+// fixtures reports whether stand-ins were planted on this target.
+func (t target) fixtures() bool { return t.meta["fixtures"] == "yes" }
+
+// expectation is one line of fixtures.expect.
+type expectation struct {
+	cell, kind, desc string
+	key, value       string // optional detail that must contain value
+	line             string
+}
+
+func loadExpectations(path string) ([]expectation, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading expectations: %w", err)
+	}
+	defer f.Close()
+	var out []expectation
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.Split(line, "|")
+		if len(parts) < 3 || (parts[1] != "finding" && parts[1] != "observation") {
+			return nil, fmt.Errorf("%s: bad line %q", path, line)
+		}
+		e := expectation{cell: parts[0], kind: parts[1], desc: parts[2], line: line}
+		if len(parts) > 3 {
+			e.key, e.value, _ = strings.Cut(parts[3], "=")
+		}
+		out = append(out, e)
+	}
+	return out, sc.Err()
+}
+
+func expectsFindings(expects []expectation, cell string) bool {
+	for _, e := range expects {
+		if e.cell == cell && e.kind == "finding" {
+			return true
+		}
+	}
+	return false
+}
+
+// met reports whether a Cell's result contains the expected entry.
+func (e expectation) met(r core.Result) bool {
+	list := r.Observations
+	if e.kind == "finding" {
+		list = r.Findings
+	}
+	for _, f := range list {
+		if strings.Contains(f.Description, e.desc) && (e.key == "" || strings.Contains(f.Details[e.key], e.value)) {
+			return true
+		}
+	}
+	return false
 }

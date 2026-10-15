@@ -1,0 +1,16 @@
+# What zygarde must report on a fixture target (test/vm/fixtures.sh).
+# Format: cell|finding or observation|substring of the description[|detail=substring]
+#
+# A fixture target passes when every line matches, no Cell errors and no
+# canary is missed. SUSPICIOUS is expected for the Cells listed with findings.
+
+userspace_hooks|finding|/etc/ld.so.preload preloads
+hidden_file|finding|/usr/bin/.local
+hidden_kernel_module|finding|/etc/intel_audio/intel_audio.ko
+hidden_kernel_module|finding|whenever zyg_fixture_mod is loaded
+hidden_process|finding|poses as a kernel thread
+hidden_process|finding|zyg-deleted-sleep
+hidden_ebpf_program|observation|(zyg_fx_tp) is attached to tracepoint sys_enter_getdents64, which controls directory listing|held_by=zyg-fixture
+hidden_ebpf_program|observation|(zyg_fx_kprobe) is attached to kprobe|held_by=zyg-fixture
+hidden_ebpf_program|observation|(zyg_fx_xdp) is attached to XDP|held_by=zyg-fixture
+hidden_ebpf_program|observation|(zyg_fx_tc) is attached to tc

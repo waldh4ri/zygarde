@@ -18,7 +18,7 @@ jobs:
       - name: Check generated BPF bindings are up to date
         run: |
           make docker-generate
-          git diff --exit-code -- cells/
+          git diff --exit-code -- cells/ internal/
       - run: go vet ./...
       - run: go test ./...
       - run: make dist

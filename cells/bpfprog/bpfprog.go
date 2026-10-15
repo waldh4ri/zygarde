@@ -7,9 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
-	"path/filepath"
 	"strconv"
 	"time"
 
@@ -20,12 +18,17 @@ import (
 
 	"github.com/waldh4ri/zygarde/internal/bpfutil"
 	"github.com/waldh4ri/zygarde/internal/core"
+	"github.com/waldh4ri/zygarde/internal/fdowner"
 )
 
 // Cell compares three views of the loaded eBPF programs:
 //   - kernel: the bpf_prog iterator walks the kernel's program IDR directly
 //   - userspace: BPF_PROG_GET_NEXT_ID, the syscall bpftool and others use
 //   - pinned: programs pinned under /sys/fs/bpf
+//
+// It inventories where every program is attached (BPF links, perf events,
+// XDP and tc) and which processes hold it, read from the kernel's file
+// tables: a program held only by processes hidden from /proc is suspicious.
 //
 // It also traces zygarde's own GET_NEXT_ID calls at syscall exit to catch
 // enumeration cut short with a fake -ENOENT, or answers rewritten in memory.
@@ -38,7 +41,7 @@ func (*Cell) ID() string             { return "hidden_ebpf_program" }
 func (*Cell) Name() string           { return "Hidden eBPF Program Detection" }
 func (*Cell) Timeout() time.Duration { return 30 * time.Second }
 func (*Cell) Description() string {
-	return "Compares the kernel's BPF program list (iterator) with BPF_PROG_GET_NEXT_ID enumeration and /sys/fs/bpf pins"
+	return "Compares the kernel's BPF program list (iterator) with BPF_PROG_GET_NEXT_ID enumeration and /sys/fs/bpf pins, and inventories where programs are attached and which processes hold them"
 }
 
 func (*Cell) Supported(env *core.Env) error {
@@ -93,7 +96,6 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	if err != nil {
 		return err
 	}
-	pinned := pinnedProgs(rec)
 
 	enumSet := make(map[uint32]bool, len(enumerated))
 	for _, id := range enumerated {
@@ -110,6 +112,14 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	rec.Canary(name, "BPF program iterator", inKernel)
 	rec.Canary(name, "BPF_PROG_GET_NEXT_ID enumeration", enumSet[selfID])
 
+	// zygarde's own programs are left out of the inventory.
+	own := map[uint32]bool{selfID: true}
+	for _, p := range []*ebpf.Program{objs.BpfEnter, objs.BpfExit} {
+		if id, err := bpfutil.ProgramID(p); err == nil {
+			own[id] = true
+		}
+	}
+
 	// Present in both kernel snapshots but never enumerated.
 	stable := make(map[uint32]bpfprogProgInfo)
 	for id, p := range before {
@@ -117,6 +127,8 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 			stable[id] = p
 		}
 	}
+	inv := collect(env, rec, stable)
+	pinned := inv.pinned
 	hidden := 0
 	for id, p := range stable {
 		if enumSet[id] {
@@ -130,6 +142,12 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 		}
 		if path, ok := pinned[id]; ok {
 			details["pinned_path"] = path
+		}
+		if atts := inv.attach[id]; len(atts) > 0 {
+			details["attached_to"] = wheres(atts)
+		}
+		if h := fdowner.Describe(inv.holders(fdowner.Prog, id)); h != "" {
+			details["held_by"] = h
 		}
 		rec.Suspicious(core.Finding{
 			Description: fmt.Sprintf("BPF program #%d (%s) is loaded but hidden from BPF_PROG_GET_NEXT_ID", id, details["program_name"]),
@@ -150,14 +168,25 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	checkEvents(rec, events, enumerated, stable)
 
 	// Audit what every program (hidden or not) is able to do.
-	auditHelpers(rec, env, stable, selfID)
+	auditHelpers(rec, env, stable, selfID, inv.attach)
 
-	if hidden > 0 {
-		rec.Message("%d BPF program(s) hidden from enumeration (kernel: %d, enumerated: %d, pinned: %d)",
-			hidden, len(before), len(enumerated), len(pinned))
-	} else {
-		rec.Message("No hidden BPF programs (kernel: %d, enumerated: %d, pinned: %d)",
-			len(before), len(enumerated), len(pinned))
+	// Where each program is attached, who holds it, and what is pinned.
+	inv.report(rec, stable, enumSet, own, selfID)
+
+	attached := 0
+	for id, atts := range inv.attach {
+		if !own[id] {
+			attached += len(atts)
+		}
+	}
+	counts := fmt.Sprintf("kernel: %d, enumerated: %d, pinned: %d, attachments: %d", len(before), len(enumerated), len(pinned), attached)
+	switch n := len(rec.Findings()); {
+	case hidden > 0:
+		rec.Message("%d BPF program(s) hidden from enumeration (%s)", hidden, counts)
+	case n > 0:
+		rec.Message("%d suspicious BPF program(s) or attachment(s) (%s)", n, counts)
+	default:
+		rec.Message("No hidden BPF programs (%s)", counts)
 	}
 	return nil
 }
@@ -294,26 +323,4 @@ func kernelProgs(objs *objects) (map[uint32]bpfprogProgInfo, error) {
 		out[p.Id] = p
 	}
 	return out, nil
-}
-
-// pinnedProgs maps program IDs to the paths they are pinned at.
-func pinnedProgs(rec *core.Recorder) map[uint32]string {
-	pinned := make(map[uint32]string)
-	_ = filepath.WalkDir("/sys/fs/bpf", func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
-		}
-		prog, err := ebpf.LoadPinnedProgram(path, nil)
-		if err != nil {
-			return nil // not a program (map, link...) or unreadable
-		}
-		defer prog.Close()
-		if id, err := bpfutil.ProgramID(prog); err == nil {
-			pinned[id] = path
-		} else {
-			rec.Log().Debug("pinned program has no ID", "path", path, "err", err)
-		}
-		return nil
-	})
-	return pinned
 }
