@@ -161,3 +161,34 @@ func diagRequest(family, protocol uint8) []byte {
 	binary.NativeEndian.PutUint32(req[4:], 0xffffffff)
 	return req
 }
+
+// diagExactRequest builds an inet_diag_req_v2 asking for one socket by its
+// addresses and ports (a lookup in the kernel's hash tables, not a dump).
+func diagExactRequest(s sock) []byte {
+	family, protocol := uint8(2), uint8(6) // AF_INET, IPPROTO_TCP
+	if s.Family == 6 {
+		family = 10 // AF_INET6
+	}
+	if s.Proto == "udp" {
+		protocol = 17
+	}
+	req := diagRequest(family, protocol)
+	id := req[8:]
+	binary.BigEndian.PutUint16(id[0:], s.Local.Port())
+	binary.BigEndian.PutUint16(id[2:], s.Remote.Port())
+	putAddr := func(b []byte, a netip.Addr) {
+		if s.Family == 6 {
+			v := a.As16()
+			copy(b, v[:])
+		} else {
+			v := a.Unmap().As4()
+			copy(b, v[:])
+		}
+	}
+	putAddr(id[4:20], s.Local.Addr())
+	putAddr(id[20:36], s.Remote.Addr())
+	// id[36:40] interface 0 (any); cookie INET_DIAG_NOCOOKIE.
+	binary.NativeEndian.PutUint32(id[40:], 0xffffffff)
+	binary.NativeEndian.PutUint32(id[44:], 0xffffffff)
+	return req
+}
