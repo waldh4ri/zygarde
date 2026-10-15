@@ -6,18 +6,55 @@ package canary
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // RoleEnv selects what a re-executed zygarde binary does.
 const RoleEnv = "ZYGARDE_ROLE"
 
+// ParentEnv holds the PID of the zygarde process that set RoleEnv. A role
+// is only honoured when it matches the actual parent, so a ZYGARDE_ROLE
+// left in the operator's environment (sudo -E) can't turn the command the
+// operator runs into a canary or a worker.
+const ParentEnv = "ZYGARDE_PARENT"
+
 // RoleProcess is the role of a canary process.
 const RoleProcess = "canary"
+
+// ChildEnv returns the environment for re-executing zygarde with a role:
+// the current environment without inherited role variables, plus the role,
+// this process's PID as the parent, and extra variables.
+func ChildEnv(role string, extra ...string) []string {
+	var env []string
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, RoleEnv+"=") || strings.HasPrefix(kv, ParentEnv+"=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	env = append(env, RoleEnv+"="+role, ParentEnv+"="+strconv.Itoa(os.Getpid()))
+	return append(env, extra...)
+}
+
+// Role returns the role this process was started with by its zygarde
+// parent, or "" for a process the operator started.
+func Role() string {
+	role := os.Getenv(RoleEnv)
+	if role == "" || os.Getenv(ParentEnv) != strconv.Itoa(os.Getppid()) {
+		return ""
+	}
+	return role
+}
 
 // Token returns a random hex string to make canary names unpredictable.
 func Token() string {
@@ -38,7 +75,7 @@ type Process struct {
 // It exits when Stop is called or when its parent dies (stdin closes).
 func StartProcess() (*Process, error) {
 	cmd := exec.Command("/proc/self/exe")
-	cmd.Env = append(os.Environ(), RoleEnv+"="+RoleProcess)
+	cmd.Env = ChildEnv(RoleProcess)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -78,6 +115,29 @@ func RemoveFiles(dir string, pid int) {
 	matches, _ := filepath.Glob(filepath.Join(dir, FilePrefix(pid)+"*"))
 	for _, m := range matches {
 		os.Remove(m)
+	}
+}
+
+// RemoveStale deletes canary files in dir left behind by zygarde processes
+// that no longer exist (killed, e.g. by a dropped SSH session, before they
+// could clean up). Only regular files owned by root and older than ten
+// minutes are removed: a zygarde running in another PID namespace has a PID
+// that looks dead from here, but no Cell keeps its canary that long.
+func RemoveStale(dir string) {
+	old := time.Now().Add(-10 * time.Minute).Unix()
+	matches, _ := filepath.Glob(filepath.Join(dir, "zygarde-canary-*-*"))
+	for _, m := range matches {
+		var pid int
+		if _, err := fmt.Sscanf(filepath.Base(m), "zygarde-canary-%d-", &pid); err != nil || pid <= 0 {
+			continue
+		}
+		if !errors.Is(unix.Kill(pid, 0), unix.ESRCH) {
+			continue
+		}
+		var st unix.Stat_t
+		if unix.Lstat(m, &st) == nil && st.Mode&unix.S_IFMT == unix.S_IFREG && st.Uid == 0 && st.Mtim.Sec < old {
+			os.Remove(m)
+		}
 	}
 }
 

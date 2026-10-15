@@ -95,7 +95,7 @@ func selectCells(all []core.Cell, list string) ([]core.Cell, error) {
 }
 
 func main() {
-	if os.Getenv(canary.RoleEnv) == canary.RoleProcess {
+	if canary.Role() == canary.RoleProcess {
 		canary.RunProcess()
 	}
 	os.Exit(run())
@@ -112,11 +112,12 @@ func run() int {
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// SIGHUP too: a dropped SSH session must still let the scan clean up.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer stop()
 
 	cells := allCells(o)
-	if os.Getenv(canary.RoleEnv) == supervisor.RoleWorker {
+	if supervisor.IsWorker() {
 		env := core.ProbeEnv(o.settings, log.With("pid", os.Getpid()))
 		if err := supervisor.Worker(ctx, cells, env); err != nil {
 			log.Error("worker failed", "err", err)
@@ -148,12 +149,27 @@ func run() int {
 	}
 	rep := report.New(version)
 	out.header(rep, selected)
+	canary.RemoveStale(canary.FileDir)
+
+	// After the first signal, restore the default handlers: a second Ctrl-C
+	// exits at once, even if a Cell is stuck (--no-isolation has no hard
+	// timeout; the supervised worker is stopped by the parent).
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
 
 	var results []core.Result
 	cb := supervisor.Callbacks{Start: out.start, Result: out.result}
 	if o.noIsolate {
 		env := core.ProbeEnv(o.settings, log)
 		for _, c := range selected {
+			if ctx.Err() != nil {
+				r := core.Result{Cell: c.ID(), Name: c.Name(), Error: "not run: the scan was interrupted"}
+				r.SetStatus(core.StatusError)
+				results = append(results, r)
+				continue
+			}
 			cb.Start(c)
 			r := core.RunCell(ctx, env, c)
 			cb.Result(r)
