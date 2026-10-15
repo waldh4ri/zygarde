@@ -153,14 +153,20 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 			continue
 		}
 		hooked++
-		rec.Suspicious(fmt.Sprintf("sys_call_table[%d] (%s) points to %#x instead of %s", c.nr, c.name, actual[i], c.symbol),
-			map[string]string{
+		rec.Suspicious(core.Finding{
+			Description: fmt.Sprintf("sys_call_table[%d] (%s) points to %#x instead of %s", c.nr, c.name, actual[i], c.symbol),
+			Details: map[string]string{
 				"syscall":          c.name,
 				"syscall_number":   strconv.Itoa(int(c.nr)),
 				"expected_symbol":  c.symbol,
 				"expected_address": fmt.Sprintf("%#x", c.expected),
 				"actual_address":   fmt.Sprintf("%#x", actual[i]),
-			})
+			},
+			Why: "Each syscall table entry points at the kernel's own handler. A different address sends every " +
+				"call of this syscall through other code first, which can alter or hide its results.",
+			Benign: "Some older security or monitoring modules patch the table. Check which module owns the " +
+				"address (grep it in /proc/kallsyms).",
+		})
 	}
 
 	if hooked > 0 {

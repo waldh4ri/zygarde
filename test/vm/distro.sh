@@ -16,6 +16,12 @@
 #                                        (tripled for emulated VMs)
 set -euo pipefail
 
+if [ ! -e /dev/kvm ]; then
+	echo "error: /dev/kvm is missing. Run in a privileged container on a host with KVM." >&2
+	echo "On Docker Desktop with WSL2, start any WSL distro first so the kvm module loads." >&2
+	exit 1
+fi
+
 root=$(pwd)
 outdir=$root/test/vm/out
 cache=${IMAGE_CACHE:-/images}

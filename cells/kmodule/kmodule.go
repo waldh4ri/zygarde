@@ -56,7 +56,7 @@ type views struct {
 
 // hidden is a module missing from one view, with how it is hidden.
 type hidden struct {
-	module, desc, technique string
+	module, desc, why string
 }
 
 func (v views) hidden() []hidden {
@@ -64,18 +64,18 @@ func (v views) hidden() []hidden {
 	notInProc, notInSys := Compare(v.proc, v.sys)
 	for _, m := range notInProc {
 		out = append(out, hidden{m, fmt.Sprintf("Module %s is loaded (in /sys/module) but hidden from /proc/modules and lsmod", m),
-			"removed from the kernel module list (list_del)"})
+			"Every loaded module is listed in /proc/modules, which lsmod reads. A module that unlinks itself from that list disappears from lsmod but keeps its /sys/module entry."})
 	}
 	for _, m := range notInSys {
 		out = append(out, hidden{m, fmt.Sprintf("Module %s is in /proc/modules but has no /sys/module entry", m),
-			"module kobject removed (kobject_del)"})
+			"Every loadable module gets a /sys/module entry when it loads. A module that deletes it hides from tools that read sysfs."})
 	}
 	// Module BTF is kept on its own list and survives list_del. Only report
 	// modules not already caught through /sys/module.
 	for m := range v.btf {
 		if !v.proc[m] && !v.sys[m] {
 			out = append(out, hidden{m, fmt.Sprintf("Module %s has kernel BTF (/sys/kernel/btf/%s) but is hidden from /proc/modules and /sys/module", m, m),
-				"removed from the module list and sysfs; its BTF registration remains"})
+				"The module removed itself from /proc/modules and /sys/module, but the kernel keeps its type information (BTF) on a separate list that it did not clean up."})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].desc < out[j].desc })
@@ -110,7 +110,12 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 	}
 
 	for _, h := range found {
-		rec.Suspicious(h.desc, map[string]string{"module": h.module, "technique": h.technique})
+		rec.Suspicious(core.Finding{
+			Description: h.desc,
+			Details:     map[string]string{"module": h.module},
+			Why:         h.why,
+			Benign:      "A module loading or unloading during the scan; unlikely, since it was seen in two snapshots.",
+		})
 	}
 	if len(found) > 0 {
 		rec.Message("%d hidden kernel module(s)", len(found))

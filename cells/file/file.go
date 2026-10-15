@@ -139,12 +139,14 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 		for _, name := range intersect(missing, diff(produced2, returned2)) {
 			hidden++
 			path := filepath.Join(dir, name)
-			rec.Suspicious(fmt.Sprintf("%s exists but is filtered out of directory listings", path),
-				map[string]string{
-					"path":      path,
-					"directory": dir,
-					"technique": "getdents64 result filtered after the filesystem produced the entry",
-				})
+			rec.Suspicious(core.Finding{
+				Description: fmt.Sprintf("%s exists but is filtered out of directory listings", path),
+				Details:     map[string]string{"path": path, "directory": dir},
+				Why: "The filesystem returned this entry, but it was removed before the listing reached " +
+					"userspace, so ls, find and file managers can't see it. Under /proc this hides a process.",
+				Benign: "Rare: some security products hide their own files this way. Identify what owns the entry " +
+					"(open it by name: hidden entries usually remain accessible).",
+			})
 		}
 	}
 

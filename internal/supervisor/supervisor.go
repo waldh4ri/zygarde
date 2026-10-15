@@ -223,11 +223,12 @@ func deathResult(c core.Cell, waitErr error, elapsed time.Duration) *core.Result
 			r.Error = fmt.Sprintf("worker killed by %s", sig)
 			r.Message = "the scanner was killed while running this cell"
 			r.Findings = []core.Finding{{
-				Description: fmt.Sprintf("The worker process was killed by %s while running this cell; zygarde did not send it", sig),
-				Details: map[string]string{
-					"signal": sig,
-					"note":   "something on the system terminated the scanner; the OOM killer can also send SIGKILL (check the kernel log)",
-				},
+				Description: fmt.Sprintf("The scanner's worker process was killed by %s while running this Cell", sig),
+				Details:     map[string]string{"signal": sig},
+				Why: "Zygarde did not send this signal. Something on the system terminated the scanner in the middle " +
+					"of this check, which is how malware avoids being inspected.",
+				Benign: "The kernel's OOM killer (look for \"Out of memory\" in dmesg), or an administrator or " +
+					"security tool killing the process.",
 			}}
 			return r
 		}

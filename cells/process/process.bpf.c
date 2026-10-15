@@ -10,6 +10,8 @@
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
+#define PF_EXITING 0x00000004 /* include/linux/sched.h; same value in 5.4 and current kernels */
+
 // Kernels before 5.14 name the field "state" instead of "__state".
 struct task_struct___old {
 	long state;
@@ -57,7 +59,9 @@ int BPF_PROG(on_sched_switch, bool preempt, struct task_struct *prev, struct tas
 	__u32 tid = next->pid;
 	struct sched_seen seen = {};
 
-	if (tid == 0 || bpf_map_lookup_elem(&ran, &tid))
+	// Exiting tasks keep being scheduled after sched_process_exit, then
+	// leave the PID table normally: ignore them (PF_EXITING is set first).
+	if (tid == 0 || (next->flags & PF_EXITING) || bpf_map_lookup_elem(&ran, &tid))
 		return 0;
 	seen.tgid = next->tgid;
 	for (int i = 0; i < sizeof(seen.comm); i++)
@@ -71,9 +75,15 @@ int BPF_PROG(on_sched_exit, struct task_struct *p)
 {
 	__u32 tid = p->pid;
 	struct sched_seen *seen = bpf_map_lookup_elem(&ran, &tid);
+	struct sched_seen exited = { .exited = 1 };
 
-	if (seen)
+	if (seen) {
 		seen->exited = 1;
+		return 0;
+	}
+	// Not seen running yet: record the exit so later switches are ignored.
+	exited.tgid = p->tgid;
+	bpf_map_update_elem(&ran, &tid, &exited, BPF_ANY);
 	return 0;
 }
 

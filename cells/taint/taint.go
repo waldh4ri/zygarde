@@ -82,13 +82,18 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 	}
 
 	for _, f := range unexplained {
-		rec.Suspicious(fmt.Sprintf("Kernel is tainted '%c' (%s) but no visible module carries that taint", f.letter, f.desc),
-			map[string]string{
+		rec.Suspicious(core.Finding{
+			Description: fmt.Sprintf("Kernel is tainted '%c' (%s) but no visible module carries that taint", f.letter, f.desc),
+			Details: map[string]string{
 				"taint":       string(f.letter),
 				"meaning":     f.desc,
 				"kernel_mask": strconv.FormatUint(mask, 10),
-				"note":        "a module hiding itself, or one that was loaded and later unloaded (taint persists until reboot)",
-			})
+			},
+			Why: "Loading a module marks both the module and the kernel with this flag, and the kernel keeps it " +
+				"until reboot. If no loaded module explains it, the module that caused it is no longer visible.",
+			Benign: "A third-party driver (DKMS, VirtualBox, vendor module) that was loaded and later unloaded " +
+				"since boot. Check the kernel log and package history for module loads.",
+		})
 	}
 
 	if len(unexplained) == 0 {

@@ -131,7 +131,13 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 		if path, ok := pinned[id]; ok {
 			details["pinned_path"] = path
 		}
-		rec.Suspicious(fmt.Sprintf("BPF program #%d (%s) is loaded but hidden from BPF_PROG_GET_NEXT_ID", id, details["program_name"]), details)
+		rec.Suspicious(core.Finding{
+			Description: fmt.Sprintf("BPF program #%d (%s) is loaded but hidden from BPF_PROG_GET_NEXT_ID", id, details["program_name"]),
+			Details:     details,
+			Why: "bpftool and other tools list programs with BPF_PROG_GET_NEXT_ID, which reports every loaded " +
+				"program. One that the kernel holds but the syscall skips is being hidden, typically by a program that hooks bpf().",
+			Benign: "None expected: the program was present in two kernel snapshots taken around the enumeration.",
+		})
 	}
 
 	events, err := tr.drain()
@@ -245,22 +251,30 @@ func checkEvents(rec *core.Recorder, events []bpfprogEnumEvent, enumerated []uin
 				}
 			}
 			if len(remaining) > 0 {
-				rec.Suspicious(fmt.Sprintf("bpf(BPF_PROG_GET_NEXT_ID, start_id=%d) returned -ENOENT although %d program(s) with higher IDs exist", ev.StartId, len(remaining)),
-					map[string]string{
+				rec.Suspicious(core.Finding{
+					Description: fmt.Sprintf("bpf(BPF_PROG_GET_NEXT_ID, start_id=%d) returned -ENOENT although %d program(s) with higher IDs exist", ev.StartId, len(remaining)),
+					Details: map[string]string{
 						"start_id":        strconv.Itoa(int(ev.StartId)),
 						"existing_higher": fmt.Sprint(remaining),
-						"technique":       "enumeration cut short with a fake -ENOENT",
-					})
+					},
+					Why: "The kernel ends this enumeration with -ENOENT only after the last program. Ending it early " +
+						"while higher IDs exist hides those programs from every tool that lists them.",
+					Benign: "None expected: the programs were present in two kernel snapshots.",
+				})
 			}
 		case ev.Ret == 0:
 			if got, ok := received[ev.StartId]; ok && got != ev.NextId {
-				rec.Suspicious(fmt.Sprintf("bpf(BPF_PROG_GET_NEXT_ID, start_id=%d) returned ID %d at syscall exit but zygarde received %d", ev.StartId, ev.NextId, got),
-					map[string]string{
+				rec.Suspicious(core.Finding{
+					Description: fmt.Sprintf("bpf(BPF_PROG_GET_NEXT_ID, start_id=%d) returned ID %d at syscall exit but zygarde received %d", ev.StartId, ev.NextId, got),
+					Details: map[string]string{
 						"start_id":       strconv.Itoa(int(ev.StartId)),
 						"kernel_next_id": strconv.Itoa(int(ev.NextId)),
 						"received":       strconv.Itoa(int(got)),
-						"technique":      "syscall result rewritten in userspace memory",
-					})
+					},
+					Why: "The kernel returned one answer at syscall exit, but zygarde's memory held another: " +
+						"something rewrote the result after the kernel produced it.",
+					Benign: "None expected.",
+				})
 			}
 		}
 	}

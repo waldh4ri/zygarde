@@ -69,6 +69,7 @@ type Recorder struct {
 	findings []Finding
 	observed []Finding
 	canaries []CanaryCheck
+	limits   []string
 }
 
 // NewRecorder returns an empty Recorder; the runner creates one per Cell.
@@ -82,16 +83,23 @@ func (r *Recorder) Findings() []Finding { return r.findings }
 // Log returns the Cell's logger.
 func (r *Recorder) Log() *slog.Logger { return r.log }
 
-// Suspicious records a finding.
-func (r *Recorder) Suspicious(description string, details map[string]string) {
-	r.log.Debug("finding", "description", description)
-	r.findings = append(r.findings, Finding{Description: description, Details: details})
+// Suspicious records a finding. Fill in Why and Benign: the person reading
+// the report needs to know why it matters and what else could explain it.
+func (r *Recorder) Suspicious(f Finding) {
+	r.log.Debug("finding", "description", f.Description)
+	r.findings = append(r.findings, f)
 }
 
 // Observe records context that is worth reporting but not suspicious by
 // itself, such as an inventory of legitimate hooks.
 func (r *Recorder) Observe(description string, details map[string]string) {
 	r.observed = append(r.observed, Finding{Description: description, Details: details})
+}
+
+// Limit records part of the check that could not run here, so the report
+// doesn't claim more coverage than it has.
+func (r *Recorder) Limit(format string, args ...any) {
+	r.limits = append(r.limits, fmt.Sprintf(format, args...))
 }
 
 // Canary records whether a planted object was observed in a view.

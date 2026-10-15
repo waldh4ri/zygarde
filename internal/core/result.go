@@ -36,10 +36,17 @@ func (s Status) MarshalJSON() ([]byte, error) {
 	return json.Marshal(int(s))
 }
 
-// Finding is a single suspicious observation.
+// Finding is a single suspicious observation, written for the person who
+// has to act on it.
 type Finding struct {
-	Description string            `json:"description"`
-	Details     map[string]string `json:"details,omitempty"`
+	// Description says what was observed, in one sentence.
+	Description string `json:"description"`
+	// Details holds the evidence (identifiers, paths, addresses).
+	Details map[string]string `json:"details,omitempty"`
+	// Why explains why this points to tampering.
+	Why string `json:"why,omitempty"`
+	// Benign lists innocent explanations to rule out first.
+	Benign string `json:"benign_causes,omitempty"`
 }
 
 // CanaryCheck records whether a known, planted object was seen in one view.
@@ -60,6 +67,7 @@ type Result struct {
 	Findings        []Finding     `json:"findings,omitempty"`
 	Observations    []Finding     `json:"observations,omitempty"`
 	Canaries        []CanaryCheck `json:"canaries,omitempty"`
+	Limitations     []string      `json:"limitations,omitempty"`
 	Error           string        `json:"error,omitempty"`
 	DurationSeconds float64       `json:"duration_seconds"`
 }

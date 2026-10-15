@@ -51,7 +51,7 @@ func TestRunCell(t *testing.T) {
 		{"not supported by kernel", root, &fakeCell{run: func(*Recorder) error { return ebpf.ErrNotSupported }}, StatusSkipped, 0},
 		{"plain error", root, &fakeCell{run: func(*Recorder) error { return errors.New("boom") }}, StatusError, 0},
 		{"finding", root, &fakeCell{run: func(rec *Recorder) error {
-			rec.Suspicious("bad", nil)
+			rec.Suspicious(Finding{Description: "bad"})
 			return nil
 		}}, StatusSuspicious, 1},
 		{"canary missing", root, &fakeCell{run: func(rec *Recorder) error {
@@ -60,7 +60,7 @@ func TestRunCell(t *testing.T) {
 			return nil
 		}}, StatusSuspicious, 1},
 		{"finding survives later error", root, &fakeCell{run: func(rec *Recorder) error {
-			rec.Suspicious("bad", nil)
+			rec.Suspicious(Finding{Description: "bad"})
 			return errors.New("boom")
 		}}, StatusSuspicious, 1},
 		{"bpf denied while expected to work", root, &fakeCell{run: func(*Recorder) error {

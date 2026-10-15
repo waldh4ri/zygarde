@@ -41,6 +41,7 @@ func RunCell(ctx context.Context, env *Env, c Cell) (res Result) {
 	res.Findings = rec.findings
 	res.Observations = rec.observed
 	res.Canaries = rec.canaries
+	res.Limitations = rec.limits
 	if len(res.Findings) > 0 {
 		res.Escalate(StatusSuspicious)
 	}
@@ -48,8 +49,11 @@ func RunCell(ctx context.Context, env *Env, c Cell) (res Result) {
 		if !cc.Observed {
 			res.Escalate(StatusSuspicious)
 			res.Findings = append(res.Findings, Finding{
-				Description: fmt.Sprintf("Canary %s was not visible in %s: this view is being filtered", cc.Canary, cc.View),
+				Description: fmt.Sprintf("Canary %s was not visible in %s", cc.Canary, cc.View),
 				Details:     map[string]string{"canary": cc.Canary, "view": cc.View},
+				Why: "Zygarde created this object itself just before looking for it. If a view can't show it, " +
+					"that view is being filtered, and the Cell's clean answers for it can't be trusted.",
+				Benign: "Very unusual; a security product sandboxing or filtering zygarde's own activity could cause it.",
 			})
 		}
 	}
@@ -99,8 +103,10 @@ func Classify(env *Env, err error) (Status, *Finding) {
 					"operation":   be.Op,
 					"error":       be.Err.Error(),
 					"environment": why,
-					"note":        "something may be blocking the scanner; an LSM policy (SELinux, AppArmor, BPF-LSM) can also cause this",
 				},
+				Why: "Root without a seccomp filter is normally allowed to use eBPF. A rootkit that intercepts bpf() " +
+					"can refuse it to blind scanners like this one.",
+				Benign: "A security policy restricting eBPF: SELinux, AppArmor or a BPF-LSM program. Check the audit log for denials.",
 			}
 		}
 	}

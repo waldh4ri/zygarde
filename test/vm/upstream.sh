@@ -6,6 +6,12 @@
 # usage: test/vm/upstream.sh [kernel-version...]
 set -euo pipefail
 
+if [ ! -e /dev/kvm ]; then
+	echo "error: /dev/kvm is missing. Run in a privileged container on a host with KVM." >&2
+	echo "On Docker Desktop with WSL2, start any WSL distro first so the kvm module loads." >&2
+	exit 1
+fi
+
 # Oldest first. 4.19 and 5.4 lack features most Cells need: they check that
 # zygarde degrades to SKIPPED instead of failing. 5.10 predates the
 # x64_sys_call() change, so the syscall table Cell really runs there.

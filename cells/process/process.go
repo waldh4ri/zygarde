@@ -116,13 +116,18 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 			continue
 		}
 		comm := bpfutil.Int8String(t.Comm[:])
-		rec.Suspicious(fmt.Sprintf("Process %d (%s) exists in the kernel but is hidden from /proc", tgid, comm),
-			map[string]string{
+		rec.Suspicious(core.Finding{
+			Description: fmt.Sprintf("Process %d (%s) exists in the kernel but is hidden from /proc", tgid, comm),
+			Details: map[string]string{
 				"pid":   strconv.Itoa(int(tgid)),
 				"comm":  comm,
 				"ppid":  strconv.Itoa(int(t.Ppid)),
 				"state": strconv.Itoa(int(t.State)),
-			})
+			},
+			Why: "Every process has a directory in /proc, which ps, top and most tools read. This one is running " +
+				"but filtered out of the /proc listing, so those tools can't see it.",
+			Benign: "None expected: the process was seen in two kernel snapshots taken around the /proc listing.",
+		})
 	}
 
 	ran := 0
@@ -191,11 +196,11 @@ func startScheduler(env *core.Env, spec *ebpf.CollectionSpec, rec *core.Recorder
 		return nil, nil
 	}
 	if _, err := env.BTF.AnyTypeByName("btf_trace_sched_switch"); err != nil {
-		rec.Log().Debug("scheduler view unavailable: no BTF-typed tracepoints")
+		rec.Limit("Scheduler view not run: the kernel lacks BTF-typed tracepoints (Linux 5.5+), so tasks removed from the PID table can't be detected")
 		return nil, nil
 	}
 	if init, err := bpfutil.InInitPIDNS(); err != nil || !init {
-		rec.Observe("Scheduler view skipped: zygarde is not in the initial PID namespace", nil)
+		rec.Limit("Scheduler view not run: zygarde is not in the initial PID namespace (e.g. inside a container), so tasks removed from the PID table can't be detected")
 		return nil, nil
 	}
 	s := &scheduler{}
@@ -270,13 +275,17 @@ func (s *scheduler) check(rec *core.Recorder, before, after snapshot, selfTgid u
 			continue
 		}
 		comm := bpfutil.Int8String(e.seen.Comm[:])
-		rec.Suspicious(fmt.Sprintf("Thread %d (%s, process %d) ran on a CPU but is missing from the kernel's PID table", e.tid, comm, e.seen.Tgid),
-			map[string]string{
+		rec.Suspicious(core.Finding{
+			Description: fmt.Sprintf("Thread %d (%s, process %d) ran on a CPU but is missing from the kernel's PID table", e.tid, comm, e.seen.Tgid),
+			Details: map[string]string{
 				"global_tid":  strconv.Itoa(int(e.tid)),
 				"global_tgid": strconv.Itoa(int(e.seen.Tgid)),
 				"comm":        comm,
-				"technique":   "task unlinked from the PID table (DKOM); the scheduler still runs it",
-			})
+			},
+			Why: "The scheduler ran this thread, yet the kernel's PID table, which every process listing relies on, " +
+				"has no entry for it. Removing a task from that table hides it from all tools while it keeps running.",
+			Benign: "None expected: threads that exited during the check are excluded.",
+		})
 	}
 	rec.Canary(fmt.Sprintf("zygarde (process %d)", selfTgid), "scheduler (sched_switch)", sawSelf)
 	return len(all), nil

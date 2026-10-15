@@ -23,6 +23,7 @@ import (
 	"github.com/waldh4ri/zygarde/cells/taint"
 	"github.com/waldh4ri/zygarde/internal/canary"
 	"github.com/waldh4ri/zygarde/internal/core"
+	"github.com/waldh4ri/zygarde/internal/report"
 	"github.com/waldh4ri/zygarde/internal/supervisor"
 )
 
@@ -31,6 +32,9 @@ const version = "0.1.0"
 type options struct {
 	debug      bool
 	json       bool
+	verbose    bool
+	noColor    bool
+	output     string
 	noIsolate  bool
 	list       bool
 	cells      string
@@ -43,7 +47,11 @@ func parseFlags(args []string) (options, error) {
 	fs := flag.NewFlagSet("zygarde", flag.ContinueOnError)
 	fs.BoolVar(&o.debug, "d", false, "enable debug logging (shorthand)")
 	fs.BoolVar(&o.debug, "debug", false, "enable debug logging on stderr")
-	fs.BoolVar(&o.json, "json", false, "print results as JSON on stdout")
+	fs.BoolVar(&o.json, "json", false, "print the full report as JSON on stdout instead of text")
+	fs.BoolVar(&o.verbose, "v", false, "also show what each check does, its observations and canaries")
+	fs.BoolVar(&o.noColor, "no-color", false, "disable colors (also disabled when NO_COLOR is set or output is not a terminal)")
+	fs.StringVar(&o.output, "o", "", "also save the JSON report to this file")
+	fs.StringVar(&o.output, "output", "", "also save the JSON report to this file")
 	fs.BoolVar(&o.noIsolate, "no-isolation", false, "run Cells in this process instead of a supervised worker")
 	fs.BoolVar(&o.list, "list", false, "list available Cells and exit")
 	fs.StringVar(&o.cells, "cells", "", "comma-separated Cell IDs to run (default: all)")
@@ -128,11 +136,12 @@ func run() int {
 		return 1
 	}
 
-	out := newPrinter(os.Stdout, o.json)
+	out := newPrinter(os.Stdout, o.json, o.verbose, colorEnabled(os.Stdout, o.noColor), termWidth(os.Stdout))
 	if os.Geteuid() != 0 {
 		return out.fatal("zygarde must run as root to load eBPF programs (try: sudo zygarde)")
 	}
-	out.header(len(selected))
+	rep := report.New(version)
+	out.header(rep, selected)
 
 	var results []core.Result
 	cb := supervisor.Callbacks{Start: out.start, Result: out.result}
@@ -148,6 +157,15 @@ func run() int {
 		results = supervisor.Supervise(ctx, selected, os.Args[1:], log, cb)
 	}
 
-	out.summary(results)
-	return core.ExitCode(results)
+	rep.Finish(results)
+	saved := ""
+	if o.output != "" {
+		if err := saveReport(rep, o.output); err != nil {
+			fmt.Fprintf(os.Stderr, "zygarde: saving report: %v\n", err)
+		} else {
+			saved = o.output
+		}
+	}
+	out.summary(rep, saved)
+	return rep.ExitCode()
 }

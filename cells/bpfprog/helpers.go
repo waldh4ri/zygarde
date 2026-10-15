@@ -70,12 +70,12 @@ func resolveHelpers(insns asm.Instructions, ks *kernel.Kallsyms, callBase uint64
 func auditHelpers(rec *core.Recorder, env *core.Env, progs map[uint32]bpfprogProgInfo, selfID uint32) {
 	ks, err := env.Kallsyms()
 	if err != nil {
-		rec.Log().Debug("helper audit unavailable", "err", err)
+		rec.Limit("Capabilities of loaded BPF programs not audited: kernel symbols unavailable (%v)", err)
 		return
 	}
 	callBase, ok := ks.Addr("__bpf_call_base")
 	if !ok {
-		rec.Log().Debug("helper audit unavailable: no __bpf_call_base in kallsyms")
+		rec.Limit("Capabilities of loaded BPF programs not audited: __bpf_call_base not in /proc/kallsyms")
 		return
 	}
 
@@ -95,7 +95,7 @@ func auditHelpers(rec *core.Recorder, env *core.Env, progs map[uint32]bpfprogPro
 		helpers, err := helperCalls(prog, ks, callBase)
 		prog.Close()
 		if errors.Is(err, ebpf.ErrRestrictedKernel) {
-			rec.Log().Debug("helper audit unavailable: instruction dumps restricted by sysctl")
+			rec.Limit("Capabilities of loaded BPF programs not audited: the kernel restricts instruction dumps (kernel.kptr_restrict)")
 			return
 		}
 		if err != nil {
@@ -129,14 +129,22 @@ func auditHelpers(rec *core.Recorder, env *core.Env, progs map[uint32]bpfprogPro
 			}
 			desc := fmt.Sprintf("BPF program #%d (%s) calls %s: %s", id, name, h, risk.what)
 			if risk.suspicious {
-				rec.Suspicious(desc, details)
+				rec.Suspicious(core.Finding{
+					Description: desc,
+					Details:     details,
+					Why: "This helper lets a BPF program change what other processes read from their own memory, " +
+						"e.g. rewrite a directory listing or a file's contents as a process receives them. Monitoring " +
+						"and security tools almost never need it; eBPF rootkits rely on it.",
+					Benign: "Debugging or research tools that use it deliberately. Identify what loaded the program " +
+						"(bpftool prog show id <id> lists its owner and load time).",
+				})
 			} else {
 				rec.Observe(desc, details)
 			}
 		}
 	}
 	if len(uninspectable) > 0 {
-		rec.Observe(fmt.Sprintf("%d loaded program(s) could not be opened for inspection", len(uninspectable)),
-			map[string]string{"program_ids": strings.Join(uninspectable, ", ")})
+		rec.Limit("Capabilities of %d loaded BPF program(s) not audited: they could not be opened (IDs %s)",
+			len(uninspectable), strings.Join(uninspectable, ", "))
 	}
 }

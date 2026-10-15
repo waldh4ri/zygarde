@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/waldh4ri/zygarde/internal/core"
+	"github.com/waldh4ri/zygarde/internal/report"
 )
 
 type target struct {
@@ -42,9 +43,11 @@ func load(dir string) target {
 	case err != nil:
 		t.err = "no results: " + err.Error()
 	default:
-		if err := json.Unmarshal(data, &t.results); err != nil {
+		var rep report.Report
+		if err := json.Unmarshal(data, &rep); err != nil {
 			t.err = "bad results.json: " + err.Error()
 		}
+		t.results = rep.Results
 	}
 	if t.err == "" && t.meta["lockdown_error"] != "" {
 		t.err = t.meta["lockdown_error"]

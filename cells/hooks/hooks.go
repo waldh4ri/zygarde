@@ -74,6 +74,9 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 
 	target, kind, closeCanary := plantCanary(env, rec, canaryTarget(dir))
 	defer closeCanary()
+	if target == "" {
+		rec.Limit("No canary hook could be planted on this kernel, so the hook list itself is unverified")
+	}
 
 	f, err := os.Open(path)
 	if err != nil {
@@ -134,8 +137,14 @@ func classify(rec *core.Recorder, h hook, livepatch bool) bool {
 
 	for _, s := range h.Handlers {
 		if unresolved(s) {
-			details["technique"] = "hook handler outside the kernel, visible modules and named BPF programs (hidden module?)"
-			rec.Suspicious(fmt.Sprintf("%s is hooked by code at %s, which belongs to no visible module", fn, s), details)
+			rec.Suspicious(core.Finding{
+				Description: fmt.Sprintf("%s is hooked by code at %s, which belongs to no visible module", fn, s),
+				Details:     details,
+				Why: "The kernel names hook handlers after the kernel function, module or BPF program they belong " +
+					"to. This one has no name, so it runs from memory no visible module or program owns, which is " +
+					"typical of a module that hid itself after installing the hook.",
+				Benign: "Rare. Check the address against the module list and loaded BPF programs.",
+			})
 			return true
 		}
 	}
@@ -161,8 +170,14 @@ func classify(rec *core.Recorder, h hook, livepatch bool) bool {
 			rec.Observe(fmt.Sprintf("%s has an execution-redirecting hook (livepatch is active)", fn), details)
 			return false
 		default:
-			details["technique"] = "ftrace hook redirecting execution (FTRACE_OPS_FL_IPMODIFY; the only legitimate user is livepatch)"
-			rec.Suspicious(fmt.Sprintf("%s is hooked by an ftrace handler that redirects execution", fn), details)
+			rec.Suspicious(core.Finding{
+				Description: fmt.Sprintf("%s is hooked by an ftrace handler that redirects execution", fn),
+				Details:     details,
+				Why: "This hook can make the kernel run other code instead of this function (ftrace's IPMODIFY " +
+					"flag). Live patches are the only standard use; otherwise it means the function was replaced.",
+				Benign: "An out-of-tree live patch or a security product that replaces functions. The handler " +
+					"listed above names the module responsible.",
+			})
 			return true
 		}
 	}

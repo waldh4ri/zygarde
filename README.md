@@ -57,35 +57,45 @@ A rootkit can attack the scanner itself. Zygarde is built to make that visible:
 ## Usage
 
 ```bash
-sudo ./zygarde                          # run all Cells
-sudo ./zygarde --json | jq '.[] | select(.status == 2)'
+sudo ./zygarde                          # run all checks, human-readable report
+sudo ./zygarde -o report.json           # same, and save the full JSON report
+sudo ./zygarde --json | jq '.results[] | select(.status == 2)'
 sudo ./zygarde --cells hidden_process,hidden_kernel_module
-sudo ./zygarde -d                       # debug logs on stderr
-./zygarde --list                        # list Cells
+sudo ./zygarde -v                       # also show what each check does, observations and canaries
+./zygarde --list                        # list checks
 ```
 
 | Flag | Meaning |
 |------|---------|
-| `--json` | print results as a JSON array on stdout |
-| `--cells a,b` | run only these Cells (see `--list`) |
+| `-o`, `--output <file>` | also save the JSON report to a file (mode 0600) |
+| `--json` | print the JSON report on stdout instead of text |
+| `-v` | verbose: check descriptions, observations (e.g. legitimate hooks) and canaries |
+| `--no-color` | no colors; they are also off when `NO_COLOR` is set or output isn't a terminal |
+| `--cells a,b` | run only these checks (see `--list`) |
 | `--btf <file>` | external BTF for kernels without `/sys/kernel/btf/vmlinux` |
-| `--no-isolation` | run Cells in-process instead of in a supervised worker |
+| `--no-isolation` | run checks in-process instead of in a supervised worker |
 | `-d`, `--debug` | debug logging on stderr |
 
-### Statuses and exit codes
+### Reading the report
+
+The text report starts with the host (name, distribution, kernel, architecture, BTF, lockdown, time), then prints one line per check, followed by:
+
+- **Findings**: for each one, what was observed, the evidence, **why** it points to tampering, and what innocent explanation to **rule out** first.
+- **Coverage**: which checks didn't run on this system and why, and which ran only partly (marked `*`). A clean verdict only covers what actually ran.
+- **Verdict** and **next steps**: for a suspicious result, preserve evidence before touching the system.
 
 | Status | JSON `status` | Meaning |
 |--------|---------------|---------|
-| OK | 0 | the Cell ran and found nothing |
-| ERROR | 1 | the Cell could not complete |
+| OK | 0 | the check ran and found nothing |
+| ERROR | 1 | the check could not complete |
 | SUSPICIOUS | 2 | evidence of hiding or tampering |
-| SKIPPED | 3 | the Cell does not apply to this system (reason in `message`) |
+| SKIPPED | 3 | the check does not apply to this system (reason in `message`) |
 
-Results may also carry `observations`: context such as the inventory of legitimate hooks, which never changes the status.
+The exit code is `2` if anything is SUSPICIOUS, `1` if any check errored, and `0` otherwise.
 
-The exit code is `2` if anything is SUSPICIOUS, `1` if any Cell errored, and `0` otherwise.
+### JSON report
 
-Each JSON result has `cell`, `name`, `status`, `status_text`, `message`, `findings` (with `description` and `details`), `canaries` (`canary`, `view`, `observed`), `error` and `duration_seconds`.
+`--json` and `--output` produce one object: `tool`, `version`, `host` (`hostname`, `distro`, `kernel`, `arch`, `lockdown`, `btf`, `boot_id`), `started_at`, `finished_at`, `verdict` (`clean`, `suspicious` or `incomplete`), `findings` (count) and `results`. Each result has `cell`, `name`, `status`, `status_text`, `message`, `findings` (`description`, `details`, `why`, `benign_causes`), `observations`, `canaries` (`canary`, `view`, `observed`), `limitations`, `error` and `duration_seconds`.
 
 ## Building
 
@@ -158,7 +168,7 @@ build/vmtest.Dockerfile VM test harness (QEMU, vimto, cloud-image tools)
 1. Create `cells/<name>/` with a `.bpf.c` file (start it with `//go:build ignore`) and a `//go:generate go tool bpf2go ...` line, copying an existing Cell.
 2. Implement `core.Cell`:
    - `Supported(env)` returns `core.Skip(...)` when the kernel lacks what the Cell needs; prefer `env.RequireBTFType`.
-   - `Run(ctx, env, rec)` records results with `rec.Suspicious`, `rec.Canary` and `rec.Message`. Wrap failing bpf() operations with `core.WrapBPF` so denials are classified correctly. Release every kernel resource before returning.
+   - `Run(ctx, env, rec)` records results: `rec.Suspicious(core.Finding{...})` with evidence in `Details`, plus `Why` (why it points to tampering) and `Benign` (what to rule out); `rec.Canary` for planted objects; `rec.Limit` for any part that could not run here; `rec.Observe` for context; `rec.Message` for the one-line summary. Wrap failing bpf() operations with `core.WrapBPF` so denials are classified correctly. Release every kernel resource before returning.
 3. Load only your own objects with `bpfutil.Load`, and filter on Zygarde's own process with `is_target()` and `bpfutil.SetTarget`.
 4. Register the Cell in `cmd/zygarde/main.go` and run `make generate`.
 
