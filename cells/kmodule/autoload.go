@@ -321,29 +321,31 @@ func (c *Cell) checkAutoload(rec *core.Recorder) int {
 
 	suspicious := 0
 	tree := loadModuleTree(c.root, c.release)
-	if !tree.ok {
-		rec.Limit("Boot-configured modules not compared with the kernel's modules: no modules.dep for %s", c.release)
-	}
 	for _, m := range mods {
 		details := map[string]string{"module": m.Module, "configured_in": m.Source, "loaded_by": m.How}
-		// A path outside the module tree needs no index to judge.
-		if (!tree.ok && !m.Path) || tree.shipped(m) {
+		if !m.Path {
+			// modprobe only looks in the running kernel's module tree, so a
+			// name that isn't there can't load: a stale or foreign entry,
+			// not a way to persist (a rootkit's own module would be found).
+			desc := fmt.Sprintf("Module %s is configured to load at boot (%s)", m.Module, m.Source)
+			if tree.ok && !tree.shipped(m) {
+				desc += " but this kernel has no such module"
+			}
+			rec.Observe(desc, details)
+			continue
+		}
+		if tree.shipped(m) {
 			rec.Observe(fmt.Sprintf("Module %s is configured to load at boot (%s)", m.Module, m.Source), details)
 			continue
 		}
 		suspicious++
-		why := "This module is not part of the running kernel's module tree (/lib/modules/" + c.release + ") nor built in, " +
-			"so it doesn't come from the kernel package. Rootkits persist by loading their module from elsewhere at boot."
-		if m.Path {
-			why = "The module is loaded from a file outside the running kernel's module tree (/lib/modules/" + c.release +
-				"). Kernel and DKMS modules live there; rootkits keep theirs elsewhere (Mélofée: /etc/intel_audio/intel_audio.ko)."
-		}
 		rec.Suspicious(core.Finding{
-			Description: fmt.Sprintf("Module %s is configured to load at boot (%s) but isn't shipped with the running kernel", m.Module, m.Source),
+			Description: fmt.Sprintf("Module %s is loaded at boot (%s) from outside the running kernel's module tree", m.Module, m.Source),
 			Details:     details,
-			Why:         why,
-			Benign: "A third-party or DKMS module not built for this kernel, or a stale entry left after uninstalling " +
-				"a driver. Check which package owns the configuration file (dpkg -S, rpm -qf).",
+			Why: "The module is loaded from a file outside /lib/modules/" + c.release + ". Kernel and DKMS modules " +
+				"live there; rootkits keep theirs elsewhere (Mélofée: /etc/intel_audio/intel_audio.ko from /etc/rc.modules).",
+			Benign: "A vendor driver installed by hand outside the module tree. Check where the file came from " +
+				"and which package owns the script loading it (dpkg -S, rpm -qf).",
 		})
 	}
 

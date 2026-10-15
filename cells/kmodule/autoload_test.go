@@ -93,8 +93,8 @@ func TestCheckAutoload(t *testing.T) {
 		got = append(got, f.Details["module"])
 	}
 	sort.Strings(got)
-	want := []string{"/etc/intel_audio/intel_audio.ko", "dummy", "rootkit_mod"}
-	if n != 3 || strings.Join(got, ",") != strings.Join(want, ",") {
+	want := []string{"/etc/intel_audio/intel_audio.ko", "dummy"} // rootkit_mod: a name modprobe can't load
+	if n != 2 || strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("got %d findings %v, want %v", n, got, want)
 	}
 }
