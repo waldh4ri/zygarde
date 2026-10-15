@@ -137,3 +137,78 @@ type symbol struct {
 	addr uint64
 	name string
 }
+
+// Image is the core kernel image's address ranges, from kallsyms:
+// functions live in [TextStart, TextEnd), data (sys_call_table...) in
+// [TextStart, End).
+type Image struct {
+	TextStart, TextEnd, End uint64
+	// HasData is false when kallsyms lists no end of image (no
+	// CONFIG_KALLSYMS_ALL): End is then TextEnd and data can't be checked.
+	HasData bool
+}
+
+// vsyscallPage is the x86-64 legacy vsyscall page. Reading it with
+// copy_from_kernel_nofault() oopses kernels without commit 32019c659ecf
+// ("x86/mm: Disallow vsyscall page read for copy_from_kernel_nofault()").
+const vsyscallPage = 0xffffffffff600000
+
+// maxImageSize bounds a plausible kernel image (text, data and bss).
+const maxImageSize = 1 << 30
+
+// ErrImageRange means kallsyms reports an implausible kernel image range.
+var ErrImageRange = errors.New("kallsyms reports an implausible kernel image range")
+
+// Image returns the kernel image's ranges after checking they are
+// plausible: in the kernel half of the address space, ordered, smaller than
+// 1 GiB and clear of the vsyscall page. kallsyms can be filtered by a
+// rootkit, and these ranges decide which addresses BPF may read.
+func (k *Kallsyms) Image() (Image, error) {
+	var img Image
+	var ok bool
+	if img.TextStart, ok = k.Addr("_stext"); !ok {
+		return img, errors.New("_stext is not in /proc/kallsyms")
+	}
+	if img.TextEnd, ok = k.Addr("_etext"); !ok {
+		return img, errors.New("_etext is not in /proc/kallsyms")
+	}
+	for _, sym := range []string{"_end", "__bss_stop", "__end_rodata"} {
+		if img.End, ok = k.Addr(sym); ok {
+			break
+		}
+	}
+	if ok {
+		img.HasData = true
+	} else {
+		img.End = img.TextEnd // kernels without CONFIG_KALLSYMS_ALL list no data symbols
+	}
+	if err := img.check(); err != nil {
+		return img, err
+	}
+	return img, nil
+}
+
+func (img Image) check() error {
+	const kernelHalf = 0xff00000000000000
+	switch {
+	case img.TextStart < kernelHalf:
+		return fmt.Errorf("%w: _stext %#x is not a kernel address", ErrImageRange, img.TextStart)
+	case img.TextEnd <= img.TextStart || img.End < img.TextEnd:
+		return fmt.Errorf("%w: _stext %#x, _etext %#x, end %#x are out of order", ErrImageRange, img.TextStart, img.TextEnd, img.End)
+	case img.End-img.TextStart > maxImageSize:
+		return fmt.Errorf("%w: %#x-%#x spans more than 1 GiB", ErrImageRange, img.TextStart, img.End)
+	case img.TextStart <= vsyscallPage+4096 && vsyscallPage < img.End:
+		return fmt.Errorf("%w: %#x-%#x includes the vsyscall page", ErrImageRange, img.TextStart, img.End)
+	}
+	return nil
+}
+
+// InText reports whether [addr, addr+size) lies within the kernel's text.
+func (img Image) InText(addr, size uint64) bool {
+	return addr >= img.TextStart && addr+size >= addr && addr+size <= img.TextEnd
+}
+
+// InImage reports whether [addr, addr+size) lies within the kernel image.
+func (img Image) InImage(addr, size uint64) bool {
+	return addr >= img.TextStart && addr+size >= addr && addr+size <= img.End
+}

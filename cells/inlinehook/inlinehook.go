@@ -99,11 +99,17 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	if err != nil {
 		return err
 	}
-	stext, _ := ks.Addr("_stext")
-	etext, _ := ks.Addr("_etext")
-	inText := func(a uint64) bool { return a >= stext && a < etext }
+	// BPF only reads addresses inside the kernel's text: kallsyms can be
+	// filtered, and a bogus address such as the vsyscall page oopses
+	// kernels that let bpf_probe_read_kernel() fault on it.
+	img, err := ks.Image()
+	if err != nil {
+		return core.Skip("kernel image range unavailable: %v", err)
+	}
+	inText := func(a uint64) bool { return img.InText(a, 1) }
 
 	var funcs []function
+	outside := 0
 	for _, name := range hotPaths {
 		sym := name
 		if !ks.Has(sym) {
@@ -113,18 +119,32 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 			}
 		}
 		addr, _ := ks.Addr(sym)
+		if !img.InText(addr, codeBytes) {
+			outside++
+			outsideImage(rec, sym, addr, img)
+			continue
+		}
 		funcs = append(funcs, function{name, sym, addr})
 	}
 	if len(funcs) > maxFuncs-1 {
 		funcs = funcs[:maxFuncs-1]
 	}
 	if len(funcs) == 0 {
+		if outside > 0 {
+			rec.Message("kallsyms places %d checked function(s) outside the kernel's text", outside)
+			return nil
+		}
 		return core.Skip("none of the checked functions is in /proc/kallsyms")
 	}
 	// Canary: the reader runs from a kprobe on getuid's handler, so that
 	// function's entry must show the patch the kprobe made (an ftrace call,
 	// or an int3 without ftrace) at the moment it is read.
 	canaryAddr, haveCanary := ks.Addr(canarySymbol)
+	if haveCanary && !img.InText(canaryAddr, codeBytes) {
+		outside++
+		outsideImage(rec, canarySymbol, canaryAddr, img)
+		haveCanary = false
+	}
 	if haveCanary {
 		funcs = append(funcs, function{canarySymbol, canarySymbol, canaryAddr})
 	}
@@ -202,9 +222,12 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 		rec.Limit("Entry of %d function(s) not recognised (no ftrace site): %s", len(unknown), strings.Join(unknown, ", "))
 	}
 
-	if hooked > 0 {
+	switch {
+	case hooked > 0:
 		rec.Message("%d of %d checked functions are inline-hooked", hooked, checked)
-	} else {
+	case outside > 0:
+		rec.Message("No inline hooks in %d checked functions; kallsyms places %d outside the kernel's text", checked, outside)
+	default:
 		rec.Message("No inline hooks in %d checked functions", checked)
 	}
 	return nil
@@ -320,7 +343,28 @@ func enabledFunctions() (map[string]bool, error) {
 		if line == "" || line[0] == ' ' || line[0] == '\t' {
 			continue
 		}
-		out[strings.Fields(line)[0]] = true
+		if f := strings.Fields(line); len(f) > 0 { // "\r" or "\v" alone has none
+			out[f[0]] = true
+		}
 	}
 	return out, sc.Err()
+}
+
+// codeBytes is how many bytes the reader copies per function (CODE_BYTES).
+const codeBytes = 16
+
+// outsideImage reports a checked function that kallsyms places outside the
+// kernel's text. It is not read.
+func outsideImage(rec *core.Recorder, sym string, addr uint64, img kernel.Image) {
+	rec.Suspicious(core.Finding{
+		Description: fmt.Sprintf("/proc/kallsyms reports %s at %#x, outside the kernel's text", sym, addr),
+		Details: map[string]string{
+			"function":    sym,
+			"address":     fmt.Sprintf("%#x", addr),
+			"kernel_text": fmt.Sprintf("%#x-%#x", img.TextStart, img.TextEnd),
+		},
+		Why: "This function is part of the core kernel, so its address must fall between _stext and _etext. A " +
+			"different address means /proc/kallsyms is being rewritten, which rootkits do to mislead scanners that rely on it.",
+		Benign: "None expected.",
+	})
 }
