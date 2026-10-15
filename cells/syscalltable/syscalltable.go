@@ -78,6 +78,16 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 		return err
 	}
 	table, _ := ks.Addr("sys_call_table")
+	// BPF only reads addresses inside the kernel image: kallsyms can be
+	// filtered, and a bogus address such as the vsyscall page oopses
+	// kernels that let bpf_probe_read_kernel() fault on it.
+	img, err := ks.Image()
+	if err != nil {
+		return core.Skip("kernel image range unavailable: %v", err)
+	}
+	if !img.HasData {
+		return core.Skip("the end of the kernel image (_end) is not in /proc/kallsyms")
+	}
 
 	type check struct {
 		syscall
@@ -85,16 +95,36 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 		expected uint64
 	}
 	var checks []check
+	outside := 0
+	var maxNr uint32
 	for _, s := range watched {
 		sym, addr, ok := handler(ks, s.name)
 		if !ok {
 			rec.Log().Debug("no handler symbol, skipping", "syscall", s.name)
 			continue
 		}
+		if !img.InText(addr, 1) {
+			outside++
+			outsideImage(rec, sym, addr, img)
+			continue
+		}
 		checks = append(checks, check{s, sym, addr})
+		maxNr = max(maxNr, s.nr)
+	}
+	if len(checks) == 0 {
+		if outside > 0 {
+			rec.Message("kallsyms places %d syscall handler(s) outside the kernel image", outside)
+			return nil
+		}
+		return core.Skip("none of the checked syscall handlers is in /proc/kallsyms")
 	}
 	if len(checks) > maxEntries {
 		return fmt.Errorf("too many syscalls to check (%d > %d)", len(checks), maxEntries)
+	}
+	if !img.InImage(table, uint64(maxNr+1)*8) {
+		outsideImage(rec, "sys_call_table", table, img)
+		rec.Message("kallsyms places sys_call_table outside the kernel image; the table was not read")
+		return nil
 	}
 
 	spec, err := loadSyscalltable()
@@ -143,7 +173,7 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 			break
 		}
 	}
-	if len(checks) > 0 && actual[0] == 0 {
+	if actual[0] == 0 {
 		return fmt.Errorf("the kprobe on getuid() never fired")
 	}
 
@@ -169,12 +199,31 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 		})
 	}
 
-	if hooked > 0 {
+	switch {
+	case hooked > 0:
 		rec.Message("%d of %d checked syscall table entries are hooked", hooked, len(checks))
-	} else {
+	case outside > 0:
+		rec.Message("All %d checked syscall table entries are intact; kallsyms places %d handler(s) outside the kernel image", len(checks), outside)
+	default:
 		rec.Message("All %d checked syscall table entries are intact", len(checks))
 	}
 	return nil
+}
+
+// outsideImage reports a watched symbol that kallsyms places outside the
+// kernel image. It is not read.
+func outsideImage(rec *core.Recorder, sym string, addr uint64, img kernel.Image) {
+	rec.Suspicious(core.Finding{
+		Description: fmt.Sprintf("/proc/kallsyms reports %s at %#x, outside the kernel image", sym, addr),
+		Details: map[string]string{
+			"symbol":       sym,
+			"address":      fmt.Sprintf("%#x", addr),
+			"kernel_image": fmt.Sprintf("%#x-%#x", img.TextStart, img.End),
+		},
+		Why: "This symbol is part of the core kernel, so its address must fall between _stext and _end. A different " +
+			"address means /proc/kallsyms is being rewritten, which rootkits do to mislead scanners that rely on it.",
+		Benign: "None expected.",
+	})
 }
 
 // handler finds the kallsyms symbol for a syscall's handler.

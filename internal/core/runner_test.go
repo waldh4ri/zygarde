@@ -115,3 +115,16 @@ func TestExitCode(t *testing.T) {
 		}
 	}
 }
+
+func TestObservationCap(t *testing.T) {
+	c := &fakeCell{run: func(rec *Recorder) error {
+		for i := 0; i < MaxObservations+5; i++ {
+			rec.Observe("x", nil)
+		}
+		return nil
+	}}
+	res := RunCell(context.Background(), testEnv(0, 0), c)
+	if len(res.Observations) != MaxObservations || len(res.Limitations) != 1 || res.Status != StatusOK {
+		t.Fatalf("got %d observations, limitations %v, status %v", len(res.Observations), res.Limitations, res.StatusText)
+	}
+}

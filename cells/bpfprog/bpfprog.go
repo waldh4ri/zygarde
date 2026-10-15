@@ -89,6 +89,9 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 		return err
 	}
 	enumerated, err := bpfutil.EnumerateProgIDs()
+	// The tracepoints run on every syscall of every CPU: detach them as soon
+	// as the calls they watch are done. Their events stay in the ring buffer.
+	tr.detach()
 	if err != nil {
 		return err
 	}
@@ -223,12 +226,17 @@ func traceEnumeration(objs *objects) (*tracer, error) {
 	return t, nil
 }
 
-// Close detaches the tracepoints and closes the reader.
-func (t *tracer) Close() {
+// detach detaches the tracepoints.
+func (t *tracer) detach() {
 	for _, l := range t.links {
 		l.Close()
 	}
 	t.links = nil
+}
+
+// Close detaches the tracepoints and closes the reader.
+func (t *tracer) Close() {
+	t.detach()
 	if t.rd != nil {
 		t.rd.Close()
 	}
@@ -236,10 +244,7 @@ func (t *tracer) Close() {
 
 // drain detaches the tracepoints and returns every event recorded so far.
 func (t *tracer) drain() ([]bpfprogEnumEvent, error) {
-	for _, l := range t.links {
-		l.Close()
-	}
-	t.links = nil
+	t.detach()
 
 	var events []bpfprogEnumEvent
 	t.rd.SetDeadline(time.Now())

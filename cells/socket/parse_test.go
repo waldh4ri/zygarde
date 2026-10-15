@@ -2,6 +2,7 @@ package socket
 
 import (
 	"encoding/binary"
+	"net/netip"
 	"strings"
 	"testing"
 )
@@ -83,5 +84,27 @@ func TestCompare(t *testing.T) {
 	}
 	if got := intersect(onlyProc, nil); len(got) != 0 {
 		t.Errorf("intersect with nothing = %+v", got)
+	}
+}
+
+func TestDiagExactRequest(t *testing.T) {
+	s := sock{Proto: "tcp", Family: 4, Local: netip.MustParseAddrPort("127.0.0.1:631"), Remote: netip.MustParseAddrPort("10.0.0.2:40000"), Inode: 5}
+	req := diagExactRequest(s)
+	if len(req) != 56 || req[0] != 2 || req[1] != 6 {
+		t.Fatalf("header % x", req[:8])
+	}
+	if req[8] != 0x02 || req[9] != 0x77 || req[10] != 0x9c || req[11] != 0x40 {
+		t.Errorf("ports % x", req[8:12])
+	}
+	if req[12] != 127 || req[15] != 1 || req[28] != 10 || req[31] != 2 {
+		t.Errorf("addresses % x", req[12:44])
+	}
+	// Round trip through the reply parser's layout.
+	msg := make([]byte, diagMsgLen)
+	msg[0] = 2
+	copy(msg[diagSockIDOff:], req[8:56])
+	got, ok := parseDiagMsg(msg, "tcp")
+	if !ok || got.Local != s.Local || got.Remote != s.Remote {
+		t.Errorf("parsed %+v", got)
 	}
 }

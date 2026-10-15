@@ -8,14 +8,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
+	"golang.org/x/sys/unix"
 
 	"github.com/waldh4ri/zygarde/internal/bpfutil"
 	"github.com/waldh4ri/zygarde/internal/canary"
@@ -114,23 +118,36 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 	}
 	seenSystem := map[string]bool{}
 
+	l := lister{rd: rd, drops: objs.Drops}
+	remote := remoteMounts()
+	var skipped []string
 	listed, hidden, stashed := 0, 0, 0
 	for _, dir := range scanDirs() {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		produced, returned, err := listDir(rd, dir)
-		if errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission) {
+		// A dead NFS server leaves listings stuck in uninterruptible sleep.
+		if m := under(dir, remote); m != "" {
+			skipped = append(skipped, dir+" ("+m+")")
+			continue
+		}
+		produced, returned, lost, err := l.list(dir)
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission) || errors.Is(err, unix.ENOTDIR) {
 			continue
 		}
 		if err != nil {
 			return err
 		}
 		listed++
+		if lost > 0 {
+			rec.Limit("%d entries of %s were not recorded from filldir64 (ring buffer full); hidden entries there may be missed", lost, dir)
+		}
 
 		if dir == canary.FileDir {
 			name := filepath.Base(cf.Path)
-			rec.Canary(cf.Path, "filesystem (filldir64)", produced[name])
+			if lost == 0 || produced[name] {
+				rec.Canary(cf.Path, "filesystem (filldir64)", produced[name])
+			}
 			rec.Canary(cf.Path, "getdents64 result", returned[name])
 		}
 
@@ -152,7 +169,7 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 		// An entry deleted between two getdents64 calls can be produced once
 		// (when it didn't fit in the buffer) and never returned: list again
 		// and keep only entries missing both times.
-		produced2, returned2, err := listDir(rd, dir)
+		produced2, returned2, _, err := l.list(dir)
 		if err != nil {
 			return err
 		}
@@ -168,6 +185,10 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 					"(open it by name: hidden entries usually remain accessible).",
 			})
 		}
+	}
+
+	if len(skipped) > 0 {
+		rec.Limit("Not listed, being on network or FUSE filesystems that can stall the scan: %s", strings.Join(truncated(skipped, 10), ", "))
 	}
 
 	switch {
@@ -191,31 +212,128 @@ func filldirSymbol(ks *kernel.Kallsyms) (string, bool) {
 	return ks.FirstWithPrefix("filldir64.")
 }
 
-// listDir lists dir with getdents64 and returns the entry names the
-// filesystem produced and the names the syscall returned.
-func listDir(rd *ringbuf.Reader, dir string) (produced, returned map[string]bool, err error) {
-	if _, err := drain(rd); err != nil { // discard anything unrelated
-		return nil, nil, err
+// lister lists directories while recording what filldir64 produced.
+type lister struct {
+	rd    *ringbuf.Reader
+	drops *ebpf.Map // drops[0]: entries the BPF program could not record
+}
+
+// listBatch is how many entries are read per getdents64 round before the
+// ring buffer is drained. One round produces a few hundred records at most,
+// far below the ring buffer's capacity (about 15,000).
+const listBatch = 512
+
+// list lists dir with getdents64 and returns the entry names the filesystem
+// produced and the names the syscall returned, and how many produced entries
+// could not be recorded.
+func (l lister) list(dir string) (produced, returned map[string]bool, lost uint64, err error) {
+	if _, err := drain(l.rd); err != nil { // discard anything unrelated
+		return nil, nil, 0, err
 	}
-	entries, err := os.ReadDir(dir)
+	before := l.dropped()
+	// O_NONBLOCK|O_DIRECTORY: a FIFO or device put in place of a listed
+	// directory (~/.ssh) must neither block nor be opened.
+	fd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NONBLOCK|unix.O_NOCTTY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, &os.PathError{Op: "open", Path: dir, Err: err}
 	}
-	names, err := drain(rd)
-	if err != nil {
-		return nil, nil, err
-	}
-	produced = make(map[string]bool, len(names))
-	for _, n := range names {
-		if n != "." && n != ".." {
-			produced[n] = true
+	f := os.NewFile(uintptr(fd), dir)
+	defer f.Close()
+
+	produced, returned = map[string]bool{}, map[string]bool{}
+	for {
+		names, rerr := f.Readdirnames(listBatch)
+		for _, n := range names {
+			returned[n] = true
+		}
+		got, err := drain(l.rd)
+		if err != nil {
+			return nil, nil, 0, err
+		}
+		for _, n := range got {
+			if n != "." && n != ".." {
+				produced[n] = true
+			}
+		}
+		if errors.Is(rerr, io.EOF) || (rerr == nil && len(names) == 0) {
+			break
+		}
+		if rerr != nil {
+			return nil, nil, 0, rerr
 		}
 	}
-	returned = make(map[string]bool, len(entries))
-	for _, e := range entries {
-		returned[e.Name()] = true
+	return produced, returned, l.dropped() - before, nil
+}
+
+func (l lister) dropped() uint64 {
+	var n uint64
+	if l.drops != nil {
+		_ = l.drops.Lookup(uint32(0), &n)
 	}
-	return produced, returned, nil
+	return n
+}
+
+// remoteMountTypes are filesystem types whose listings can block for a long
+// time in uninterruptible sleep when the server is unreachable.
+func remoteMountType(fstype string) bool {
+	switch fstype {
+	case "nfs", "nfs4", "cifs", "smb3", "smbfs", "ceph", "afs", "9p", "glusterfs", "lustre", "autofs", "davfs", "ncpfs", "coda":
+		return true
+	}
+	return strings.HasPrefix(fstype, "fuse")
+}
+
+// remoteMounts returns the mount points of network and FUSE filesystems, by
+// type, from /proc/self/mountinfo (without touching the mounts themselves).
+func remoteMounts() map[string]string {
+	out := map[string]string{}
+	data, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		return out
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		for i, f := range fields {
+			if f == "-" && i+1 < len(fields) && len(fields) > 4 {
+				if remoteMountType(fields[i+1]) {
+					out[unescapeMount(fields[4])] = fields[i+1]
+				}
+				break
+			}
+		}
+	}
+	return out
+}
+
+// unescapeMount decodes the octal escapes (\040 for a space) of mountinfo.
+func unescapeMount(s string) string {
+	if !strings.Contains(s, `\`) {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+4 <= len(s) {
+			if v, err := strconv.ParseUint(s[i+1:i+4], 8, 8); err == nil {
+				b.WriteByte(byte(v))
+				i += 3
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+// under returns the type of the remote mount dir is on, or "".
+func under(dir string, mounts map[string]string) string {
+	for p := dir; ; p = filepath.Dir(p) {
+		if t, ok := mounts[p]; ok {
+			return t
+		}
+		if p == "/" || p == "." {
+			return ""
+		}
+	}
 }
 
 // drain returns the names of all buffered events. Events are written
@@ -270,6 +388,9 @@ func scanDirs() []string {
 		if filepath.IsAbs(p) {
 			dirs = append(dirs, filepath.Clean(p))
 		}
+	}
+	if under("/home", remoteMounts()) != "" {
+		return dedupe(dirs) // listing /home could stall on the server
 	}
 	if homes, err := os.ReadDir("/home"); err == nil {
 		for _, h := range homes {
