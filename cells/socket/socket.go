@@ -125,7 +125,7 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 			Details:     details(s, heldBy(s)),
 			Why: "ss lists sockets over netlink and netstat reads /proc/net; both report the same kernel tables. " +
 				"A socket missing from one of them is being filtered, typically to hide a backdoor's listener or connection.",
-			Benign: "None expected: the difference was seen in two snapshots.",
+			Benign: "None expected: the difference was seen in three reads of both views.",
 		})
 	}
 	for _, s := range onlyDiag {
@@ -134,7 +134,7 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 			Details:     details(s, heldBy(s)),
 			Why: "netstat reads /proc/net and ss uses netlink; both report the same kernel tables. Rootkits commonly " +
 				"hook the /proc/net show functions (tcp4_seq_show...) to hide their listener from netstat.",
-			Benign: "None expected: the difference was seen in two snapshots.",
+			Benign: "None expected: the difference was seen in three reads of both views.",
 		})
 	}
 
