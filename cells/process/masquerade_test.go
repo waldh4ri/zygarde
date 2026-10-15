@@ -1,6 +1,9 @@
 package process
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 func TestLooksLikeKthread(t *testing.T) {
 	for _, tc := range []struct {
@@ -64,5 +67,32 @@ func TestPadded(t *testing.T) {
 		if _, got := padded([]byte(tc.cmdline)); got != tc.want {
 			t.Errorf("%s: padded = %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+func TestStatStartTime(t *testing.T) {
+	stat := "1234 (a b) c) S 1 1234 1234 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 98765 1000 100 18446744073709551615"
+	if v, ok := statStartTime(stat); !ok || v != 98765 {
+		t.Errorf("statStartTime = %d, %v", v, ok)
+	}
+	if _, ok := statStartTime("1 (x) S 1"); ok {
+		t.Error("short stat accepted")
+	}
+}
+
+func TestSameProcess(t *testing.T) {
+	data, err := os.ReadFile("/proc/self/stat")
+	if err != nil {
+		t.Skip(err)
+	}
+	ticks, ok := statStartTime(string(data))
+	if !ok {
+		t.Fatal("cannot parse /proc/self/stat")
+	}
+	if !sameProcess("/proc/self", ticks*1e7+5e6) {
+		t.Error("own process not recognised")
+	}
+	if sameProcess("/proc/self", (ticks+50)*1e7) {
+		t.Error("different start time accepted")
 	}
 }
