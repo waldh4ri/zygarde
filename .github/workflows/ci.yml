@@ -53,4 +53,5 @@ jobs:
           sudo chmod 0666 /dev/kvm
           CGO_ENABLED=0 go install lmb.io/vimto@v0.4.0
       - run: bash test/vm/upstream.sh
-      - run: go run ./test/vm/report test/vm/out >> "$GITHUB_STEP_SUMMARY"
+      # Also in the log: the step summary is hard to reach when a run fails.
+      - run: go run ./test/vm/report test/vm/out | tee -a "$GITHUB_STEP_SUMMARY"; exit ${PIPESTATUS[0]}
