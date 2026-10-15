@@ -110,14 +110,25 @@ func padded(cmdline []byte) (int, bool) {
 
 // checkMasquerade looks for processes disguised as kernel threads or running
 // from deleted, memory-backed or out-of-place executables. procs holds the
-// processes seen in both kernel snapshots.
-func checkMasquerade(rec *core.Recorder, procs map[uint32]processTaskInfo, skip map[uint32]bool) {
+// processes seen in both kernel snapshots. alive returns the start time of
+// every process in a kernel snapshot taken after the /proc reads: a PID
+// reused while /proc was being read is not judged on the new process's files.
+func checkMasquerade(rec *core.Recorder, procs map[uint32]processTaskInfo, skip map[uint32]bool, alive func() (map[uint32]uint64, error)) error {
 	selfExe, _ := os.Readlink("/proc/self/exe")
 	pids := make([]uint32, 0, len(procs))
 	for pid := range procs {
 		pids = append(pids, pid)
 	}
 	sort.Slice(pids, func(i, j int) bool { return pids[i] < pids[j] })
+
+	// Results are recorded once the kernel confirms each process outlived
+	// the reads of its /proc files.
+	type pending struct {
+		pid   uint32
+		start uint64
+		emit  func()
+	}
+	var queue []pending
 
 	for _, pid := range pids {
 		t := procs[pid]
@@ -132,12 +143,6 @@ func checkMasquerade(rec *core.Recorder, procs map[uint32]processTaskInfo, skip 
 		if exeErr == nil && exe == selfExe {
 			continue // zygarde itself, its worker and canaries
 		}
-		// The PID may have been reused since the kernel snapshot: only
-		// mix the kernel's view with /proc's if it is still that process
-		// (a live process keeps its PID, so checking after the reads is enough).
-		if !sameProcess(dir, t.StartTime) {
-			continue
-		}
 		details := func() map[string]string {
 			return map[string]string{
 				"pid":     strconv.Itoa(int(pid)),
@@ -149,87 +154,68 @@ func checkMasquerade(rec *core.Recorder, procs map[uint32]processTaskInfo, skip 
 			}
 		}
 
-		if looksLikeKthread(comm, cmdline) {
-			d := details()
-			d["has_user_address_space"] = strconv.FormatBool(t.HasMm != 0)
-			rec.Suspicious(core.Finding{
-				Description: fmt.Sprintf("Process %d (%s) poses as a kernel thread but is a user process", pid, firstNonEmpty(cmdline, comm)),
-				Details:     d,
-				Why: "Its name imitates a kernel thread, but the kernel does not flag it as one (no PF_KTHREAD) and " +
-					"it runs a user program. Malware renames itself this way to blend into ps output.",
-				Benign: "Rare. Check the executable (exe above) and its package; some tools rename worker processes.",
-			})
-		}
-
-		if exeErr == nil {
-			if loc := exeLocation(exe); loc != "" {
-				path := strings.TrimSuffix(exe, " (deleted)")
-				desc := fmt.Sprintf("Process %d (%s) runs from a %s executable: %s", pid, comm, loc, exe)
-				if loc == "deleted" {
-					desc = fmt.Sprintf("Process %d (%s) runs from a deleted executable: %s", pid, comm, exe)
-				}
+		queue = append(queue, pending{pid, t.StartTime, func() {
+			if looksLikeKthread(comm, cmdline) {
 				d := details()
-				d["location"] = loc
-				// Package upgrades leave daemons running from deleted
-				// binaries in system directories: not worth a finding.
-				upgraded := loc == "deleted" && packaged(path)
-				if t.Euid == 0 && !upgraded {
-					rec.Suspicious(core.Finding{
-						Description: desc,
-						Details:     d,
-						Why: "A root process whose program lives only in memory, in a temporary directory or a hidden one, " +
-							"or was deleted after starting, leaves nothing on disk to inspect: a common way to run " +
-							"implants. The binary can still be recovered from /proc/<pid>/exe.",
-						Benign: "Software updated in place outside the package manager, installers running from /tmp, " +
-							"or tools that execute from a memfd (e.g. runc while starting a container).",
-					})
-				} else {
-					rec.Observe(desc, d)
+				d["has_user_address_space"] = strconv.FormatBool(t.HasMm != 0)
+				rec.Suspicious(core.Finding{
+					Description: fmt.Sprintf("Process %d (%s) poses as a kernel thread but is a user process", pid, firstNonEmpty(cmdline, comm)),
+					Details:     d,
+					Why: "Its name imitates a kernel thread, but the kernel does not flag it as one (no PF_KTHREAD) and " +
+						"it runs a user program. Malware renames itself this way to blend into ps output.",
+					Benign: "Rare. Check the executable (exe above) and its package; some tools rename worker processes.",
+				})
+			}
+
+			if exeErr == nil {
+				if loc := exeLocation(exe); loc != "" {
+					path := strings.TrimSuffix(exe, " (deleted)")
+					desc := fmt.Sprintf("Process %d (%s) runs from a %s executable: %s", pid, comm, loc, exe)
+					if loc == "deleted" {
+						desc = fmt.Sprintf("Process %d (%s) runs from a deleted executable: %s", pid, comm, exe)
+					}
+					d := details()
+					d["location"] = loc
+					// Package upgrades leave daemons running from deleted
+					// binaries in system directories: not worth a finding.
+					upgraded := loc == "deleted" && packaged(path)
+					if t.Euid == 0 && !upgraded {
+						rec.Suspicious(core.Finding{
+							Description: desc,
+							Details:     d,
+							Why: "A root process whose program lives only in memory, in a temporary directory or a hidden one, " +
+								"or was deleted after starting, leaves nothing on disk to inspect: a common way to run " +
+								"implants. The binary can still be recovered from /proc/<pid>/exe.",
+							Benign: "Software updated in place outside the package manager, installers running from /tmp, " +
+								"or tools that execute from a memfd (e.g. runc while starting a container).",
+						})
+					} else {
+						rec.Observe(desc, d)
+					}
 				}
 			}
-		}
 
-		if n, ok := padded(raw); ok {
-			d := details()
-			d["padding"] = strconv.Itoa(n)
-			rec.Observe(fmt.Sprintf("Process %d (%s) pads its command line with %d blank characters", pid, comm, n), d)
-		}
+			if n, ok := padded(raw); ok {
+				d := details()
+				d["padding"] = strconv.Itoa(n)
+				rec.Observe(fmt.Sprintf("Process %d (%s) pads its command line with %d blank characters", pid, comm, n), d)
+			}
+		}})
 	}
-}
 
-// userHZ is the clock tick of /proc/<pid>/stat times (USER_HZ, 100 on
-// every architecture Zygarde supports).
-const userHZ = 100
-
-// sameProcess reports whether /proc/<pid> (dir) is the process that started
-// at startNs (start_boottime, in ns): /proc/<pid>/stat gives the same
-// instant in clock ticks.
-func sameProcess(dir string, startNs uint64) bool {
-	data, err := os.ReadFile(dir + "/stat")
+	if len(queue) == 0 {
+		return nil
+	}
+	starts, err := alive()
 	if err != nil {
-		return false
+		return err
 	}
-	ticks, ok := statStartTime(string(data))
-	if !ok {
-		return false
+	for _, p := range queue {
+		if starts[p.pid] == p.start {
+			p.emit()
+		}
 	}
-	want := startNs / (1e9 / userHZ)
-	return ticks == want || ticks == want+1 || ticks+1 == want
-}
-
-// statStartTime returns field 22 (starttime) of /proc/<pid>/stat. The
-// command name (field 2) is parenthesised and may contain spaces.
-func statStartTime(stat string) (uint64, bool) {
-	i := strings.LastIndexByte(stat, ')')
-	if i < 0 {
-		return 0, false
-	}
-	f := strings.Fields(stat[i+1:])
-	if len(f) < 20 { // fields 3..22
-		return 0, false
-	}
-	v, err := strconv.ParseUint(f[19], 10, 64)
-	return v, err == nil
+	return nil
 }
 
 func firstNonEmpty(a, b string) string {

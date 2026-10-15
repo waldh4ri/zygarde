@@ -150,7 +150,20 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 			stable[tgid] = t
 		}
 	}
-	checkMasquerade(rec, stable, map[uint32]bool{uint32(os.Getpid()): true, canaryPID: true})
+	alive := func() (map[uint32]uint64, error) {
+		now, err := kernelTasks(iter.DumpTask)
+		if err != nil {
+			return nil, err
+		}
+		starts := make(map[uint32]uint64, len(now.procs))
+		for tgid, t := range now.procs {
+			starts[tgid] = t.StartTime
+		}
+		return starts, nil
+	}
+	if err := checkMasquerade(rec, stable, map[uint32]bool{uint32(os.Getpid()): true, canaryPID: true}, alive); err != nil {
+		return err
+	}
 	disguised := len(rec.Findings()) - hidden
 
 	switch {
