@@ -25,6 +25,24 @@ struct {
 	__uint(max_entries, 4 * 1024 * 1024);
 } events SEC(".maps");
 
+// drops[0] counts entries that could not be recorded (ring buffer full or
+// unreadable name), so a lost entry is a coverage limit, not a missing canary.
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, __u64);
+} drops SEC(".maps");
+
+static __always_inline void count_drop(void)
+{
+	__u32 key = 0;
+	__u64 *n = bpf_map_lookup_elem(&drops, &key);
+
+	if (n)
+		__sync_fetch_and_add(n, 1);
+}
+
 // filldir64(struct dir_context *ctx, const char *name, int namlen, ...) is
 // the callback filesystems call (through dir_emit()) for each entry they
 // produce during getdents64(). Anything that filters entries afterwards, by
@@ -42,12 +60,15 @@ int on_filldir64(struct pt_regs *ctx)
 		return 0;
 
 	e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-	if (!e)
+	if (!e) {
+		count_drop();
 		return 0;
+	}
 	// Names are not NUL-terminated (e.g. ext4 dirents): copy exactly len bytes.
 	e->namlen = len;
 	if (bpf_probe_read_kernel(e->name, len & (MAX_NAME - 1), name)) {
 		bpf_ringbuf_discard(e, 0);
+		count_drop();
 		return 0;
 	}
 	bpf_ringbuf_submit(e, 0);

@@ -67,6 +67,8 @@ type Table struct {
 	// Learned lists the kinds the scan could recognise; a kind is missing if
 	// zygarde could not create an object of that kind to learn it from.
 	Learned map[Kind]bool
+
+	index map[object]map[uint32]string // built on first Holders() call
 }
 
 // Supported returns a Skip error if the kernel can't run the file iterator.
@@ -162,25 +164,49 @@ type Holder struct {
 	Comm string
 }
 
+// object identifies an object in the holder index.
+type object struct {
+	kind Kind
+	id   uint64
+}
+
+// buildIndex maps every object to its holders, once: looking each socket up
+// by scanning every descriptor is O(sockets × descriptors), minutes on a
+// proxy with tens of thousands of connections.
+func (t *Table) buildIndex() {
+	t.index = map[object]map[uint32]string{}
+	add := func(o object, f FD) {
+		m := t.index[o]
+		if m == nil {
+			m = map[uint32]string{}
+			t.index[o] = m
+		}
+		m[f.TGID] = f.Comm
+	}
+	for _, f := range t.FDs {
+		if f.TGID == 0 {
+			continue
+		}
+		switch f.Kind {
+		case Socket:
+			add(object{Socket, f.Inode}, f)
+		case Link, Perf:
+			add(object{f.Kind, uint64(f.ID)}, f)
+			// Holding a link or perf event holds the program it runs.
+			add(object{Prog, uint64(f.ProgID)}, f)
+		default:
+			add(object{f.Kind, uint64(f.ID)}, f)
+		}
+	}
+}
+
 // Holders returns the processes holding an object, sorted by PID. For a
 // program, that includes processes holding a link or perf event running it.
 func (t *Table) Holders(kind Kind, id uint64) []Holder {
-	seen := map[uint32]string{}
-	for _, f := range t.FDs {
-		match := false
-		switch kind {
-		case Prog:
-			match = (f.Kind == Prog && uint64(f.ID) == id) ||
-				((f.Kind == Link || f.Kind == Perf) && uint64(f.ProgID) == id)
-		case Socket:
-			match = f.Kind == Socket && f.Inode == id
-		default:
-			match = f.Kind == kind && uint64(f.ID) == id
-		}
-		if match && f.TGID != 0 {
-			seen[f.TGID] = f.Comm
-		}
+	if t.index == nil {
+		t.buildIndex()
 	}
+	seen := t.index[object{kind, id}]
 	out := make([]Holder, 0, len(seen))
 	for pid, comm := range seen {
 		out = append(out, Holder{pid, comm})

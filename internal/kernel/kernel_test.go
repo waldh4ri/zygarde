@@ -68,3 +68,41 @@ func TestParseStatus(t *testing.T) {
 		t.Errorf("unprivileged/unknown parse wrong: %+v", st)
 	}
 }
+
+func TestImage(t *testing.T) {
+	parse := func(s string) *Kallsyms {
+		ks, err := ParseKallsyms(strings.NewReader(s))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ks
+	}
+	img, err := parse("ffffffff81000000 T _stext\nffffffff82000000 T _etext\nffffffff84000000 B _end\n").Image()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !img.InText(0xffffffff81234560, 16) || img.InText(0xffffffff81fffff8, 16) || img.InText(0xffffffff82100000, 8) {
+		t.Error("InText bounds wrong")
+	}
+	if !img.InImage(0xffffffff82100000, 8) || img.InImage(0xffffffffff600000, 8) || img.InImage(0xffffffff83fffffc, 8) {
+		t.Error("InImage bounds wrong")
+	}
+	if img.InImage(^uint64(0)-4, 8) {
+		t.Error("InImage overflow accepted")
+	}
+
+	for name, bad := range map[string]string{
+		"user address": "0000000001000000 T _stext\n0000000002000000 T _etext\n0000000003000000 B _end\n",
+		"vsyscall":     "ffffffffff000000 T _stext\nffffffffff100000 T _etext\nffffffffff700000 B _end\n",
+		"too large":    "ffffffff81000000 T _stext\nffffffff82000000 T _etext\nffffffffc2000000 B _end\n",
+		"out of order": "ffffffff82000000 T _stext\nffffffff81000000 T _etext\nffffffff84000000 B _end\n",
+	} {
+		if _, err := parse(bad).Image(); !errors.Is(err, ErrImageRange) {
+			t.Errorf("%s: err = %v, want ErrImageRange", name, err)
+		}
+	}
+	img, err = parse("ffffffff81000000 T _stext\nffffffff82000000 T _etext\n").Image()
+	if err != nil || img.HasData || img.InImage(0xffffffff82100000, 8) {
+		t.Errorf("without _end: %+v, %v", img, err)
+	}
+}

@@ -23,6 +23,7 @@ type fileDirentEvent struct {
 //
 // Used for safe lookups in a Collection or CollectionSpec.
 const (
+	fileMapDrops             = "drops"
 	fileMapEvents            = "events"
 	fileProgOnFilldir64      = "on_filldir64"
 	fileVarPidnsDev          = "pidns_dev"
@@ -80,6 +81,7 @@ type fileProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type fileMapSpecs struct {
+	Drops  *ebpf.MapSpec `ebpf:"drops"`
 	Events *ebpf.MapSpec `ebpf:"events"`
 }
 
@@ -113,11 +115,13 @@ func (o *fileObjects) Close() error {
 //
 // It can be passed to loadFileObjects or ebpf.CollectionSpec.LoadAndAssign.
 type fileMaps struct {
+	Drops  *ebpf.Map `ebpf:"drops"`
 	Events *ebpf.Map `ebpf:"events"`
 }
 
 func (m *fileMaps) Close() error {
 	return _FileClose(
+		m.Drops,
 		m.Events,
 	)
 }

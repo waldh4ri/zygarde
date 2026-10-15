@@ -112,7 +112,9 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	rec.Canary(name, "/proc directory listing", listed[canaryPID])
 
 	for tgid, t := range before.procs {
-		if _, stillThere := after.procs[tgid]; !stillThere || listed[tgid] || tgid == 0 {
+		// The same process (same start time) in both snapshots: a PID
+		// reused by a new process in between is not one hidden process.
+		if a, stillThere := after.procs[tgid]; !stillThere || a.StartTime != t.StartTime || listed[tgid] || tgid == 0 {
 			continue
 		}
 		comm := bpfutil.Int8String(t.Comm[:])
@@ -144,7 +146,7 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	// Disguised processes, checked on the kernel's view of every process.
 	stable := make(map[uint32]processTaskInfo, len(before.procs))
 	for tgid, t := range before.procs {
-		if _, ok := after.procs[tgid]; ok && tgid != 0 {
+		if a, ok := after.procs[tgid]; ok && a.StartTime == t.StartTime && tgid != 0 {
 			stable[tgid] = t
 		}
 	}
@@ -201,6 +203,7 @@ type scheduler struct {
 		OnSchedSwitch *ebpf.Program `ebpf:"on_sched_switch"`
 		OnSchedExit   *ebpf.Program `ebpf:"on_sched_exit"`
 		Ran           *ebpf.Map     `ebpf:"ran"`
+		RanDropped    *ebpf.Map     `ebpf:"ran_dropped"`
 	}
 }
 
@@ -250,9 +253,14 @@ func (s *scheduler) Close() {
 	if s.exitLink != nil {
 		s.exitLink.Close()
 	}
-	for _, c := range []interface{ Close() error }{s.progs.OnSchedSwitch, s.progs.OnSchedExit, s.progs.Ran} {
+	for _, c := range []*ebpf.Program{s.progs.OnSchedSwitch, s.progs.OnSchedExit} {
 		if c != nil {
 			c.Close()
+		}
+	}
+	for _, m := range []*ebpf.Map{s.progs.Ran, s.progs.RanDropped} {
+		if m != nil {
+			m.Close()
 		}
 	}
 }
@@ -274,8 +282,13 @@ func (s *scheduler) check(rec *core.Recorder, before, after snapshot, selfTgid u
 	if err := it.Err(); err != nil {
 		return 0, core.WrapBPF("iterate scheduler map", err)
 	}
+	var dropped uint64
+	if err := s.progs.RanDropped.Lookup(uint32(0), &dropped); err == nil && dropped > 0 {
+		rec.Limit("Scheduler view: %d thread(s) ran after its table was full and were not checked", dropped)
+	}
 
 	sawSelf := false
+	var candidates []entry
 	for _, e := range all {
 		if e.seen.Tgid == selfTgid {
 			sawSelf = true
@@ -283,10 +296,15 @@ func (s *scheduler) check(rec *core.Recorder, before, after snapshot, selfTgid u
 		if e.seen.Exited != 0 || before.threads[e.tid] || after.threads[e.tid] {
 			continue
 		}
-		// The exit probe is still attached: give a thread exiting right now
-		// a moment to be marked before calling it hidden.
-		var again processSchedSeen
+		candidates = append(candidates, e)
+	}
+	// The exit probe is still attached: give threads exiting right now a
+	// moment to be marked before calling them hidden (once for all of them).
+	if len(candidates) > 0 {
 		time.Sleep(100 * time.Millisecond)
+	}
+	for _, e := range candidates {
+		var again processSchedSeen
 		if err := s.progs.Ran.Lookup(e.tid, &again); err == nil && again.Exited != 0 {
 			continue
 		}

@@ -85,6 +85,11 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 		p2, d2 := compare(second)
 		onlyProc, onlyDiag = intersect(onlyProc, p2), intersect(onlyDiag, d2)
 	}
+	// Dumps resume at a (bucket, index) position, so heavy churn can make
+	// both skip a stable socket twice. Confirm what is left directly.
+	if len(onlyProc)+len(onlyDiag) > 0 {
+		onlyProc, onlyDiag = c.confirm(onlyProc, onlyDiag)
+	}
 
 	for _, cn := range cs.socks {
 		k := key{cn.proto, cn.inode}
@@ -120,7 +125,7 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 			Details:     details(s, heldBy(s)),
 			Why: "ss lists sockets over netlink and netstat reads /proc/net; both report the same kernel tables. " +
 				"A socket missing from one of them is being filtered, typically to hide a backdoor's listener or connection.",
-			Benign: "None expected: the difference was seen in two snapshots.",
+			Benign: "None expected: the difference was seen in three reads of both views.",
 		})
 	}
 	for _, s := range onlyDiag {
@@ -129,7 +134,7 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 			Details:     details(s, heldBy(s)),
 			Why: "netstat reads /proc/net and ss uses netlink; both report the same kernel tables. Rootkits commonly " +
 				"hook the /proc/net show functions (tcp4_seq_show...) to hide their listener from netstat.",
-			Benign: "None expected: the difference was seen in two snapshots.",
+			Benign: "None expected: the difference was seen in three reads of both views.",
 		})
 	}
 
@@ -251,6 +256,54 @@ func (c *Cell) snapshot(rec *core.Recorder) (sources, error) {
 		}
 	}
 	return s, nil
+}
+
+// confirm re-checks sockets missing from one view with a third read of both
+// views and an exact (non-dump) sock_diag lookup by addresses and ports,
+// which goes straight to the kernel's hash tables. A socket stays a finding
+// only if the third read still misses it in the same view, and it still
+// exists: listed in the other view for /proc/net-only sockets, found by the
+// exact lookup for netlink-only ones. An exact lookup that finds a socket the
+// dumps keep missing doesn't clear it: hiding from dumps is what a filter on
+// ss's path does.
+func (c *Cell) confirm(onlyProc, onlyDiag []sock) ([]sock, []sock) {
+	third, err := c.snapshot(nil)
+	if err != nil {
+		return onlyProc, onlyDiag
+	}
+	var p, d []sock
+	for _, s := range onlyProc {
+		_, inProc := third.proc[s.key()]
+		_, inDiag := third.diag[s.key()]
+		if !inProc || inDiag {
+			continue // closed, or the dump caught up
+		}
+		p = append(p, s)
+	}
+	for _, s := range onlyDiag {
+		if _, inProc := third.proc[s.key()]; inProc {
+			continue
+		}
+		if found, err := diagLookup(s); err == nil && !found {
+			continue // closed meanwhile
+		}
+		d = append(d, s)
+	}
+	return p, d
+}
+
+// diagLookup asks sock_diag for one socket by its addresses and ports and
+// reports whether the socket it finds has the same inode.
+func diagLookup(s sock) (bool, error) {
+	m, err := netlink.Get(unix.NETLINK_SOCK_DIAG, unix.SOCK_DIAG_BY_FAMILY, diagExactRequest(s))
+	if errors.Is(err, unix.ENOENT) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	got, ok := parseDiagMsg(m.Data, s.Proto)
+	return ok && got.Inode == s.Inode, nil
 }
 
 // compare returns sockets present in only one view.

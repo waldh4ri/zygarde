@@ -41,7 +41,7 @@ func RunCell(ctx context.Context, env *Env, c Cell) (res Result) {
 	res.Findings = rec.findings
 	res.Observations = rec.observed
 	res.Canaries = rec.canaries
-	res.Limitations = rec.limits
+	res.Limitations = rec.limitations()
 	if len(res.Findings) > 0 {
 		res.Escalate(StatusSuspicious)
 	}

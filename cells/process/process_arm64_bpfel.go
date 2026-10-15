@@ -32,6 +32,8 @@ type processTaskInfo struct {
 	HasMm      uint32
 	Euid       uint32
 	Comm       [16]int8
+	_          [4]byte
+	StartTime  uint64
 }
 
 // Names of all BPF objects in the ELF.
@@ -39,6 +41,7 @@ type processTaskInfo struct {
 // Used for safe lookups in a Collection or CollectionSpec.
 const (
 	processMapRan             = "ran"
+	processMapRanDropped      = "ran_dropped"
 	processProgDumpTask       = "dump_task"
 	processProgOnSchedExit    = "on_sched_exit"
 	processProgOnSchedSwitch  = "on_sched_switch"
@@ -97,7 +100,8 @@ type processProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type processMapSpecs struct {
-	Ran *ebpf.MapSpec `ebpf:"ran"`
+	Ran        *ebpf.MapSpec `ebpf:"ran"`
+	RanDropped *ebpf.MapSpec `ebpf:"ran_dropped"`
 }
 
 // processVariableSpecs contains global variables before they are loaded into the kernel.
@@ -128,12 +132,14 @@ func (o *processObjects) Close() error {
 //
 // It can be passed to loadProcessObjects or ebpf.CollectionSpec.LoadAndAssign.
 type processMaps struct {
-	Ran *ebpf.Map `ebpf:"ran"`
+	Ran        *ebpf.Map `ebpf:"ran"`
+	RanDropped *ebpf.Map `ebpf:"ran_dropped"`
 }
 
 func (m *processMaps) Close() error {
 	return _ProcessClose(
 		m.Ran,
+		m.RanDropped,
 	)
 }
 

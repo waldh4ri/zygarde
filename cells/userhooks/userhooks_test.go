@@ -2,6 +2,7 @@ package userhooks
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -82,5 +83,59 @@ func TestRun(t *testing.T) {
 	}
 	if len(got) != 4 {
 		t.Errorf("got %d findings, want 4:\n%s", len(got), all)
+	}
+}
+
+// A container's absolute symlinks must resolve inside its root, and a
+// library counts as missing only if every process using it lacks it.
+func TestCheckLibraryInRoot(t *testing.T) {
+	proc := t.TempDir()
+	ctr := filepath.Join(proc, "200", "root")
+	if err := os.MkdirAll(filepath.Join(ctr, "real"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(ctr, "real", "libx.so"), []byte("x"), 0o644)
+	os.MkdirAll(filepath.Join(ctr, "usr"), 0o755)
+	// /usr/lib -> /real, absolute: resolved against the host it would not exist.
+	if err := os.Symlink("/real", filepath.Join(ctr, "usr", "lib")); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(proc, "201", "root")
+	os.MkdirAll(other, 0o755)
+
+	c := &Cell{root: t.TempDir(), proc: proc}
+	rec := core.NewRecorder(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if n := c.checkLibrary(rec, "/usr/lib/libx.so", []string{ctr}, "test"); n != 0 {
+		t.Fatalf("library present through an in-root symlink was flagged: %+v", rec.Findings())
+	}
+	if n := c.checkLibrary(rec, "/usr/lib/libx.so", []string{other, ctr}, "test"); n != 0 {
+		t.Fatalf("library present for one of the processes was flagged: %+v", rec.Findings())
+	}
+	if n := c.checkLibrary(rec, "/usr/lib/libgone.so", []string{other, ctr}, "test"); n != 1 {
+		t.Fatalf("library missing everywhere was not flagged")
+	}
+}
+
+// ld.so.conf files including each other must be read once each.
+func TestLdSoConfIncludeLoop(t *testing.T) {
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "etc", "ld.so.conf.d"), 0o755)
+	os.WriteFile(filepath.Join(root, "etc", "ld.so.conf"), []byte("include /etc/ld.so.conf.d/*.conf\n"), 0o644)
+	for i := 0; i < 10; i++ {
+		os.WriteFile(filepath.Join(root, "etc", "ld.so.conf.d", fmt.Sprintf("%d.conf", i)),
+			[]byte(fmt.Sprintf("include /etc/ld.so.conf\ninclude /etc/ld.so.conf.d/*.conf\n/opt/lib%d\n", i)), 0o644)
+	}
+	c := &Cell{root: root}
+	w := &confWalk{visited: map[string]bool{}}
+	dirs := c.ldSoConfDirs("/etc/ld.so.conf", 0, w)
+	if len(dirs) != 10 || w.files != 11 {
+		t.Fatalf("got %d directories from %d files, want 10 from 11", len(dirs), w.files)
+	}
+}
+
+func TestParsePreloadLongLine(t *testing.T) {
+	data := []byte("# " + strings.Repeat("x", 200*1024) + "\n/lib/evil.so\n")
+	if got := ParsePreload(data); len(got) != 1 || got[0] != "/lib/evil.so" {
+		t.Fatalf("got %v", got)
 	}
 }

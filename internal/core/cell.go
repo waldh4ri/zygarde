@@ -70,6 +70,7 @@ type Recorder struct {
 	observed []Finding
 	canaries []CanaryCheck
 	limits   []string
+	dropped  int // observations over MaxObservations
 }
 
 // NewRecorder returns an empty Recorder; the runner creates one per Cell.
@@ -90,10 +91,27 @@ func (r *Recorder) Suspicious(f Finding) {
 	r.findings = append(r.findings, f)
 }
 
+// MaxObservations caps the observations kept per Cell. A host with tens of
+// thousands of ftrace hooks would otherwise produce a report too large to
+// read, and a worker message too large to pass to the supervisor.
+const MaxObservations = 2000
+
 // Observe records context that is worth reporting but not suspicious by
 // itself, such as an inventory of legitimate hooks.
 func (r *Recorder) Observe(description string, details map[string]string) {
+	if len(r.observed) >= MaxObservations {
+		r.dropped++
+		return
+	}
 	r.observed = append(r.observed, Finding{Description: description, Details: details})
+}
+
+// limitations returns the recorded limits, plus one for dropped observations.
+func (r *Recorder) limitations() []string {
+	if r.dropped == 0 {
+		return r.limits
+	}
+	return append(r.limits, fmt.Sprintf("%d further observation(s) not reported (at most %d per check)", r.dropped, MaxObservations))
 }
 
 // Limit records part of the check that could not run here, so the report

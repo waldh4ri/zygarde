@@ -132,6 +132,12 @@ func checkMasquerade(rec *core.Recorder, procs map[uint32]processTaskInfo, skip 
 		if exeErr == nil && exe == selfExe {
 			continue // zygarde itself, its worker and canaries
 		}
+		// The PID may have been reused since the kernel snapshot: only
+		// mix the kernel's view with /proc's if it is still that process
+		// (a live process keeps its PID, so checking after the reads is enough).
+		if !sameProcess(dir, t.StartTime) {
+			continue
+		}
 		details := func() map[string]string {
 			return map[string]string{
 				"pid":     strconv.Itoa(int(pid)),
@@ -189,6 +195,41 @@ func checkMasquerade(rec *core.Recorder, procs map[uint32]processTaskInfo, skip 
 			rec.Observe(fmt.Sprintf("Process %d (%s) pads its command line with %d blank characters", pid, comm, n), d)
 		}
 	}
+}
+
+// userHZ is the clock tick of /proc/<pid>/stat times (USER_HZ, 100 on
+// every architecture Zygarde supports).
+const userHZ = 100
+
+// sameProcess reports whether /proc/<pid> (dir) is the process that started
+// at startNs (start_boottime, in ns): /proc/<pid>/stat gives the same
+// instant in clock ticks.
+func sameProcess(dir string, startNs uint64) bool {
+	data, err := os.ReadFile(dir + "/stat")
+	if err != nil {
+		return false
+	}
+	ticks, ok := statStartTime(string(data))
+	if !ok {
+		return false
+	}
+	want := startNs / (1e9 / userHZ)
+	return ticks == want || ticks == want+1 || ticks+1 == want
+}
+
+// statStartTime returns field 22 (starttime) of /proc/<pid>/stat. The
+// command name (field 2) is parenthesised and may contain spaces.
+func statStartTime(stat string) (uint64, bool) {
+	i := strings.LastIndexByte(stat, ')')
+	if i < 0 {
+		return 0, false
+	}
+	f := strings.Fields(stat[i+1:])
+	if len(f) < 20 { // fields 3..22
+		return 0, false
+	}
+	v, err := strconv.ParseUint(f[19], 10, 64)
+	return v, err == nil
 }
 
 func firstNonEmpty(a, b string) string {

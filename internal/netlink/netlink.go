@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -18,9 +19,34 @@ type Message struct {
 	Data []byte
 }
 
+// recvTimeout bounds each wait for a reply. Without it, a reply that never
+// ends (NLMSG_DONE filtered by a hook) blocks forever with --no-isolation.
+const recvTimeout = 5 * time.Second
+
+// ErrTimeout means the kernel did not answer within recvTimeout.
+var ErrTimeout = errors.New("netlink: no reply within " + recvTimeout.String())
+
 // Dump sends a request of type typ with NLM_F_DUMP over a netlink socket of
 // protocol proto and returns every reply message until NLMSG_DONE.
 func Dump(proto int, typ uint16, body []byte) ([]Message, error) {
+	return exchange(proto, typ, unix.NLM_F_DUMP, body)
+}
+
+// Get sends a request of type typ for a single object (no NLM_F_DUMP) and
+// returns the reply, or the error the kernel answered with (ENOENT when the
+// object does not exist).
+func Get(proto int, typ uint16, body []byte) (Message, error) {
+	msgs, err := exchange(proto, typ, 0, body)
+	if err != nil {
+		return Message{}, err
+	}
+	if len(msgs) == 0 {
+		return Message{}, unix.ENOENT
+	}
+	return msgs[0], nil
+}
+
+func exchange(proto int, typ uint16, flags uint16, body []byte) ([]Message, error) {
 	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW|unix.SOCK_CLOEXEC, proto)
 	if err != nil {
 		return nil, os.NewSyscallError("socket(AF_NETLINK)", err)
@@ -29,22 +55,30 @@ func Dump(proto int, typ uint16, body []byte) ([]Message, error) {
 	if err := unix.Bind(fd, &unix.SockaddrNetlink{Family: unix.AF_NETLINK}); err != nil {
 		return nil, os.NewSyscallError("bind(AF_NETLINK)", err)
 	}
+	tv := unix.NsecToTimeval(recvTimeout.Nanoseconds())
+	if err := unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &tv); err != nil {
+		return nil, os.NewSyscallError("setsockopt(SO_RCVTIMEO)", err)
+	}
 
 	const seq = 1
 	req := make([]byte, unix.NLMSG_HDRLEN+len(body))
 	binary.NativeEndian.PutUint32(req[0:], uint32(len(req)))
 	binary.NativeEndian.PutUint16(req[4:], typ)
-	binary.NativeEndian.PutUint16(req[6:], unix.NLM_F_REQUEST|unix.NLM_F_DUMP)
+	binary.NativeEndian.PutUint16(req[6:], unix.NLM_F_REQUEST|flags)
 	binary.NativeEndian.PutUint32(req[8:], seq)
 	copy(req[unix.NLMSG_HDRLEN:], body)
 	if err := unix.Sendto(fd, req, 0, &unix.SockaddrNetlink{Family: unix.AF_NETLINK}); err != nil {
 		return nil, os.NewSyscallError("sendto(AF_NETLINK)", err)
 	}
 
+	dump := flags&unix.NLM_F_DUMP != 0
 	var out []Message
 	buf := make([]byte, 64*1024)
 	for {
 		n, _, err := unix.Recvfrom(fd, buf, 0)
+		if errors.Is(err, unix.EAGAIN) || errors.Is(err, unix.EWOULDBLOCK) {
+			return out, ErrTimeout
+		}
 		if err != nil {
 			return out, os.NewSyscallError("recvfrom(AF_NETLINK)", err)
 		}
@@ -74,6 +108,9 @@ func Dump(proto int, typ uint16, body []byte) ([]Message, error) {
 				return out, nil
 			default:
 				out = append(out, Message{Type: m.Type, Data: m.Data})
+				if !dump {
+					return out, nil // a single reply, without NLMSG_DONE
+				}
 			}
 		}
 	}

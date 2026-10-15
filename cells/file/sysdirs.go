@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/waldh4ri/zygarde/internal/core"
+	"github.com/waldh4ri/zygarde/internal/fsutil"
 )
 
 // systemDirs are the binary and library directories that hold no
@@ -145,7 +146,9 @@ func isExecutable(path string, st fs.FileInfo) bool {
 	if st.Mode().Perm()&0o111 != 0 {
 		return true
 	}
-	f, err := os.Open(path)
+	// Not os.Open: the entry may have been swapped for a FIFO or a device
+	// symlink since it was listed.
+	f, err := fsutil.Open(path)
 	if err != nil {
 		return false
 	}
