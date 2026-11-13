@@ -152,7 +152,7 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 		})
 	}
 
-	rawHidden := c.checkPacketAndRaw(rec, table, selfNetNS, netnsErr == nil)
+	rawHidden, sniffers := c.checkPacketAndRaw(rec, table, selfNetNS, netnsErr == nil)
 
 	all := map[key]sock{}
 	for _, v := range []view{first.proc, first.diag, first.bpf} {
@@ -226,8 +226,12 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 
 	totalSusp := len(onlyProc) + len(onlyDiag) + len(onlyBPF) + hiddenOwner + rawHidden
 	switch {
+	case totalSusp > 0 && sniffers > 0:
+		rec.Message("%d hidden socket(s) and %d unrecognised packet sniffer(s)", totalSusp, sniffers)
 	case totalSusp > 0:
 		rec.Message("%d hidden socket(s) (/proc/net: %d, netlink: %d)", totalSusp, len(first.proc), len(first.diag))
+	case sniffers > 0:
+		rec.Message("%d unrecognised packet sniffer(s); /proc/net and netlink agree on %d sockets", sniffers, len(first.proc))
 	case len(first.compared) == 0:
 		rec.Message("%d sockets in /proc/net; netlink sock_diag is unavailable, so only their owners were checked", len(first.proc))
 	default:
@@ -276,9 +280,13 @@ func diagLookup(s sock) (bool, error) {
 	return ok && got.Inode == s.Inode, nil
 }
 
-func (c *Cell) checkPacketAndRaw(rec *core.Recorder, table *fdowner.Table, selfNetNS uint64, haveNetNS bool) int {
+// checkPacketAndRaw inventories AF_PACKET and RAW sockets and returns the
+// number of packet sockets hidden from /proc/net/packet and of unrecognised
+// packet sniffers.
+func (c *Cell) checkPacketAndRaw(rec *core.Recorder, table *fdowner.Table, selfNetNS uint64, haveNetNS bool) (int, int) {
 	pktSocks := c.readPacketSocks()
 	rawSocks := c.readRawSocks()
+	sniffers := c.checkSniffers(rec, table, pktSocks) + c.checkRawSockets(rec, table, append([]sock(nil), rawSocks...))
 
 	heldBy := func(ino uint64) string {
 		if table == nil {
@@ -311,10 +319,10 @@ func (c *Cell) checkPacketAndRaw(rec *core.Recorder, table *fdowner.Table, selfN
 	}
 
 	if table == nil || !haveNetNS {
-		return 0
+		return 0, sniffers
 	}
 	if _, err := os.Stat(c.procNet + "/packet"); err != nil {
-		return 0
+		return 0, sniffers
 	}
 	suspicious := 0
 	seen := map[uint64]bool{}
@@ -351,7 +359,7 @@ func (c *Cell) checkPacketAndRaw(rec *core.Recorder, table *fdowner.Table, selfN
 			Benign: "None expected: the socket descriptor is open in the same network namespace across two checks.",
 		})
 	}
-	return suspicious
+	return suspicious, sniffers
 }
 
 func (c *Cell) readPacketSocks() []packetSock {

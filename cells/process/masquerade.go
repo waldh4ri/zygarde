@@ -49,7 +49,9 @@ func exeLocation(target string) string {
 	switch {
 	case strings.HasPrefix(path, "/memfd:"):
 		return "memfd"
-	case under(path, "/dev/shm"), under(path, "/run/shm"):
+	case under(path, "/dev/shm"), under(path, "/run") && !nixRun(path):
+		// /run (and /var/run, its symlink) is a tmpfs: BPFDoor variants run
+		// from /var/run/gdm/auth-session or /var/run/haldrund.
 		return "memory-backed directory"
 	case under(path, "/tmp"), under(path, "/var/tmp"):
 		return "temporary directory"
@@ -74,6 +76,17 @@ func suspiciousExe(euid uint32, target, loc string) bool {
 		return true
 	}
 	return euid == 0
+}
+
+// nixRun reports NixOS paths under /run that hold legitimate executables:
+// setuid wrappers (a tmpfs) and links into /nix/store.
+func nixRun(path string) bool {
+	for _, d := range []string{"/run/wrappers", "/run/current-system", "/run/booted-system", "/run/opengl-driver"} {
+		if under(path, d) {
+			return true
+		}
+	}
+	return false
 }
 
 func under(path, dir string) bool {

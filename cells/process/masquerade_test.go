@@ -29,6 +29,10 @@ func TestExeLocationAndSuspicious(t *testing.T) {
 		"/usr/sbin/sshd (deleted)":  "deleted",
 		"/memfd:x (deleted)":        "memfd",
 		"/dev/shm/a":                "memory-backed directory",
+		"/run/shm/a":                "memory-backed directory",
+		"/run/gdm/auth-session":     "memory-backed directory", // BPFDoor
+		"/run/wrappers/bin/sudo":    "",                        // NixOS setuid wrapper
+		"/runner/bin/app":           "",
 		"/tmp/x (deleted)":          "temporary directory",
 		"/var/lib/.cache/bin/agent": "hidden directory",
 		"/usr/bin/.local/sudo":      "hidden directory",

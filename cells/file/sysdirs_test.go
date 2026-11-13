@@ -61,3 +61,30 @@ func mustReal(t *testing.T, p string) string {
 	}
 	return r
 }
+
+func TestBinDirAndPrintable(t *testing.T) {
+	for dir, want := range map[string]bool{"/usr/sbin": true, "/sbin": true, "/usr/local/bin": true, "/usr/lib": false, "/lib64": false} {
+		if binDir(dir) != want {
+			t.Errorf("binDir(%q) = %v", dir, !want)
+		}
+	}
+	if !printable([]byte("/lib/libse1inux.so")) || printable([]byte("a\x00b")) || printable([]byte("\x1b[31m")) {
+		t.Error("printable")
+	}
+}
+
+func TestWorldWritableHiddenFile(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, ".ifup-local")
+	if err := os.WriteFile(p, []byte("/lib/libse1inux.so"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(p, 0o666); err != nil { // beat the umask
+		t.Fatal(err)
+	}
+	rec := core.NewRecorder(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	n := dotEntries(rec, dir, map[string]bool{".ifup-local": true}, map[string]bool{})
+	if n != 1 || rec.Findings()[0].Details["content"] != "/lib/libse1inux.so" {
+		t.Fatalf("got %d findings: %+v", n, rec.Findings())
+	}
+}
