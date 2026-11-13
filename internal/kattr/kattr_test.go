@@ -1,8 +1,6 @@
 package kattr
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -151,32 +149,5 @@ func TestVmallocinfoFiveLevelPaging(t *testing.T) {
 	areas, err := ParseVmallocinfo(strings.NewReader(in))
 	if err != nil || len(areas) != 1 {
 		t.Fatalf("got %v, %v", areas, err)
-	}
-}
-
-func TestReadSectionsSkipsHiddenModules(t *testing.T) {
-	dir := t.TempDir()
-	mk := func(mod, sec, val string) {
-		p := filepath.Join(dir, mod, "sections")
-		if err := os.MkdirAll(p, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(p, sec), []byte(val+"\n"), 0o444); err != nil {
-			t.Fatal(err)
-		}
-	}
-	mk("ext4", ".text", "0xffffffffc0100000")
-	mk("hidden_rootkit", ".text", "0xffffffffc0200000") // in /sys/module, not in /proc/modules
-
-	all := ReadSections(dir, nil)
-	if len(all) != 2 {
-		t.Fatalf("nil filter should read every module: %v", all)
-	}
-	got := ReadSections(dir, map[string]bool{"ext4": true})
-	if len(got) != 1 || got["ext4"][".text"] != 0xffffffffc0100000 {
-		t.Fatalf("only visible modules should be read: %v", got)
-	}
-	if _, ok := got["hidden_rootkit"]; ok {
-		t.Error("a module hidden from /proc/modules was read")
 	}
 }

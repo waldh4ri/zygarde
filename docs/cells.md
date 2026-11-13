@@ -80,6 +80,8 @@ Two parts.
 - **Userspace view**: the module list in `/proc/modules` (what `lsmod` shows).
 - Rootkits unlink themselves from the module list (`list_del`) or delete their kobject (`kobject_del`). Only loadable modules have `/sys/module/<name>/initstate`, which separates them from built-ins.
 - Note: the `iter/ksym` iterator walks the same `modules` list as `/proc/modules`, so it would not reveal a `list_del`-hidden module and is not used for this.
+- **Third view, for modules that remove themselves from both** `/proc/modules` and `/sys/module` (so those two agree): `/proc/vmallocinfo` names the allocator of every vmalloc area, and the module loader makes one allocation per module (`load_module`, `layout_and_allocate` or `move_module`, by kernel). More such allocations than modules listed, still true 300 ms later, is SUSPICIOUS. Only before Linux 6.4: from then a module has one allocation per memory type and 7.0 uses a shared cache, so those kernels record a limit.
+- **Not read on purpose**: `/sys/module/*/sections/*`. Those files are backed by memory a rootkit can free while leaving the files in place (Diamorphine frees its module's section attributes), and reading one oopses the kernel. Module symbols and `/proc/modules` give the same ownership without them.
 
 **Boot persistence**
 - Lists modules configured to load at boot: `modules-load.d`, `/etc/modules`, `modprobe.d`, systemd units, udev rules, and `insmod`/`modprobe` lines in `rc.local`, `rc.modules` and shell profiles.
