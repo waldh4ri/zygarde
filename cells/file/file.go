@@ -70,6 +70,9 @@ func (o *objects) Close() {
 func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	ks, err := env.Kallsyms()
 	if err != nil {
+		if skip := core.SymbolsUnavailable(err); skip != err {
+			return skip
+		}
 		return fmt.Errorf("reading /proc/kallsyms: %w", err)
 	}
 	symbol, ok := filldirSymbol(ks)

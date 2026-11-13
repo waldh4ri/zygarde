@@ -85,7 +85,11 @@ func (p *printer) header(r *report.Report, cells []core.Cell) {
 	p.printf("%s %s\n\n", p.st.bold("zygarde "+version), p.st.dim("· eBPF rootkit triage for Linux"))
 	p.printf("  %-9s %s\n", "Host", h.Hostname)
 	p.printf("  %-9s %s · Linux %s · %s\n", "System", h.Distro, h.Kernel, h.Arch)
-	p.printf("  %-9s BTF %s · lockdown %s\n", "Kernel", btf, h.Lockdown)
+	kptr := ""
+	if h.KptrRestrict != nil {
+		kptr = fmt.Sprintf(" · kptr_restrict %d", *h.KptrRestrict)
+	}
+	p.printf("  %-9s BTF %s · lockdown %s%s\n", "Kernel", btf, h.Lockdown, kptr)
 	p.printf("  %-9s %s\n\n", "Started", r.StartedAt.Format("2006-01-02 15:04:05 MST"))
 }
 
@@ -226,7 +230,11 @@ func (p *printer) summary(r *report.Report, savedTo string) {
 	}
 
 	p.section("Next steps")
-	for i, step := range nextSteps(r.Verdict) {
+	steps := nextSteps(r.Verdict)
+	if s := kptrStep(r); s != "" {
+		steps = append(steps, s)
+	}
+	for i, step := range steps {
 		p.wrapped(fmt.Sprintf("  %d. ", i+1), step, nil)
 	}
 	if savedTo != "" {
@@ -310,6 +318,35 @@ func visibleLen(s string) int {
 		}
 	}
 	return n
+}
+
+// kptrStep explains how to run the checks that kernel.kptr_restrict kept from
+// reading kernel symbols, or returns "" if none were affected.
+func kptrStep(r *report.Report) string {
+	if r.Host.KptrRestrict == nil || *r.Host.KptrRestrict == 0 {
+		return ""
+	}
+	affected := 0
+	for _, res := range r.Results {
+		hit := strings.Contains(res.Message, "kptr_restrict") || strings.Contains(res.Error, "kptr_restrict")
+		for _, l := range res.Limitations {
+			hit = hit || strings.Contains(l, "kptr_restrict")
+		}
+		if hit {
+			affected++
+		}
+	}
+	if affected == 0 {
+		return ""
+	}
+	v := *r.Host.KptrRestrict
+	if v == 1 {
+		return fmt.Sprintf("kernel.kptr_restrict=1 hid kernel addresses from %d check(s) because Zygarde lacked CAP_SYSLOG. Run it as root with CAP_SYSLOG to cover them.", affected)
+	}
+	return fmt.Sprintf("kernel.kptr_restrict=%d hid kernel addresses from %d check(s), even as root. "+
+		"To cover them, lower it for the scan and restore it afterwards: "+
+		"sysctl -w kernel.kptr_restrict=1, run Zygarde, then sysctl -w kernel.kptr_restrict=%d. "+
+		"If this host isn't meant to set it, note that a rootkit can raise it to blind scanners.", v, affected, v)
 }
 
 func nextSteps(v report.Verdict) []string {

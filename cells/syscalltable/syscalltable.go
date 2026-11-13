@@ -57,6 +57,9 @@ func (*Cell) Supported(env *core.Env) error {
 	}
 	ks, err := env.Kallsyms()
 	if err != nil {
+		if skip := core.SymbolsUnavailable(err); skip != err {
+			return skip
+		}
 		return fmt.Errorf("reading /proc/kallsyms: %w", err)
 	}
 	if ks.Has("x64_sys_call") {

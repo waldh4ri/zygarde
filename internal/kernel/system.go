@@ -163,3 +163,17 @@ func ParseStatus(r io.Reader) (ProcStatus, error) {
 	}
 	return st, sc.Err()
 }
+
+// KptrRestrict returns kernel.kptr_restrict (0, 1 or 2), or -1 if it can't
+// be read.
+func KptrRestrict() int {
+	data, err := os.ReadFile("/proc/sys/kernel/kptr_restrict")
+	if err != nil {
+		return -1
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return -1
+	}
+	return n
+}

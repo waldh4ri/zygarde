@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/waldh4ri/zygarde/internal/core"
+	"github.com/waldh4ri/zygarde/internal/kernel"
 	"github.com/waldh4ri/zygarde/internal/report"
 )
 
@@ -94,5 +95,30 @@ func TestWrapped(t *testing.T) {
 		if !strings.HasPrefix(line, "  ") {
 			t.Errorf("continuation not indented: %q", line)
 		}
+	}
+}
+
+func TestKptrStep(t *testing.T) {
+	two, zero := 2, 0
+	skipped := result("altered_syscall_table", "Syscall Table Integrity", core.StatusSkipped,
+		"kernel symbols unavailable: /proc/kallsyms addresses are hidden: kernel.kptr_restrict=2 hides kernel addresses from every process, root included")
+	r := &report.Report{Host: report.Host{KptrRestrict: &two}, Results: []core.Result{skipped, result("taint", "Taint", core.StatusOK, "")}}
+	if s := kptrStep(r); !strings.Contains(s, "kernel.kptr_restrict=2 hid kernel addresses from 1 check(s)") || !strings.Contains(s, "sysctl -w kernel.kptr_restrict=2") {
+		t.Errorf("kptrStep = %q", s)
+	}
+	r.Host.KptrRestrict = &zero
+	if s := kptrStep(r); s != "" {
+		t.Errorf("kptr_restrict=0 should add no step, got %q", s)
+	}
+	r.Host.KptrRestrict = &two
+	r.Results = r.Results[1:]
+	if s := kptrStep(r); s != "" {
+		t.Errorf("no affected check should add no step, got %q", s)
+	}
+}
+
+func TestSymbolsUnavailableSkips(t *testing.T) {
+	if st, _ := core.Classify(nil, core.SymbolsUnavailable(kernel.HiddenAddressesError())); st != core.StatusSkipped {
+		t.Errorf("hidden kallsyms addresses: status %v, want SKIPPED", st)
 	}
 }

@@ -125,3 +125,18 @@ func TestImage(t *testing.T) {
 		t.Errorf("without _end: %+v, %v", img, err)
 	}
 }
+
+func TestHiddenReason(t *testing.T) {
+	if r := hiddenReason(2); !strings.Contains(r, "kernel.kptr_restrict=2") || !strings.Contains(r, "root") {
+		t.Errorf("kptr_restrict=2: %q", r)
+	}
+	if r := hiddenReason(1); !strings.Contains(r, "CAP_SYSLOG") {
+		t.Errorf("kptr_restrict=1: %q", r)
+	}
+	if r := hiddenReason(-1); r != "insufficient privileges" {
+		t.Errorf("unknown: %q", r)
+	}
+	if !errors.Is(HiddenAddressesError(), ErrAddressesHidden) {
+		t.Error("HiddenAddressesError must wrap ErrAddressesHidden")
+	}
+}
