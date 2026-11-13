@@ -124,11 +124,32 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 }
 
 func isSoleCanary(h hook) bool {
-	if h.RefCount > 1 || h.Flags['I'] {
+	if h.RefCount > 1 || (h.Flags['I'] && !bpfDirectOnly(h)) {
 		return false
 	}
 	for _, s := range h.Handlers {
 		if unresolved(s) {
+			return false
+		}
+	}
+	return true
+}
+
+// bpfDirectOnly reports whether h is a lone BPF trampoline attached through
+// ftrace's direct_ops. Before Linux 6.0 (commit 53cd885bc5c3), direct_ops was
+// registered with FTRACE_OPS_FL_IPMODIFY, so every fentry/fexit/LSM program
+// shows the I flag on those kernels without redirecting the function.
+func bpfDirectOnly(h hook) bool {
+	if h.RefCount != 1 || !h.Flags['D'] || len(h.Direct) == 0 {
+		return false
+	}
+	for _, s := range h.Handlers {
+		if baseName(s) != "call_direct_funcs" {
+			return false
+		}
+	}
+	for _, d := range h.Direct {
+		if !strings.HasPrefix(d, "bpf_trampoline_") {
 			return false
 		}
 	}
@@ -165,7 +186,7 @@ func classify(rec *core.Recorder, h hook, livepatched map[string]bool) bool {
 		}
 	}
 
-	if h.Flags['I'] {
+	if h.Flags['I'] && !bpfDirectOnly(h) {
 		handlers := strings.Join(h.Handlers, " ")
 		switch {
 		case strings.Contains(handlers, "klp_ftrace_handler"):
