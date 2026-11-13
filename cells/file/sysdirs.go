@@ -84,15 +84,32 @@ func dotEntries(rec *core.Recorder, dir string, names map[string]bool, seen map[
 		} else if st.Mode().IsRegular() && isExecutable(path, st) {
 			exes = []string{path}
 		}
-		if len(exes) == 0 {
+		if st.Mode().IsRegular() && st.Size() > 0 && st.Size() <= maxContentBytes {
+			if b, err := fsutil.ReadFileNoAtime(path); err == nil && printable(b) {
+				details["content"] = strings.TrimSpace(string(b))
+			}
+		}
+		// A dot-entry that holds no executable still stands out in a directory
+		// of programs, or when anyone can write it: HiddenWasp keeps the path of
+		// its preloaded library in a world-writable /usr/sbin/.ifup-local.
+		worldWritable := st.Mode().Perm()&0o002 != 0
+		if len(exes) == 0 && !binDir(dir) && !worldWritable {
 			rec.Observe(fmt.Sprintf("Hidden entry %s in a system directory", path), details)
 			continue
 		}
 		suspicious++
-		details["executables"] = strings.Join(truncated(exes, 10), ", ")
-		fsutil.MergeMetadata(details, "first_exe_", fsutil.FileMetadata(exes[0]))
+		desc := fmt.Sprintf("Hidden %s %s in a system directory holds %d executable(s)", kindOf(st), path, len(exes))
+		if len(exes) == 0 {
+			desc = fmt.Sprintf("Hidden %s %s in a system directory", kindOf(st), path)
+			if worldWritable {
+				desc += " is writable by everyone"
+			}
+		} else {
+			details["executables"] = strings.Join(truncated(exes, 10), ", ")
+			fsutil.MergeMetadata(details, "first_exe_", fsutil.FileMetadata(exes[0]))
+		}
 		rec.Suspicious(core.Finding{
-			Description: fmt.Sprintf("Hidden %s %s in a system directory holds %d executable(s)", kindOf(st), path, len(exes)),
+			Description: desc,
 			Details:     details,
 			Why: "Binary and library directories hold no dot-entries on a stock install, and ls hides them by " +
 				"default. Rootkits stash trojaned tools there (e.g. a fake sudo under /usr/bin/.local) so they " +
@@ -102,6 +119,30 @@ func dotEntries(rec *core.Recorder, dir string, names map[string]bool, seen map[
 		})
 	}
 	return suspicious
+}
+
+// maxContentBytes bounds how much of a small hidden file is quoted in a finding.
+const maxContentBytes = 256
+
+// binDir reports whether dir only holds programs: packages ship no dot-entries
+// there, executable or not.
+func binDir(dir string) bool {
+	switch dir {
+	case "/bin", "/sbin", "/usr/bin", "/usr/sbin", "/usr/local/bin", "/usr/local/sbin":
+		return true
+	}
+	return false
+}
+
+// printable reports whether b is plain text (no control bytes except newline
+// and tab), safe to quote in a report.
+func printable(b []byte) bool {
+	for _, c := range b {
+		if c < 0x20 && c != '\n' && c != '\t' || c == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 func kindOf(st fs.FileInfo) string {

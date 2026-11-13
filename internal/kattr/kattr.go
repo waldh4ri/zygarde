@@ -335,6 +335,14 @@ func ParseModules(rd io.Reader) ([]ModuleInfo, error) {
 	return out, sc.Err()
 }
 
+// kernelSpaceStart: every 64-bit kernel virtual address has its top bit set
+// (x86-64 with 4 or 5 page-table levels, arm64 with 48 or 52-bit VAs), while
+// a hashed pointer is a 32-bit value. Some kernels print /proc/vmallocinfo
+// with %pK, which hashes addresses when kptr_restrict=0 and prints them
+// otherwise, so the values are checked rather than the sysctl. Trusting
+// hashed ranges made every module look like it owned no memory (Debian 11, 5.10).
+const kernelSpaceStart = 1 << 63
+
 // ParseVmallocinfo parses /proc/vmallocinfo lines:
 // "0xffffffffc0000000-0xffffffffc0005000   20480 load_module+0x1b4/0x2010 pages=4 vmalloc N0=4".
 // It returns an error if addresses are hidden.
@@ -356,6 +364,9 @@ func ParseVmallocinfo(rd io.Reader) ([]Area, error) {
 		end, err2 := strconv.ParseUint(strings.TrimPrefix(hi, "0x"), 16, 64)
 		if err1 != nil || err2 != nil || end <= start {
 			continue
+		}
+		if start < kernelSpaceStart {
+			continue // hashed (%pK with kptr_restrict=0) or zeroed: not a kernel address
 		}
 		nonZero = true
 		a := Area{Start: start, End: end}

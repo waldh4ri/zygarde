@@ -56,11 +56,16 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 		return err
 	}
 	suspicious += m
+	p, err := c.checkPackagedLibraries(ctx, rec)
+	if err != nil {
+		return err
+	}
+	suspicious += p
 
 	if suspicious > 0 {
 		rec.Message("%d dynamic linker or memory injection point(s)", suspicious)
 	} else {
-		rec.Message("No preloaded libraries, unusual library directories or injected libraries")
+		rec.Message("No preloaded libraries, unusual library directories, injected or modified system libraries")
 	}
 	return nil
 }

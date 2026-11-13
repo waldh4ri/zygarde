@@ -131,4 +131,23 @@ func TestHiddenAddresses(t *testing.T) {
 	if _, err := ParseVmallocinfo(strings.NewReader("0x0000000000000000-0x0000000000000000 4096 foo\n")); err == nil {
 		t.Error("hidden vmallocinfo accepted")
 	}
+	// Linux 5.10 with kptr_restrict=0 prints %pK as a hashed 32-bit value.
+	hashed := "0x00000000ebbbae88-0x00000000c42472b8  147456 load_module+0xd97/0x2630 pages=35 vmalloc N0=35\n"
+	if _, err := ParseVmallocinfo(strings.NewReader(hashed)); err == nil {
+		t.Error("hashed vmallocinfo accepted")
+	}
+	mixed := hashed + "0xffffffffc0000000-0xffffffffc0002000    8192 load_module+0x1b4/0x2010 pages=1 vmalloc N0=1\n"
+	areas, err := ParseVmallocinfo(strings.NewReader(mixed))
+	if err != nil || len(areas) != 1 || areas[0].Start != 0xffffffffc0000000 {
+		t.Errorf("mixed: got %v, %v", areas, err)
+	}
+}
+
+func TestVmallocinfoFiveLevelPaging(t *testing.T) {
+	// x86-64 with LA57: the vmalloc area starts at 0xffa0000000000000.
+	in := "0xffa0000000000000-0xffa0000000002000    8192 load_module+0x1b4/0x2010 pages=1 vmalloc N0=1\n"
+	areas, err := ParseVmallocinfo(strings.NewReader(in))
+	if err != nil || len(areas) != 1 {
+		t.Fatalf("got %v, %v", areas, err)
+	}
 }

@@ -145,3 +145,50 @@ func TestParsePreloadLongLine(t *testing.T) {
 		t.Fatalf("got %v", got)
 	}
 }
+
+func TestPackagedChecksums(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("libkeyutils1:amd64.md5sums", "0123456789abcdef0123456789abcdef  usr/lib/x86_64-linux-gnu/libkeyutils.so.1.9\n"+
+		"ffffffffffffffffffffffffffffffff  usr/share/doc/libkeyutils1/copyright\n")
+	write("libc6:amd64.md5sums", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  lib/x86_64-linux-gnu/libc-2.31.so\n") // not usr-merged
+	write("bad.md5sums", "short  usr/lib/x\n\n")
+
+	wanted := map[string]bool{
+		"/usr/lib/x86_64-linux-gnu/libkeyutils.so.1.9": true,
+		"/usr/lib/x86_64-linux-gnu/libc-2.31.so":       true, // merged path, package lists /lib/...
+		"/usr/lib/x86_64-linux-gnu/unowned.so":         true,
+	}
+	sums, n, err := packagedChecksums(dir, wanted)
+	if err != nil || n != 3 {
+		t.Fatalf("n=%d err=%v", n, err)
+	}
+	if sums["/usr/lib/x86_64-linux-gnu/libkeyutils.so.1.9"]["0123456789abcdef0123456789abcdef"] != "libkeyutils1:amd64" {
+		t.Errorf("libkeyutils: %v", sums)
+	}
+	if sums["/usr/lib/x86_64-linux-gnu/libc-2.31.so"]["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"] != "libc6:amd64" {
+		t.Errorf("usr-merge lookup failed: %v", sums)
+	}
+	if len(sums["/usr/lib/x86_64-linux-gnu/unowned.so"]) != 0 {
+		t.Errorf("unowned library got checksums: %v", sums)
+	}
+}
+
+func TestIsSystemLib(t *testing.T) {
+	for p, want := range map[string]bool{
+		"/usr/lib/x86_64-linux-gnu/libc.so.6": true,
+		"/lib64/ld-linux-x86-64.so.2":         true,
+		"/usr/lib/python3/dist-packages/x.so": true,
+		"/usr/local/lib/libfoo.so":            false,
+		"/tmp/libfoo.so":                      false,
+		"/usr/lib/systemd/systemd":            false, // not a shared object
+	} {
+		if isSystemLib(p) != want {
+			t.Errorf("isSystemLib(%q) = %v", p, !want)
+		}
+	}
+}
