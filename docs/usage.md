@@ -17,7 +17,7 @@ zygarde [flags]
 | `--list` | List Cell IDs and descriptions, then exit |
 | `--btf <file>` | External BTF file, for kernels without `/sys/kernel/btf/vmlinux` |
 | `--no-isolation` | Run Cells inside the main process instead of a supervised worker. No hard timeout: a stuck Cell is only stopped by Ctrl-C (a second Ctrl-C exits at once). Mainly for debugging |
-| `--allow-panic-on-oops` | Run even though `kernel.panic_on_oops=1`. By default Zygarde refuses: it reads kernel-backed files that a rootkit may have left dangling, and a kernel oops while reading one would panic and reboot the machine, losing the volatile evidence. Prefer `sysctl -w kernel.panic_on_oops=0` for the scan and restoring it afterwards |
+| `--allow-panic-on-oops` | Run even though `kernel.panic_on_oops=1`. By default Zygarde refuses: it reads kernel-backed files that a rootkit may have left dangling, and a kernel oops while reading one would panic and reboot the machine, losing the volatile evidence. Red Hat family distributions (RHEL, Rocky, AlmaLinux) set it by default, so there it is needed unless the sysctl is lowered first. Prefer `sysctl -w kernel.panic_on_oops=0` for the scan and restoring it afterwards |
 | `-d`, `--debug` | Debug logging on stderr |
 | `--version` | Print the version |
 

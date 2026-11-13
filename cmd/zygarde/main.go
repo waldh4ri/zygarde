@@ -239,7 +239,7 @@ func panicOnOopsGuard(panicOnOops int, allow bool) string {
 	if panicOnOops <= 0 || allow {
 		return ""
 	}
-	return "refusing to run: kernel.panic_on_oops is set (1). Zygarde reads kernel-backed files that a rootkit may have " +
+	return "refusing to run: kernel.panic_on_oops is set (1; the default on Red Hat family distributions). Zygarde reads kernel-backed files that a rootkit may have " +
 		"left dangling, and a kernel oops while reading one would panic and reboot this machine, losing the volatile " +
 		"evidence. Run `sysctl -w kernel.panic_on_oops=0` for the scan and restore it afterwards, or pass " +
 		"--allow-panic-on-oops to accept that risk"

@@ -27,7 +27,8 @@ if [ -n "${FIXTURE:-}" ]; then
 	sh "$(dirname "$0")/fixtures.sh" "$FIXTURE" "$out"
 fi
 
-"$bin" --json > "$out/results.json" 2> "$out/stderr.log"
+# Throwaway VMs: Red Hat family images ship kernel.panic_on_oops=1, which makes Zygarde refuse to run.
+"$bin" --allow-panic-on-oops --json > "$out/results.json" 2> "$out/stderr.log"
 code=$?
 
 distro=unknown
