@@ -31,7 +31,8 @@ const tracingDir = "/sys/kernel/tracing"
 // In a private mount namespace the mount goes on /sys/kernel/tracing when
 // nothing is mounted there, and no trace of it can outlive the worker.
 // Otherwise (--no-isolation, or an empty mount point is unavailable) it goes
-// on a temporary directory, lazily unmounted and removed by the cleanup.
+// on a temporary directory (preferring /run tmpfs over /tmp), lazily unmounted
+// and removed by cleanup.
 func Tracefs() (string, func(), error) {
 	nop := func() {}
 	f, err := os.Open("/proc/self/mountinfo")
@@ -75,7 +76,7 @@ func Tracefs() (string, func(), error) {
 		if st, err := os.Lstat(tracingDir); err == nil && st.IsDir() {
 			err := unix.Mount("nodev", tracingDir, "tracefs", flags, "")
 			if err == nil {
-				return tracingDir, func() { unix.Unmount(tracingDir, unix.MNT_DETACH) }, nil
+				return tracingDir, func() { _ = unix.Unmount(tracingDir, unix.MNT_DETACH) }, nil
 			}
 			if errors.Is(err, unix.ENODEV) {
 				return "", nop, ErrNoTracefs
@@ -83,9 +84,16 @@ func Tracefs() (string, func(), error) {
 		}
 	}
 
-	dir, err := os.MkdirTemp("", "zygarde-tracefs-")
+	baseDir := ""
+	if st, err := os.Stat("/run"); err == nil && st.IsDir() {
+		baseDir = "/run"
+	}
+	dir, err := os.MkdirTemp(baseDir, ".tfs-")
 	if err != nil {
-		return "", nop, err
+		dir, err = os.MkdirTemp("", "zygarde-tracefs-")
+		if err != nil {
+			return "", nop, err
+		}
 	}
 	if err := unix.Mount("nodev", dir, "tracefs", flags, ""); err != nil {
 		os.Remove(dir)
@@ -95,8 +103,7 @@ func Tracefs() (string, func(), error) {
 		return "", nop, fmt.Errorf("mounting tracefs: %w", err)
 	}
 	return dir, func() {
-		// Lazy: a reader still holding a file must not keep it mounted.
-		unix.Unmount(dir, unix.MNT_DETACH)
+		_ = unix.Unmount(dir, unix.MNT_DETACH)
 		os.Remove(dir)
 	}, nil
 }

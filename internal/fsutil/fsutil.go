@@ -1,30 +1,32 @@
-// Package fsutil opens and reads files under paths that other users may
-// control (home directories, /tmp, configuration trees) without being
-// tricked into opening something else.
-//
-// Zygarde runs as root. A plain open() of ~/.bashrc follows a symlink an
-// unprivileged user planted there: to /dev/watchdog (opening it arms the
-// watchdog, and closing it without the magic write reboots the host), a tape
-// device (rewinds), a serial tty (blocks on carrier detect, becomes our
-// controlling terminal), /dev/urandom (never ends), or a FIFO (blocks
-// forever). Everything here opens with O_NOFOLLOW|O_NONBLOCK|O_NOCTTY,
-// accepts regular files only, and caps how much is read.
+// Package fsutil provides safe, forensic-preserving filesystem and process
+// helpers: opening untrusted paths without following dangerous symlinks or
+// blocking on FIFOs/TTYs (O_NOFOLLOW|O_NONBLOCK|O_NOCTTY), preserving access
+// timestamps (O_NOATIME when permitted), capping config reads, resolving paths
+// inside container roots (openat2 RESOLVE_IN_ROOT), hashing/preserving
+// volatile binaries, and running userspace queries under standard tool names
+// ("ps", "ls", "bpftool", "ss", "netstat").
 package fsutil
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-
-	"golang.org/x/sys/unix"
+	"sort"
+	"strconv"
+	"time"
 )
 
 // MaxConfig is the default cap for configuration files and scripts. Real
 // ones are a few KiB; anything bigger is reported, not silently cut.
 const MaxConfig = 4 << 20
+
+// maxHashSize bounds how much of a regular file FileMetadata hashes (64 MiB).
+const maxHashSize = 64 << 20
 
 var (
 	// ErrNotRegular means the path is not a regular file (a device, FIFO,
@@ -35,85 +37,27 @@ var (
 	// ErrUntrustedLink means a symlink was not followed because a user
 	// other than root could have created or replaced it.
 	ErrUntrustedLink = errors.New("symlink not owned by root in a root-only directory")
+	// ErrListingTooLong means a directory has more than MaxListing entries.
+	ErrListingTooLong = errors.New("directory has too many entries to list")
+	// ErrNoOpenat2 means the kernel lacks openat2() (Linux 5.6+).
+	ErrNoOpenat2 = errors.New("openat2() is not available (Linux 5.6+)")
 )
 
-const openFlags = unix.O_RDONLY | unix.O_NOFOLLOW | unix.O_NONBLOCK | unix.O_NOCTTY | unix.O_CLOEXEC
+// MaxListing bounds how many entries InListing reads from one directory.
+const MaxListing = 1 << 20
 
-// Open opens path for reading if it is a regular file. A symlink as the
-// last component is never followed (ErrNotRegular). Directories above it
-// are resolved normally: callers only pass paths whose parents are owned
-// by root (or by the user the file belongs to).
-func Open(path string) (*os.File, error) {
-	fd, err := unix.Open(path, openFlags, 0)
-	if errors.Is(err, unix.ELOOP) {
-		return nil, &os.PathError{Op: "open", Path: path, Err: ErrNotRegular}
-	}
-	if err != nil {
-		return nil, &os.PathError{Op: "open", Path: path, Err: err}
-	}
-	return checkRegular(fd, path)
-}
+// MaxLine is the longest line NewScanner accepts. It is as large as
+// MaxConfig, so a file read within that cap can't overflow it.
+const MaxLine = MaxConfig
 
-func checkRegular(fd int, path string) (*os.File, error) {
-	var st unix.Stat_t
-	if err := unix.Fstat(fd, &st); err != nil {
-		unix.Close(fd)
-		return nil, &os.PathError{Op: "fstat", Path: path, Err: err}
-	}
-	if st.Mode&unix.S_IFMT != unix.S_IFREG {
-		unix.Close(fd)
-		return nil, &os.PathError{Op: "open", Path: path, Err: ErrNotRegular}
-	}
-	return os.NewFile(uintptr(fd), path), nil
-}
-
-// maxLinks bounds how many trusted symlinks OpenSystem follows.
-const maxLinks = 8
-
-// OpenSystem is Open for system configuration, where packages legitimately
-// symlink files (/etc/rc.local -> rc.d/rc.local, modules-load.d entries
-// pointing into /usr/lib). A symlink is followed only if it is owned by
-// root and sits in a directory owned by root that nobody else can write,
-// so only root could have placed it.
-func OpenSystem(path string) (*os.File, error) {
-	for i := 0; ; i++ {
-		f, err := Open(path)
-		if !errors.Is(err, ErrNotRegular) {
-			return f, err
-		}
-		var st unix.Stat_t
-		if lerr := unix.Lstat(path, &st); lerr != nil || st.Mode&unix.S_IFMT != unix.S_IFLNK {
-			return nil, err // not a symlink: a device, FIFO, socket or directory
-		}
-		if i >= maxLinks {
-			return nil, &os.PathError{Op: "open", Path: path, Err: unix.ELOOP}
-		}
-		if !TrustedLink(path, st) {
-			return nil, &os.PathError{Op: "open", Path: path, Err: ErrUntrustedLink}
-		}
-		target, rerr := os.Readlink(path)
-		if rerr != nil {
-			return nil, rerr
-		}
-		if !filepath.IsAbs(target) {
-			target = filepath.Join(filepath.Dir(path), target)
-		}
-		path = target
-	}
-}
-
-// TrustedLink reports whether only root could have created the symlink at
-// path (whose lstat is st): it is owned by root, and so is its directory,
-// which no one else can write to.
-func TrustedLink(path string, st unix.Stat_t) bool {
-	if st.Uid != 0 {
-		return false
-	}
-	var dir unix.Stat_t
-	if err := unix.Stat(filepath.Dir(path), &dir); err != nil {
-		return false
-	}
-	return dir.Uid == 0 && dir.Mode&0o022 == 0
+// NewScanner returns a line scanner that accepts lines up to MaxLine. The
+// default 64 KiB limit makes bufio.Scanner stop at a long line and report it
+// only through Err(): one padded line would hide everything after it.
+// Callers must check Err().
+func NewScanner(r io.Reader) *bufio.Scanner {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), MaxLine+1)
+	return sc
 }
 
 // ReadAll reads f up to max bytes. It returns ErrTooLarge, with the first
@@ -149,48 +93,35 @@ func ReadSystemFile(path string, max int64) ([]byte, error) {
 	return ReadAll(f, max)
 }
 
-// MaxLine is the longest line NewScanner accepts. It is as large as
-// MaxConfig, so a file read within that cap can't overflow it.
-const MaxLine = MaxConfig
-
-// NewScanner returns a line scanner that accepts lines up to MaxLine. The
-// default 64 KiB limit makes bufio.Scanner stop at a long line and report it
-// only through Err(): one padded line would hide everything after it.
-// Callers must check Err().
-func NewScanner(r io.Reader) *bufio.Scanner {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), MaxLine+1)
-	return sc
-}
-
-// Owner returns the owner of an open file.
-func Owner(f *os.File) (uint32, error) {
-	var st unix.Stat_t
-	if err := unix.Fstat(int(f.Fd()), &st); err != nil {
-		return 0, err
-	}
-	return st.Uid, nil
-}
-
-// MaxListing bounds how many entries InListing reads from one directory.
-const MaxListing = 1 << 20
-
-// ErrListingTooLong means a directory has more than MaxListing entries.
-var ErrListingTooLong = errors.New("directory has too many entries to list")
-
-// InListing reports whether name appears in the listing of dir. It streams
-// the directory in batches and stops at the first match, so a directory
-// with millions of entries costs neither memory nor much time; past
-// MaxListing entries it gives up with ErrListingTooLong.
-func InListing(dir, name string) (bool, error) {
-	fd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NONBLOCK|unix.O_NOCTTY|unix.O_CLOEXEC, 0)
+// ReadFileNoAtime reads a file (such as /proc or /sys pseudo-files or regular
+// files) without updating its atime when permitted.
+func ReadFileNoAtime(path string) ([]byte, error) {
+	f, err := OpenNoAtime(path)
 	if err != nil {
-		return false, &os.PathError{Op: "open", Path: dir, Err: err}
+		return nil, err
 	}
-	f := os.NewFile(uintptr(fd), dir)
 	defer f.Close()
-	return inListing(f, name)
+	return io.ReadAll(f)
 }
+
+// ReadDirNoAtime reads directory entries sorted by name without updating atime
+// when permitted.
+func ReadDirNoAtime(path string) ([]os.DirEntry, error) {
+	f, err := OpenDirNoAtime(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	entries, err := f.ReadDir(-1)
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	return entries, nil
+}
+
+// InListingFile is InListing on a directory that is already open.
+func InListingFile(f *os.File, name string) (bool, error) { return inListing(f, name) }
 
 func inListing(f *os.File, name string) (bool, error) {
 	read := 0
@@ -213,4 +144,151 @@ func inListing(f *os.File, name string) (bool, error) {
 			return false, ErrListingTooLong
 		}
 	}
+}
+
+// FileMetadata collects forensic attributes (mode, size, uid, gid, inode,
+// mtime, ctime and sha256 for regular files) without updating atime or
+// following symlinks/opening devices.
+func FileMetadata(path string) map[string]string {
+	st, err := os.Lstat(path)
+	if err != nil {
+		return nil
+	}
+	m := map[string]string{
+		"mode":  st.Mode().String(),
+		"size":  strconv.FormatInt(st.Size(), 10),
+		"mtime": st.ModTime().UTC().Format(time.RFC3339Nano),
+	}
+	fillStatSys(st, m)
+	if st.Mode().IsRegular() && st.Size() >= 0 && st.Size() <= maxHashSize {
+		if sum, err := SHA256RegularFile(path); err == nil {
+			m["sha256"] = sum
+		}
+	}
+	return m
+}
+
+// MergeMetadata copies non-empty metadata keys with an optional prefix into dst.
+func MergeMetadata(dst map[string]string, prefix string, meta map[string]string) {
+	for k, v := range meta {
+		if v != "" {
+			dst[prefix+k] = v
+		}
+	}
+}
+
+// SHA256RegularFile hashes a regular file without following symlinks or
+// mutating atime.
+func SHA256RegularFile(path string) (string, error) {
+	f, err := Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, io.LimitReader(f, maxHashSize+1)); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// SHA256File computes the hex SHA-256 of path (following magic links such as
+// /proc/<pid>/exe) using O_NOATIME.
+func SHA256File(path string) (string, error) {
+	f, err := OpenNoAtime(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, io.LimitReader(f, maxHashSize+1)); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// PreserveBinary copies a volatile executable (e.g. /proc/<pid>/exe of a
+// deleted or memfd-backed process) into dir with mode 0600, returning the
+// saved path and its SHA-256 digest.
+func PreserveBinary(srcPath, dir, label string) (savedPath, digest string, err error) {
+	if dir == "" {
+		return "", "", nil
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", "", fmt.Errorf("creating preserve dir: %w", err)
+	}
+	src, err := OpenNoAtime(srcPath)
+	if err != nil {
+		return "", "", err
+	}
+	defer src.Close()
+
+	tmp, err := os.CreateTemp(dir, ".preserve-*")
+	if err != nil {
+		return "", "", err
+	}
+	tmpName := tmp.Name()
+	_ = tmp.Chmod(0o600)
+
+	h := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(tmp, h), io.LimitReader(src, maxHashSize)); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return "", "", err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return "", "", err
+	}
+	digest = hex.EncodeToString(h.Sum(nil))
+	short := digest
+	if len(short) > 12 {
+		short = short[:12]
+	}
+	dst := filepath.Join(dir, fmt.Sprintf("%s-%s.bin", sanitize(label), short))
+	if err := os.Rename(tmpName, dst); err != nil {
+		os.Remove(tmpName)
+		return "", digest, err
+	}
+	return dst, digest, nil
+}
+
+func sanitize(s string) string {
+	out := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_':
+			out = append(out, c)
+		default:
+			out = append(out, '_')
+		}
+	}
+	if len(out) == 0 {
+		return "artifact"
+	}
+	if len(out) > 48 {
+		out = out[:48]
+	}
+	return string(out)
+}
+
+// WithCommVal runs fn on a locked OS thread with its task comm temporarily set
+// to comm (on Linux), then restores the previous comm.
+func WithCommVal[T any](comm string, fn func() (T, error)) (T, error) {
+	var out T
+	var err error
+	withComm(comm, func() {
+		out, err = fn()
+	})
+	return out, err
+}
+
+// WithComm is WithCommVal for functions returning only an error.
+func WithComm(comm string, fn func() error) error {
+	var err error
+	withComm(comm, func() {
+		err = fn()
+	})
+	return err
 }

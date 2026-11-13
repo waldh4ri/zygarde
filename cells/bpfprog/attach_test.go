@@ -1,6 +1,10 @@
 package bpfprog
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/cilium/ebpf"
+)
 
 func TestSensitive(t *testing.T) {
 	for name, want := range map[string]bool{
@@ -14,6 +18,8 @@ func TestSensitive(t *testing.T) {
 		"sys_enter_tgkill":              true,
 		"__x64_sys_ptrace":              true,
 		"sys_enter":                     true,
+		"bpf_lsm_bpf":                   true,
+		"bpf_lsm_file_open":             false,
 		"sched_process_exec":            false,
 		"__oom_kill_process":            false,
 		"bpf_prog_load":                 false,
@@ -21,6 +27,26 @@ func TestSensitive(t *testing.T) {
 	} {
 		if got := sensitive(name) != ""; got != want {
 			t.Errorf("sensitive(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
+func TestAttachTypeNameUAPI(t *testing.T) {
+	for at, want := range map[ebpf.AttachType]string{
+		ebpf.AttachCGroupInet4Bind:    "cgroup bind4",
+		ebpf.AttachCGroupInet4Connect: "cgroup connect4",
+		ebpf.AttachCGroupUDP4Sendmsg:  "cgroup udp4 sendmsg",
+		ebpf.AttachCGroupSysctl:       "cgroup sysctl",
+		ebpf.AttachTraceFEntry:        "fentry",
+		ebpf.AttachModifyReturn:       "fmod_ret",
+		ebpf.AttachLSMMac:             "lsm",
+		ebpf.AttachSkLookup:           "netns sk_lookup",
+		ebpf.AttachLSMCgroup:          "lsm cgroup",
+		ebpf.AttachTCXEgress:          "tcx egress",
+		ebpf.AttachNetkitPrimary:      "netkit primary",
+	} {
+		if got := attachTypeName(at); got != want {
+			t.Errorf("attachTypeName(%d) = %q, want %q", uint32(at), got, want)
 		}
 	}
 }

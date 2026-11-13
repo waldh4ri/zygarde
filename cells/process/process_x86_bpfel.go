@@ -21,19 +21,22 @@ type processSchedSeen struct {
 }
 
 type processTaskInfo struct {
-	_          structs.HostLayout
-	Tgid       uint32
-	Pid        uint32
-	Ppid       uint32
-	State      uint32
-	GlobalTgid uint32
-	GlobalPid  uint32
-	Flags      uint32
-	HasMm      uint32
-	Euid       uint32
-	Comm       [16]int8
-	_          [4]byte
-	StartTime  uint64
+	_             structs.HostLayout
+	Tgid          uint32
+	Pid           uint32
+	Ppid          uint32
+	State         uint32
+	GlobalTgid    uint32
+	GlobalPid     uint32
+	Flags         uint32
+	HasMm         uint32
+	Uid           uint32
+	Euid          uint32
+	Gid           uint32
+	Pad           uint32
+	StartBoottime uint64
+	Comm          [16]int8
+	StartTime     uint64
 }
 
 // Names of all BPF objects in the ELF.
@@ -42,11 +45,14 @@ type processTaskInfo struct {
 const (
 	processMapRan             = "ran"
 	processMapRanDropped      = "ran_dropped"
+	processMapTasklist        = "tasklist"
 	processProgDumpTask       = "dump_task"
 	processProgOnSchedExit    = "on_sched_exit"
 	processProgOnSchedSwitch  = "on_sched_switch"
+	processProgWalkInitTasks  = "walk_init_tasks"
 	processVarUnusedSchedSeen = "unused_sched_seen"
 	processVarUnusedTaskInfo  = "unused_task_info"
+	processVarWalkTargetTgid  = "walk_target_tgid"
 )
 
 // loadProcess returns the embedded CollectionSpec for process.
@@ -94,6 +100,7 @@ type processProgramSpecs struct {
 	DumpTask      *ebpf.ProgramSpec `ebpf:"dump_task"`
 	OnSchedExit   *ebpf.ProgramSpec `ebpf:"on_sched_exit"`
 	OnSchedSwitch *ebpf.ProgramSpec `ebpf:"on_sched_switch"`
+	WalkInitTasks *ebpf.ProgramSpec `ebpf:"walk_init_tasks"`
 }
 
 // processMapSpecs contains maps before they are loaded into the kernel.
@@ -102,6 +109,7 @@ type processProgramSpecs struct {
 type processMapSpecs struct {
 	Ran        *ebpf.MapSpec `ebpf:"ran"`
 	RanDropped *ebpf.MapSpec `ebpf:"ran_dropped"`
+	Tasklist   *ebpf.MapSpec `ebpf:"tasklist"`
 }
 
 // processVariableSpecs contains global variables before they are loaded into the kernel.
@@ -110,6 +118,7 @@ type processMapSpecs struct {
 type processVariableSpecs struct {
 	UnusedSchedSeen *ebpf.VariableSpec `ebpf:"unused_sched_seen"`
 	UnusedTaskInfo  *ebpf.VariableSpec `ebpf:"unused_task_info"`
+	WalkTargetTgid  *ebpf.VariableSpec `ebpf:"walk_target_tgid"`
 }
 
 // processObjects contains all objects after they have been loaded into the kernel.
@@ -134,12 +143,14 @@ func (o *processObjects) Close() error {
 type processMaps struct {
 	Ran        *ebpf.Map `ebpf:"ran"`
 	RanDropped *ebpf.Map `ebpf:"ran_dropped"`
+	Tasklist   *ebpf.Map `ebpf:"tasklist"`
 }
 
 func (m *processMaps) Close() error {
 	return _ProcessClose(
 		m.Ran,
 		m.RanDropped,
+		m.Tasklist,
 	)
 }
 
@@ -149,6 +160,7 @@ func (m *processMaps) Close() error {
 type processVariables struct {
 	UnusedSchedSeen *ebpf.Variable `ebpf:"unused_sched_seen"`
 	UnusedTaskInfo  *ebpf.Variable `ebpf:"unused_task_info"`
+	WalkTargetTgid  *ebpf.Variable `ebpf:"walk_target_tgid"`
 }
 
 // processPrograms contains all programs after they have been loaded into the kernel.
@@ -158,6 +170,7 @@ type processPrograms struct {
 	DumpTask      *ebpf.Program `ebpf:"dump_task"`
 	OnSchedExit   *ebpf.Program `ebpf:"on_sched_exit"`
 	OnSchedSwitch *ebpf.Program `ebpf:"on_sched_switch"`
+	WalkInitTasks *ebpf.Program `ebpf:"walk_init_tasks"`
 }
 
 func (p *processPrograms) Close() error {
@@ -165,6 +178,7 @@ func (p *processPrograms) Close() error {
 		p.DumpTask,
 		p.OnSchedExit,
 		p.OnSchedSwitch,
+		p.WalkInitTasks,
 	)
 }
 

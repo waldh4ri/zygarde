@@ -8,6 +8,7 @@ func TestLooksLikeKthread(t *testing.T) {
 		want          bool
 	}{
 		{"kworker/0:1", "", true},
+		{"[kworker/0:1]", "", true},
 		{"sleep", "[kworker/0:1]", true},
 		{"bash", "[kthreadd] -c x", true},
 		{"rcu_sched", "", true},
@@ -22,7 +23,7 @@ func TestLooksLikeKthread(t *testing.T) {
 	}
 }
 
-func TestExeLocation(t *testing.T) {
+func TestExeLocationAndSuspicious(t *testing.T) {
 	for in, want := range map[string]string{
 		"/usr/sbin/sshd":            "",
 		"/usr/sbin/sshd (deleted)":  "deleted",
@@ -39,6 +40,16 @@ func TestExeLocation(t *testing.T) {
 	}
 	if !packaged("/usr/sbin/sshd") || packaged("/root/x") {
 		t.Error("packaged() misclassifies")
+	}
+	// Non-root memfd or deleted /tmp implant must be suspicious; upgraded daemon must not.
+	if !suspiciousExe(33, "/memfd:implant (deleted)", "memfd") {
+		t.Error("non-root memfd implant was not classified suspicious")
+	}
+	if !suspiciousExe(33, "/tmp/implant (deleted)", "temporary directory") {
+		t.Error("non-root deleted /tmp implant was not classified suspicious")
+	}
+	if suspiciousExe(0, "/usr/sbin/sshd (deleted)", "deleted") {
+		t.Error("package-upgraded daemon classified suspicious")
 	}
 }
 

@@ -24,21 +24,17 @@ import (
 	"github.com/waldh4ri/zygarde/internal/bpfutil"
 	"github.com/waldh4ri/zygarde/internal/canary"
 	"github.com/waldh4ri/zygarde/internal/core"
+	"github.com/waldh4ri/zygarde/internal/fsutil"
 	"github.com/waldh4ri/zygarde/internal/kernel"
 )
 
-// Cell lists a set of directories itself and compares, for each listing, the
-// entries the filesystem produced (seen by a kprobe on filldir64, the
-// callback that copies each entry into the getdents64 buffer) with the
-// entries the syscall actually returned. An entry produced but not returned
-// was filtered between the two: by a hooked getdents64, or by a program that
-// rewrote the result buffer.
+// Cell lists sensitive directories in batches (under comm "ls" and with
+// O_NOATIME, skipping network/FUSE mounts), comparing entries produced by
+// filldir64 with what getdents64 returns, and checks binary/library
+// directories for executable dot-entries.
 //
-// Hiding done inside the filesystem itself (before filldir64) is not covered;
-// hook_inventory reports hooks on the functions involved.
-//
-// It also flags dot-entries in binary and library directories, where stock
-// installs have none and rootkits stash trojaned tools.
+// Hiding inside the filesystem's own operations table before filldir64 is
+// covered by kernel_pointers and inline_hook.
 type Cell struct{}
 
 // New returns the hidden directory entry Cell.
@@ -93,6 +89,9 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 		return err
 	}
 	defer objs.Close()
+	if id, err := bpfutil.ProgramID(objs.OnFilldir64); err == nil {
+		rec.Footprint("bpf_prog_id", strconv.FormatUint(uint64(id), 10))
+	}
 
 	kp, err := link.Kprobe(symbol, objs.OnFilldir64, nil)
 	if err != nil {
@@ -106,11 +105,15 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 	}
 	defer rd.Close()
 
-	cf, err := canary.CreateFile(canary.FileDir)
+	cf, err := canary.CreateFile(canary.ActiveFileDir())
 	if err != nil {
-		return fmt.Errorf("creating canary file: %w", err)
+		cf, err = canary.CreateFile(canary.FileDir)
+		if err != nil {
+			return fmt.Errorf("creating canary file: %w", err)
+		}
 	}
 	defer cf.Remove()
+	rec.Footprint("canary_file", cf.Path)
 
 	system := map[string]bool{}
 	for _, d := range systemDirs() {
@@ -143,7 +146,7 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 			rec.Limit("%d entries of %s were not recorded from filldir64 (ring buffer full); hidden entries there may be missed", lost, dir)
 		}
 
-		if dir == canary.FileDir {
+		if dir == cf.Dir {
 			name := filepath.Base(cf.Path)
 			if lost == 0 || produced[name] {
 				rec.Canary(cf.Path, "filesystem (filldir64)", produced[name])
@@ -176,9 +179,11 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 		for _, name := range intersect(missing, diff(produced2, returned2)) {
 			hidden++
 			path := filepath.Join(dir, name)
+			details := map[string]string{"path": path, "directory": dir}
+			fsutil.MergeMetadata(details, "", fsutil.FileMetadata(path))
 			rec.Suspicious(core.Finding{
 				Description: fmt.Sprintf("%s exists but is filtered out of directory listings", path),
-				Details:     map[string]string{"path": path, "directory": dir},
+				Details:     details,
 				Why: "The filesystem returned this entry, but it was removed before the listing reached " +
 					"userspace, so ls, find and file managers can't see it. Under /proc this hides a process.",
 				Benign: "Rare: some security products hide their own files this way. Identify what owns the entry " +
@@ -223,44 +228,43 @@ type lister struct {
 // far below the ring buffer's capacity (about 15,000).
 const listBatch = 512
 
-// list lists dir with getdents64 and returns the entry names the filesystem
-// produced and the names the syscall returned, and how many produced entries
-// could not be recorded.
 func (l lister) list(dir string) (produced, returned map[string]bool, lost uint64, err error) {
-	if _, err := drain(l.rd); err != nil { // discard anything unrelated
+	if _, err := drain(l.rd); err != nil {
 		return nil, nil, 0, err
 	}
 	before := l.dropped()
-	// O_NONBLOCK|O_DIRECTORY: a FIFO or device put in place of a listed
-	// directory (~/.ssh) must neither block nor be opened.
-	fd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NONBLOCK|unix.O_NOCTTY|unix.O_CLOEXEC, 0)
+	f, err := fsutil.OpenDirNoAtime(dir)
 	if err != nil {
-		return nil, nil, 0, &os.PathError{Op: "open", Path: dir, Err: err}
+		return nil, nil, 0, err
 	}
-	f := os.NewFile(uintptr(fd), dir)
 	defer f.Close()
 
 	produced, returned = map[string]bool{}, map[string]bool{}
-	for {
-		names, rerr := f.Readdirnames(listBatch)
-		for _, n := range names {
-			returned[n] = true
-		}
-		got, err := drain(l.rd)
-		if err != nil {
-			return nil, nil, 0, err
-		}
-		for _, n := range got {
-			if n != "." && n != ".." {
-				produced[n] = true
+	err = fsutil.WithComm("ls", func() error {
+		for {
+			names, rerr := f.Readdirnames(listBatch)
+			for _, n := range names {
+				returned[n] = true
+			}
+			got, derr := drain(l.rd)
+			if derr != nil {
+				return derr
+			}
+			for _, n := range got {
+				if n != "." && n != ".." {
+					produced[n] = true
+				}
+			}
+			if errors.Is(rerr, io.EOF) || (rerr == nil && len(names) == 0) {
+				return nil
+			}
+			if rerr != nil {
+				return rerr
 			}
 		}
-		if errors.Is(rerr, io.EOF) || (rerr == nil && len(names) == 0) {
-			break
-		}
-		if rerr != nil {
-			return nil, nil, 0, rerr
-		}
+	})
+	if err != nil {
+		return nil, nil, 0, err
 	}
 	return produced, returned, l.dropped() - before, nil
 }
@@ -273,8 +277,6 @@ func (l lister) dropped() uint64 {
 	return n
 }
 
-// remoteMountTypes are filesystem types whose listings can block for a long
-// time in uninterruptible sleep when the server is unreachable.
 func remoteMountType(fstype string) bool {
 	switch fstype {
 	case "nfs", "nfs4", "cifs", "smb3", "smbfs", "ceph", "afs", "9p", "glusterfs", "lustre", "autofs", "davfs", "ncpfs", "coda":
@@ -283,11 +285,9 @@ func remoteMountType(fstype string) bool {
 	return strings.HasPrefix(fstype, "fuse")
 }
 
-// remoteMounts returns the mount points of network and FUSE filesystems, by
-// type, from /proc/self/mountinfo (without touching the mounts themselves).
 func remoteMounts() map[string]string {
 	out := map[string]string{}
-	data, err := os.ReadFile("/proc/self/mountinfo")
+	data, err := fsutil.ReadFileNoAtime("/proc/self/mountinfo")
 	if err != nil {
 		return out
 	}
@@ -305,7 +305,6 @@ func remoteMounts() map[string]string {
 	return out
 }
 
-// unescapeMount decodes the octal escapes (\040 for a space) of mountinfo.
 func unescapeMount(s string) string {
 	if !strings.Contains(s, `\`) {
 		return s
@@ -324,7 +323,6 @@ func unescapeMount(s string) string {
 	return b.String()
 }
 
-// under returns the type of the remote mount dir is on, or "".
 func under(dir string, mounts map[string]string) string {
 	for p := dir; ; p = filepath.Dir(p) {
 		if t, ok := mounts[p]; ok {
@@ -336,8 +334,6 @@ func under(dir string, mounts map[string]string) string {
 	}
 }
 
-// drain returns the names of all buffered events. Events are written
-// synchronously during getdents64, so they are all present once it returns.
 func drain(rd *ringbuf.Reader) ([]string, error) {
 	var names []string
 	rd.SetDeadline(time.Now())
@@ -354,7 +350,7 @@ func drain(rd *ringbuf.Reader) ([]string, error) {
 			return names, fmt.Errorf("decoding dirent event: %v", err)
 		}
 		n := int(evs[0].Namlen)
-		if n > len(evs[0].Name) {
+		if n <= 0 || n > len(evs[0].Name) {
 			continue
 		}
 		b := make([]byte, n)
@@ -365,12 +361,9 @@ func drain(rd *ringbuf.Reader) ([]string, error) {
 	}
 }
 
-// scanDirs returns the directories to check: where binaries, libraries,
-// persistence and staging usually live, plus /proc (hidden processes) and
-// /sys/module (hidden modules).
 func scanDirs() []string {
 	dirs := []string{
-		canary.FileDir, "/proc", "/sys/module",
+		canary.ActiveFileDir(), canary.FileDir, "/proc", "/sys/module",
 		"/bin", "/sbin", "/usr/bin", "/usr/sbin", "/usr/local/bin", "/usr/local/sbin",
 		"/lib", "/lib64", "/usr/lib", "/usr/lib64", "/usr/local/lib",
 		"/etc", "/etc/cron.d", "/etc/cron.daily", "/etc/cron.hourly", "/etc/init.d",
@@ -390,9 +383,9 @@ func scanDirs() []string {
 		}
 	}
 	if under("/home", remoteMounts()) != "" {
-		return dedupe(dirs) // listing /home could stall on the server
+		return dedupe(dirs)
 	}
-	if homes, err := os.ReadDir("/home"); err == nil {
+	if homes, err := fsutil.ReadDirNoAtime("/home"); err == nil {
 		for _, h := range homes {
 			if h.IsDir() {
 				dirs = append(dirs, filepath.Join("/home", h.Name()), filepath.Join("/home", h.Name(), ".ssh"))
@@ -414,7 +407,6 @@ func dedupe(in []string) []string {
 	return out
 }
 
-// diff returns names in a but not in b, sorted.
 func diff(a, b map[string]bool) []string {
 	var out []string
 	for n := range a {

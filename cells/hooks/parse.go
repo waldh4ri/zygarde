@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"io"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -18,6 +19,7 @@ import (
 // M was modified.
 type hook struct {
 	Function string
+	RefCount int
 	Flags    map[byte]bool
 	Handlers []string // ftrace handlers: "(...)" after tramp:/ops:, and "->..." targets
 	Direct   []string // direct-call targets (BPF trampolines)
@@ -53,7 +55,8 @@ func parseEnabledFunctions(r io.Reader) ([]hook, error) {
 		if m == nil {
 			continue
 		}
-		h := hook{Function: m[1], Flags: map[byte]bool{}}
+		ref, _ := strconv.Atoi(m[2])
+		h := hook{Function: m[1], RefCount: ref, Flags: map[byte]bool{}}
 		for _, f := range []byte(m[3]) {
 			if f != ' ' {
 				h.Flags[f] = true

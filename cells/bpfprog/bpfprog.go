@@ -1,10 +1,12 @@
-// Package bpfprog detects eBPF programs hidden from userspace enumeration.
+// Package bpfprog detects eBPF programs hidden from userspace enumeration and
+// inventories BPF attachments, capabilities, tail-call maps and owners.
 package bpfprog
 
 //go:generate go tool bpf2go -target amd64,arm64 -cflags "-Wall -Werror -Wno-missing-declarations" -type prog_info -type enum_event bpfprog bpfprog.bpf.c -- -I../../bpf/include
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -19,19 +21,13 @@ import (
 	"github.com/waldh4ri/zygarde/internal/bpfutil"
 	"github.com/waldh4ri/zygarde/internal/core"
 	"github.com/waldh4ri/zygarde/internal/fdowner"
+	"github.com/waldh4ri/zygarde/internal/fsutil"
 )
 
 // Cell compares three views of the loaded eBPF programs:
 //   - kernel: the bpf_prog iterator walks the kernel's program IDR directly
-//   - userspace: BPF_PROG_GET_NEXT_ID, the syscall bpftool and others use
+//   - userspace: BPF_PROG_GET_NEXT_ID (run under comm "bpftool")
 //   - pinned: programs pinned under /sys/fs/bpf
-//
-// It inventories where every program is attached (BPF links, perf events,
-// XDP and tc) and which processes hold it, read from the kernel's file
-// tables: a program held only by processes hidden from /proc is suspicious.
-//
-// It also traces zygarde's own GET_NEXT_ID calls at syscall exit to catch
-// enumeration cut short with a fake -ENOENT, or answers rewritten in memory.
 type Cell struct{}
 
 // New returns the hidden eBPF program Cell.
@@ -64,6 +60,26 @@ func (o *objects) Close() {
 	o.bpfprogMaps.Close()
 }
 
+func progBaseDetails(env *core.Env, id uint32, p bpfprogProgInfo) map[string]string {
+	d := map[string]string{
+		"program_id":   strconv.Itoa(int(id)),
+		"program_name": bpfutil.Int8String(p.Name[:]),
+		"program_type": ebpf.ProgramType(p.Type).String(),
+		"tag":          hex.EncodeToString(p.Tag[:]),
+		"uid":          strconv.FormatUint(uint64(p.Uid), 10),
+		"xlated_bytes": strconv.FormatUint(uint64(p.XlatedBytes), 10),
+	}
+	if p.JitedLen > 0 {
+		d["jited_bytes"] = strconv.FormatUint(uint64(p.JitedLen), 10)
+	}
+	if env != nil {
+		if ts := env.FormatBootOffset(p.LoadTime); ts != "" {
+			d["loaded_at"] = ts
+		}
+	}
+	return d
+}
+
 func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	spec, err := loadBpfprog()
 	if err != nil {
@@ -88,7 +104,7 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	if err != nil {
 		return err
 	}
-	enumerated, err := bpfutil.EnumerateProgIDs()
+	enumerated, err := fsutil.WithCommVal("bpftool", bpfutil.EnumerateProgIDs)
 	// The tracepoints run on every syscall of every CPU: detach them as soon
 	// as the calls they watch are done. Their events stay in the ring buffer.
 	tr.detach()
@@ -115,15 +131,17 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	rec.Canary(name, "BPF program iterator", inKernel)
 	rec.Canary(name, "BPF_PROG_GET_NEXT_ID enumeration", enumSet[selfID])
 
-	// zygarde's own programs are left out of the inventory.
+	// zygarde's own programs are left out of the inventory and recorded in footprint.
 	own := map[uint32]bool{selfID: true}
+	rec.Footprint("bpf_prog_id", strconv.FormatUint(uint64(selfID), 10))
 	for _, p := range []*ebpf.Program{objs.BpfEnter, objs.BpfExit} {
 		if id, err := bpfutil.ProgramID(p); err == nil {
 			own[id] = true
+			rec.Footprint("bpf_prog_id", strconv.FormatUint(uint64(id), 10))
 		}
 	}
 
-	// Present in both kernel snapshots but never enumerated.
+	// Present in both kernel snapshots.
 	stable := make(map[uint32]bpfprogProgInfo)
 	for id, p := range before {
 		if _, ok := after[id]; ok {
@@ -138,11 +156,7 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 			continue
 		}
 		hidden++
-		details := map[string]string{
-			"program_id":   strconv.Itoa(int(id)),
-			"program_name": bpfutil.Int8String(p.Name[:]),
-			"program_type": ebpf.ProgramType(p.Type).String(),
-		}
+		details := progBaseDetails(env, id, p)
 		if path, ok := pinned[id]; ok {
 			details["pinned_path"] = path
 		}
@@ -174,7 +188,7 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	auditHelpers(rec, env, stable, selfID, inv.attach)
 
 	// Where each program is attached, who holds it, and what is pinned.
-	inv.report(rec, stable, enumSet, own, selfID)
+	inv.report(env, rec, stable, enumSet, own, selfID)
 
 	attached := 0
 	for id, atts := range inv.attach {

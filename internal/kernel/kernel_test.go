@@ -27,7 +27,13 @@ ffffffff81234999 T __x64_sys_read
 		t.Error("static symbol x64_sys_call missing")
 	}
 	if ks.Has("hidden_fn") {
-		t.Error("module symbols must be ignored")
+		t.Error("module symbols must be excluded from core-kernel map")
+	}
+	if fn, mod, ok := ks.ModuleFunc(0xffffffffc0a01000); !ok || fn != "hidden_fn" || mod != "evilmod" {
+		t.Errorf("ModuleFunc = %q, %q, %v", fn, mod, ok)
+	}
+	if fn, mod, off, ok := ks.LookupModule(0xffffffffc0a01020); !ok || fn != "hidden_fn" || mod != "evilmod" || off != 0x20 {
+		t.Errorf("LookupModule = %q, %q, %#x, %v", fn, mod, off, ok)
 	}
 }
 
@@ -51,21 +57,34 @@ func TestParseLockdown(t *testing.T) {
 	}
 }
 
-func TestParseStatus(t *testing.T) {
+func TestParseStatusAndNamespaces(t *testing.T) {
 	st, err := ParseStatus(strings.NewReader("Name:\tzygarde\nCapEff:\t000001ffffffffff\nSeccomp:\t2\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !st.HasCap(CapSysAdmin) || !st.HasCap(CapBPF) {
-		t.Errorf("caps not parsed: %#x", st.CapEff)
+	if !st.HasCaps || !st.HasCap(CapSysAdmin) || !st.HasCap(CapBPF) {
+		t.Errorf("caps not parsed: %+v", st)
 	}
 	if st.Seccomp != 2 {
 		t.Errorf("seccomp = %d, want 2", st.Seccomp)
 	}
 
 	st, _ = ParseStatus(strings.NewReader("CapEff:\t0000000000000000\n"))
-	if st.HasCap(CapSysAdmin) || st.Seccomp != -1 {
+	if !st.HasCaps || st.HasCap(CapSysAdmin) || st.Seccomp != -1 {
 		t.Errorf("unprivileged/unknown parse wrong: %+v", st)
+	}
+
+	if !ParseInitUIDMap("         0          0 4294967295\n") {
+		t.Error("init uid_map not recognised")
+	}
+	if ParseInitUIDMap("         0     100000      65536\n") {
+		t.Error("rootless container uid_map accepted as init")
+	}
+	if IsLSMConfined("unconfined") || IsLSMConfined("unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023") {
+		t.Error("unconfined context flagged as confined")
+	}
+	if !IsLSMConfined("system_u:system_r:httpd_t:s0") || !IsLSMConfined("/usr/sbin/sshd (enforce)") {
+		t.Error("confined context not detected")
 	}
 }
 

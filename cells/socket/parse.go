@@ -11,15 +11,23 @@ import (
 	"strings"
 )
 
-// sock is one TCP or UDP socket as one view reports it.
+// sock is one TCP, UDP or RAW socket as one view reports it.
 type sock struct {
-	Proto  string // "tcp" or "udp"
+	Proto  string // "tcp", "udp" or "raw"
 	Family int    // 4 or 6
 	Local  netip.AddrPort
 	Remote netip.AddrPort
 	State  uint8
 	UID    uint32
 	Inode  uint64
+}
+
+// packetSock is one AF_PACKET socket from /proc/net/packet.
+type packetSock struct {
+	Proto   uint16
+	Ifindex int
+	UID     uint32
+	Inode   uint64
 }
 
 // key identifies a socket across views. Sockets without an inode (TIME_WAIT,
@@ -39,10 +47,9 @@ func (s sock) String() string {
 	return fmt.Sprintf("%s%d %s -> %s (%s)", strings.ToUpper(s.Proto), s.Family, s.Local, s.Remote, state)
 }
 
-// stateName names a TCP state (include/net/tcp_states.h). UDP reuses the
-// values: 1 for connected sockets, 7 for unconnected ones.
+// stateName names a TCP state (include/net/tcp_states.h). UDP/RAW reuse 1 and 7.
 func stateName(proto string, st uint8) string {
-	if proto == "udp" {
+	if proto == "udp" || proto == "raw" {
 		if st == 1 {
 			return "connected"
 		}
@@ -56,12 +63,7 @@ func stateName(proto string, st uint8) string {
 	return "state " + strconv.Itoa(int(st))
 }
 
-// parseProcNet parses /proc/net/{tcp,udp}{,6}:
-//
-//	sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
-//	0: 0100007F:0277 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 12345 ...
-//
-// Addresses are the kernel's in-memory words printed as native integers.
+// parseProcNet parses /proc/net/{tcp,udp,raw}{,6}.
 func parseProcNet(r io.Reader, proto string, family int) ([]sock, error) {
 	var out []sock
 	sc := bufio.NewScanner(r)
@@ -94,6 +96,38 @@ func parseProcNet(r io.Reader, proto string, family int) ([]sock, error) {
 			return out, fmt.Errorf("bad inode %q", f[9])
 		}
 		out = append(out, sock{Proto: proto, Family: family, Local: local, Remote: remote, State: uint8(st), UID: uint32(uid), Inode: ino})
+	}
+	return out, sc.Err()
+}
+
+// parseProcPacket parses /proc/net/packet:
+//
+//	sk               RefCnt Type Proto  Iface R Rmem   User   Inode
+//	0000000000000000 3      3    88cc   2     1 0      998    16539
+func parseProcPacket(r io.Reader) ([]packetSock, error) {
+	var out []packetSock
+	sc := bufio.NewScanner(r)
+	first := true
+	for sc.Scan() {
+		if first {
+			first = false
+			continue
+		}
+		f := strings.Fields(sc.Text())
+		if len(f) < 9 {
+			continue
+		}
+		proto, err := strconv.ParseUint(f[3], 16, 16)
+		if err != nil {
+			continue
+		}
+		ifidx, _ := strconv.Atoi(f[4])
+		uid, _ := strconv.ParseUint(f[7], 10, 32)
+		ino, err := strconv.ParseUint(f[8], 10, 64)
+		if err != nil || ino == 0 {
+			continue
+		}
+		out = append(out, packetSock{Proto: uint16(proto), Ifindex: ifidx, UID: uint32(uid), Inode: ino})
 	}
 	return out, sc.Err()
 }

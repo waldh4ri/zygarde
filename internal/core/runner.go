@@ -42,6 +42,7 @@ func RunCell(ctx context.Context, env *Env, c Cell) (res Result) {
 	res.Observations = rec.observed
 	res.Canaries = rec.canaries
 	res.Limitations = rec.limitations()
+	res.Footprint = rec.footprint
 	if len(res.Findings) > 0 {
 		res.Escalate(StatusSuspicious)
 	}
@@ -104,8 +105,8 @@ func Classify(env *Env, err error) (Status, *Finding) {
 					"error":       be.Err.Error(),
 					"environment": why,
 				},
-				Why: "Root without a seccomp filter is normally allowed to use eBPF. A rootkit that intercepts bpf() " +
-					"can refuse it to blind scanners like this one.",
+				Why: "Root with CAP_BPF/CAP_SYS_ADMIN and no seccomp filter is normally allowed to use eBPF. " +
+					"A rootkit that intercepts bpf() can refuse it to blind scanners like this one.",
 				Benign: "A security policy restricting eBPF: SELinux, AppArmor or a BPF-LSM program. Check the audit log for denials.",
 			}
 		}

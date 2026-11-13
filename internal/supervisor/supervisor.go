@@ -57,10 +57,11 @@ type event struct {
 	Result *core.Result `json:"result,omitempty"`
 }
 
-// Callbacks let the caller stream progress.
+// Callbacks let the caller stream progress and observe worker PIDs.
 type Callbacks struct {
-	Start  func(c core.Cell)
-	Result func(r core.Result)
+	Start     func(c core.Cell)
+	Result    func(r core.Result)
+	WorkerPID func(pid int)
 }
 
 // Supervise runs cells in worker processes and returns their results in order.
@@ -112,14 +113,10 @@ func Supervise(ctx context.Context, cells []core.Cell, args []string, log *slog.
 	return out
 }
 
-// startWorker starts a worker in a mount namespace of its own, so that
-// anything it mounts (tracefs) can never leak to the host, even if it is
-// killed. Where that is not allowed (a container without CAP_SYS_ADMIN),
-// it falls back to a plain child.
-//
-// Pdeathsig kills the worker if the parent dies. Linux sends it when the OS
-// thread that forked the child exits, not the process: the caller must keep
-// the current goroutine locked to its thread while the worker runs.
+// startWorker starts a worker in a process group and mount namespace of its
+// own, so anything it mounts (tracefs) can never leak to the host, even if it
+// is killed. Where CLONE_NEWNS is not allowed (a container without
+// CAP_SYS_ADMIN), it falls back to a plain child.
 func startWorker(args, env []string, pipe *os.File, log *slog.Logger) (*exec.Cmd, error) {
 	newCmd := func(unshare uintptr) *exec.Cmd {
 		cmd := exec.Command("/proc/self/exe", args...)
@@ -127,9 +124,11 @@ func startWorker(args, env []string, pipe *os.File, log *slog.Logger) (*exec.Cmd
 		cmd.Stdout = os.Stderr // the worker must not write to our stdout (JSON mode)
 		cmd.Stderr = os.Stderr
 		cmd.ExtraFiles = []*os.File{pipe}
-		// Go also makes / recursively private in the child, so mounts
-		// don't propagate back to the host.
-		cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL, Unshareflags: unshare}
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			Setpgid:      true,
+			Pdeathsig:    syscall.SIGKILL,
+			Unshareflags: unshare,
+		}
 		return cmd
 	}
 	cmd := newCmd(unix.CLONE_NEWNS)
@@ -167,6 +166,9 @@ func runWorker(ctx context.Context, todo []core.Cell, args []string, log *slog.L
 	}
 	defer pr.Close()
 	pid := cmd.Process.Pid
+	if cb.WorkerPID != nil {
+		cb.WorkerPID(pid)
+	}
 	log.Debug("worker started", "pid", pid, "cells", ids)
 
 	quit := make(chan struct{})
@@ -223,6 +225,9 @@ func runWorker(ctx context.Context, todo []core.Cell, args []string, log *slog.L
 	kill := func() {
 		if !killed {
 			killed = true
+			if pid > 0 {
+				_ = unix.Kill(-pid, unix.SIGKILL)
+			}
 			_ = cmd.Process.Kill()
 			abandon = time.After(reapTimeout)
 		}
@@ -235,8 +240,6 @@ loop:
 			if !ok {
 				events = nil
 				if !done {
-					// EOF without "done": the worker is dying or closed
-					// the pipe; make sure it is gone before waiting.
 					kill()
 				} else if abandon == nil {
 					abandon = time.After(reapTimeout)
@@ -288,13 +291,12 @@ loop:
 			exited = nil
 			reaped = true
 			if events != nil && abandon == nil {
-				// Something else may still hold the pipe open: don't wait on it forever.
 				abandon = time.After(reapTimeout)
 			}
 		case <-abandon:
 			abandon = nil
 			if !reaped && !killed {
-				kill() // finished but did not exit
+				kill()
 				continue
 			}
 			break loop
@@ -316,9 +318,13 @@ loop:
 	}
 	if current == nil {
 		if waitErr != nil && !done {
-			log.Error("worker exited between cells", "err", waitErr)
+			log.Error("worker exited before starting next cell", "err", waitErr)
+			if cb.Start != nil {
+				cb.Start(todo[0])
+			}
+			return deathResult(todo[0], waitErr, 0, oomKills() > oomBefore)
 		}
-		return nil // the next attempt runs the remaining cells
+		return nil
 	}
 	elapsed := time.Since(started)
 	switch {
@@ -365,16 +371,13 @@ func deathResult(c core.Cell, waitErr error, elapsed time.Duration, oom bool) *c
 	return workerFailure(c, fmt.Errorf("worker exited unexpectedly: %v", waitErr), elapsed)
 }
 
-// oomKills returns how many processes the kernel's OOM killer has killed:
-// the system-wide counter in /proc/vmstat (Linux 4.13+) plus that of
-// zygarde's own memory cgroup (cgroup v2), which a memory limit on the
-// cgroup triggers. It returns 0 when neither is available.
+// oomKills returns how many processes the kernel's OOM killer has killed.
 func oomKills() uint64 {
 	var n uint64
-	if data, err := os.ReadFile("/proc/vmstat"); err == nil {
+	if data, err := fsutil.ReadFileNoAtime("/proc/vmstat"); err == nil {
 		n += counter(string(data), "oom_kill")
 	}
-	if data, err := os.ReadFile("/proc/self/cgroup"); err == nil {
+	if data, err := fsutil.ReadFileNoAtime("/proc/self/cgroup"); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
 			if path, ok := strings.CutPrefix(line, "0::"); ok {
 				if ev, err := fsutil.ReadFile("/sys/fs/cgroup"+path+"/memory.events", 1<<16); err == nil {
@@ -386,7 +389,6 @@ func oomKills() uint64 {
 	return n
 }
 
-// counter returns the value of a "name value" line.
 func counter(text, name string) uint64 {
 	for _, line := range strings.Split(text, "\n") {
 		if k, v, ok := strings.Cut(line, " "); ok && k == name {
@@ -416,8 +418,6 @@ func IsWorker() bool {
 // Worker is the body of a worker process: run the Cells named in CellsEnv
 // and stream events to the parent.
 func Worker(ctx context.Context, all []core.Cell, env *core.Env) error {
-	// Children (canary processes) must not inherit the pipe, or the parent
-	// would wait for them to see EOF.
 	unix.CloseOnExec(workerFD)
 	out := os.NewFile(workerFD, "events")
 	if out == nil {
@@ -438,7 +438,7 @@ func Worker(ctx context.Context, all []core.Cell, env *core.Env) error {
 	}
 	for _, id := range strings.Split(os.Getenv(CellsEnv), ",") {
 		if ctx.Err() != nil {
-			break // interrupted: the parent reports the rest as not run
+			break
 		}
 		c, ok := byID[id]
 		if !ok {

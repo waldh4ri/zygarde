@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"sort"
 	"strconv"
 	"unsafe"
@@ -20,6 +19,7 @@ import (
 
 	"github.com/waldh4ri/zygarde/internal/bpfutil"
 	"github.com/waldh4ri/zygarde/internal/core"
+	"github.com/waldh4ri/zygarde/internal/fsutil"
 )
 
 // Kind is the type of object a descriptor refers to.
@@ -32,6 +32,8 @@ const (
 	Link   Kind = 3
 	Perf   Kind = 4 // a perf event (tracepoint, kprobe...) running a BPF program
 	Socket Kind = 5
+
+	kindLinkPoll uint32 = 6 // internal slot for bpf_link_fops_poll
 )
 
 func (k Kind) String() string {
@@ -52,13 +54,16 @@ func (k Kind) String() string {
 
 // FD is one descriptor held by a process.
 type FD struct {
-	TGID   uint32 // in zygarde's PID namespace
-	FD     uint32
-	Kind   Kind
-	ID     uint32 // program, map or link ID
-	ProgID uint32 // program run by a link or perf event
-	Inode  uint64 // socket inode
-	Comm   string
+	TGID       uint32 // process ID in zygarde's PID namespace
+	TID        uint32 // thread ID owning the files_struct (for unshare(CLONE_FILES))
+	FD         uint32
+	Kind       Kind
+	ID         uint32 // program, map or link ID
+	ProgID     uint32 // program run by a link or perf event
+	Inode      uint64 // socket inode
+	SockFamily uint16 // AF_* (when Kind == Socket)
+	SockType   uint16 // SOCK_* (when Kind == Socket)
+	Comm       string
 }
 
 // Table is a snapshot of the descriptors of interest across all processes.
@@ -128,6 +133,12 @@ func Snapshot(env *core.Env) (*Table, error) {
 		}
 		t.Learned[k] = true
 	}
+	// Pollable BPF links use a second file_operations table (bpf_link_fops_poll).
+	if ks, err := env.Kallsyms(); err == nil {
+		if addr, ok := ks.Addr("bpf_link_fops_poll"); ok && addr != 0 {
+			_ = objs.Fops.Put(kindLinkPoll, addr)
+		}
+	}
 	if !t.Learned[Prog] {
 		return nil, errors.New("task_file iterator did not report zygarde's own BPF program descriptor")
 	}
@@ -138,8 +149,10 @@ func Snapshot(env *core.Env) (*Table, error) {
 	}
 	for _, r := range recs {
 		t.FDs = append(t.FDs, FD{
-			TGID: r.Tgid, FD: r.Fd, Kind: Kind(r.Kind), ID: r.Id, ProgID: r.ProgId,
-			Inode: r.Ino, Comm: bpfutil.Int8String(r.Comm[:]),
+			TGID: r.Tgid, TID: r.Tid, FD: r.Fd, Kind: Kind(r.Kind),
+			ID: r.Id, ProgID: r.ProgId, Inode: r.Ino,
+			SockFamily: r.Sfamily, SockType: r.Stype,
+			Comm: bpfutil.Int8String(r.Comm[:]),
 		})
 	}
 	return t, nil
@@ -226,20 +239,22 @@ func (t *Table) Of(kind Kind) []FD {
 	return out
 }
 
-// ListedPIDs returns the process IDs listed in /proc. It goes through
-// getdents64, which rootkits hook to hide processes.
+// ListedPIDs returns the process IDs listed in /proc. It runs under the comm
+// "ps" and goes through getdents64, which rootkits hook to hide processes.
 func ListedPIDs() (map[uint32]bool, error) {
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		return nil, fmt.Errorf("listing /proc: %w", err)
-	}
-	pids := make(map[uint32]bool, len(entries))
-	for _, e := range entries {
-		if pid, err := strconv.ParseUint(e.Name(), 10, 32); err == nil {
-			pids[uint32(pid)] = true
+	return fsutil.WithCommVal("ps", func() (map[uint32]bool, error) {
+		entries, err := fsutil.ReadDirNoAtime("/proc")
+		if err != nil {
+			return nil, fmt.Errorf("listing /proc: %w", err)
 		}
-	}
-	return pids, nil
+		pids := make(map[uint32]bool, len(entries))
+		for _, e := range entries {
+			if pid, err := strconv.ParseUint(e.Name(), 10, 32); err == nil {
+				pids[uint32(pid)] = true
+			}
+		}
+		return pids, nil
+	})
 }
 
 // HiddenOnly reports whether every holder is missing from /proc. It is false

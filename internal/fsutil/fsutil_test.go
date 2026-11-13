@@ -1,3 +1,5 @@
+//go:build linux
+
 package fsutil
 
 import (
@@ -67,7 +69,6 @@ func TestOpenFIFODoesNotBlock(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("opening a FIFO blocked")
 	}
-	// And through OpenSystem (a FIFO is not a symlink to follow).
 	if _, err := OpenSystem(p); !errors.Is(err, ErrNotRegular) {
 		t.Fatalf("OpenSystem(fifo) error = %v, want ErrNotRegular", err)
 	}
@@ -96,7 +97,6 @@ func TestOpenSystemFollowsOnlyTrustedLinks(t *testing.T) {
 		t.Fatalf("ReadSystemFile(trusted link) = %q, %v", data, err)
 	}
 
-	// The same link in a directory others can write to is not followed.
 	open := filepath.Join(t.TempDir(), "open")
 	os.Mkdir(open, 0o777)
 	os.Chmod(open, 0o777)
@@ -106,7 +106,6 @@ func TestOpenSystemFollowsOnlyTrustedLinks(t *testing.T) {
 		t.Fatalf("ReadSystemFile(link in world-writable dir) error = %v, want ErrUntrustedLink", err)
 	}
 
-	// A link owned by another user is not followed either.
 	link3 := filepath.Join(dir, "user.conf")
 	os.Symlink(target, link3)
 	if err := os.Lchown(link3, 1000, 1000); err != nil {
@@ -116,14 +115,12 @@ func TestOpenSystemFollowsOnlyTrustedLinks(t *testing.T) {
 		t.Fatalf("ReadSystemFile(user-owned link) error = %v, want ErrUntrustedLink", err)
 	}
 
-	// Trusted links to a device are still refused.
 	dev := filepath.Join(dir, "dev.conf")
 	os.Symlink("/dev/null", dev)
 	if _, err := ReadSystemFile(dev, 100); !errors.Is(err, ErrNotRegular) {
 		t.Fatalf("ReadSystemFile(link to device) error = %v, want ErrNotRegular", err)
 	}
 
-	// Loops end.
 	a, b := filepath.Join(dir, "a"), filepath.Join(dir, "b")
 	os.Symlink("b", a)
 	os.Symlink("a", b)
@@ -133,7 +130,7 @@ func TestOpenSystemFollowsOnlyTrustedLinks(t *testing.T) {
 }
 
 func TestScannerLongLine(t *testing.T) {
-	long := strings.Repeat("x", 200*1024) // over bufio's default 64 KiB
+	long := strings.Repeat("x", 200*1024)
 	sc := NewScanner(strings.NewReader("first\n" + long + "\ninsmod /x.ko\n"))
 	var lines []string
 	for sc.Scan() {
@@ -161,5 +158,41 @@ func TestInListing(t *testing.T) {
 	}
 	if ok, err := InListing(dir, "missing"); ok || err != nil {
 		t.Fatalf("InListing(missing) = %v, %v", ok, err)
+	}
+}
+
+func TestFileMetadataAndPreserve(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "implant")
+	if err := os.WriteFile(src, []byte("#!/bin/sh\necho hi\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	meta := FileMetadata(src)
+	if meta["sha256"] == "" || meta["size"] != "18" || meta["mtime"] == "" {
+		t.Fatalf("unexpected metadata: %+v", meta)
+	}
+
+	entries, err := ReadDirNoAtime(dir)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "implant" {
+		t.Fatalf("ReadDirNoAtime = %v, %v", entries, err)
+	}
+
+	outDir := filepath.Join(dir, "preserved")
+	saved, digest, err := PreserveBinary(src, outDir, "pid-42-implant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if digest != meta["sha256"] {
+		t.Errorf("digest = %s, want %s", digest, meta["sha256"])
+	}
+	if _, err := os.Stat(saved); err != nil {
+		t.Errorf("preserved file missing: %v", err)
+	}
+}
+
+func TestWithCommVal(t *testing.T) {
+	v, err := WithCommVal("ps", func() (int, error) { return 7, nil })
+	if err != nil || v != 7 {
+		t.Fatalf("got %d, %v", v, err)
 	}
 }

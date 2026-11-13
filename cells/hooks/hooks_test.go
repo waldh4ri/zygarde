@@ -3,6 +3,8 @@ package hooks
 import (
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -29,8 +31,11 @@ func TestParse(t *testing.T) {
 		t.Fatalf("parsed %d hooks, want 7: %+v", len(hooks), hooks)
 	}
 	h := hooks[0]
-	if h.Function != "__x64_sys_getppid" || !h.Flags['D'] || len(h.Direct) != 1 {
+	if h.Function != "__x64_sys_getppid" || h.RefCount != 1 || !h.Flags['D'] || len(h.Direct) != 1 {
 		t.Errorf("BPF trampoline parsed wrong: %+v", h)
+	}
+	if hooks[6].RefCount != 2 {
+		t.Errorf("RefCount = %d, want 2", hooks[6].RefCount)
 	}
 	if got := hooks[3].Handlers[0]; got != "fh_ftrace_thunk+0x0/0x30 [rootkit]" || owner(got) != "module rootkit" {
 		t.Errorf("module handler parsed wrong: %q (%s)", got, owner(got))
@@ -53,14 +58,48 @@ func TestClassify(t *testing.T) {
 	}
 	for _, h := range hooks {
 		rec := core.NewRecorder(slog.New(slog.NewTextHandler(io.Discard, nil)))
-		if got := classify(rec, h, false); got != want[h.Function] {
+		if got := classify(rec, h, nil); got != want[h.Function] {
 			t.Errorf("%s: suspicious=%v, want %v", h.Function, got, want[h.Function])
 		}
 	}
 
+	// Per-function livepatch: exempts tcp4_seq_show only when tcp4_seq_show itself is patched.
 	rec := core.NewRecorder(slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if classify(rec, hooks[6], true) {
-		t.Error("unattributed IPMODIFY with livepatch active should only be observed")
+	if classify(rec, hooks[6], map[string]bool{"tcp4_seq_show": true}) {
+		t.Error("IPMODIFY on a live-patched function should only be observed")
+	}
+	if !classify(rec, hooks[6], map[string]bool{"unrelated_fn": true}) {
+		t.Error("IPMODIFY on an unpatched function must stay suspicious even when livepatch is active elsewhere")
+	}
+
+	// Canary collision: refcnt > 1 or IPMODIFY on canary target must not be skipped.
+	if !isSoleCanary(hooks[0]) {
+		t.Error("clean canary should be sole canary")
+	}
+	if isSoleCanary(hooks[6]) {
+		t.Error("co-hooked function with refcnt=2 and IPMODIFY treated as sole canary")
+	}
+}
+
+func TestLivepatchedFunctions(t *testing.T) {
+	dir := t.TempDir()
+	mk := func(p, content string) {
+		full := filepath.Join(dir, p)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("patch_a/enabled", "1\n")
+	mk("patch_a/vmlinux/cmdline_proc_show,1/patched", "1\n")
+	mk("patch_disabled/enabled", "0\n")
+	mk("patch_disabled/vmlinux/tcp4_seq_show,0/patched", "0\n")
+
+	got := livepatchedFunctions(dir)
+	if !got["cmdline_proc_show"] || got["tcp4_seq_show"] {
+		t.Errorf("livepatchedFunctions = %v", got)
 	}
 }
 

@@ -41,7 +41,7 @@ func (s Status) MarshalJSON() ([]byte, error) {
 type Finding struct {
 	// Description says what was observed, in one sentence.
 	Description string `json:"description"`
-	// Details holds the evidence (identifiers, paths, addresses).
+	// Details holds the evidence (identifiers, paths, addresses, hashes).
 	Details map[string]string `json:"details,omitempty"`
 	// Why explains why this points to tampering.
 	Why string `json:"why,omitempty"`
@@ -57,19 +57,26 @@ type CanaryCheck struct {
 	Observed bool   `json:"observed"`
 }
 
+// FootprintItem records one transient object created by Zygarde during a scan.
+type FootprintItem struct {
+	Kind  string `json:"kind"`
+	Value string `json:"value"`
+}
+
 // Result is the outcome of running one Cell.
 type Result struct {
-	Cell            string        `json:"cell"`
-	Name            string        `json:"name"`
-	Status          Status        `json:"status"`
-	StatusText      string        `json:"status_text"`
-	Message         string        `json:"message,omitempty"`
-	Findings        []Finding     `json:"findings,omitempty"`
-	Observations    []Finding     `json:"observations,omitempty"`
-	Canaries        []CanaryCheck `json:"canaries,omitempty"`
-	Limitations     []string      `json:"limitations,omitempty"`
-	Error           string        `json:"error,omitempty"`
-	DurationSeconds float64       `json:"duration_seconds"`
+	Cell            string          `json:"cell"`
+	Name            string          `json:"name"`
+	Status          Status          `json:"status"`
+	StatusText      string          `json:"status_text"`
+	Message         string          `json:"message,omitempty"`
+	Findings        []Finding       `json:"findings,omitempty"`
+	Observations    []Finding       `json:"observations,omitempty"`
+	Canaries        []CanaryCheck   `json:"canaries,omitempty"`
+	Limitations     []string        `json:"limitations,omitempty"`
+	Footprint       []FootprintItem `json:"footprint,omitempty"`
+	Error           string          `json:"error,omitempty"`
+	DurationSeconds float64         `json:"duration_seconds"`
 }
 
 // SetStatus sets Status and keeps StatusText in sync.

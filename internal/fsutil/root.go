@@ -1,3 +1,5 @@
+//go:build linux
+
 package fsutil
 
 import (
@@ -6,9 +8,6 @@ import (
 
 	"golang.org/x/sys/unix"
 )
-
-// ErrNoOpenat2 means the kernel lacks openat2() (Linux 5.6+).
-var ErrNoOpenat2 = errors.New("openat2() is not available (Linux 5.6+)")
 
 // OpenInRoot opens path as if root were "/": absolute symlinks and ".."
 // resolve inside root (openat2 RESOLVE_IN_ROOT). This is how a path must
@@ -22,11 +21,22 @@ func OpenInRoot(root, path string, flags int) (*os.File, error) {
 		return nil, &os.PathError{Op: "open", Path: root, Err: err}
 	}
 	defer unix.Close(rfd)
-	how := unix.OpenHow{
-		Flags:   uint64(flags | unix.O_CLOEXEC),
-		Resolve: unix.RESOLVE_IN_ROOT | unix.RESOLVE_NO_MAGICLINKS,
+	tryOpen := func(fl int) (int, error) {
+		how := unix.OpenHow{
+			Flags:   uint64(fl | unix.O_CLOEXEC),
+			Resolve: unix.RESOLVE_IN_ROOT | unix.RESOLVE_NO_MAGICLINKS,
+		}
+		return unix.Openat2(rfd, path, &how)
 	}
-	fd, err := unix.Openat2(rfd, path, &how)
+	var fd int
+	if flags&unix.O_PATH == 0 {
+		fd, err = tryOpen(flags | unix.O_NOATIME)
+		if errors.Is(err, unix.EPERM) {
+			fd, err = tryOpen(flags)
+		}
+	} else {
+		fd, err = tryOpen(flags)
+	}
 	if errors.Is(err, unix.ENOSYS) {
 		return nil, ErrNoOpenat2
 	}
@@ -45,6 +55,3 @@ func SameAsHostRoot(dir string) bool {
 	}
 	return a.Dev == b.Dev && a.Ino == b.Ino
 }
-
-// InListingFile is InListing on a directory that is already open.
-func InListingFile(f *os.File, name string) (bool, error) { return inListing(f, name) }

@@ -12,15 +12,23 @@ import (
 	"strings"
 )
 
-// Kallsyms holds core-kernel symbol addresses from /proc/kallsyms.
-// Module symbols are not included.
+// Kallsyms holds core-kernel symbol addresses from /proc/kallsyms, plus a
+// separate index of symbols exported by visible loadable modules.
 type Kallsyms struct {
-	addrs  map[string]uint64
-	names  map[uint64]string // built on first Name() call
-	sorted []symbol          // built on first Lookup() call
+	addrs     map[string]uint64
+	names     map[uint64]string // built on first Name() call
+	sorted    []symbol          // built on first Lookup() call
+	modAddrs  map[uint64]modSym // address -> module symbol (exact match)
+	modSorted []modSym          // built on first LookupModule() call
 }
 
-// Name returns the symbol at exactly addr (the first one, if aliased).
+type modSym struct {
+	addr   uint64
+	name   string
+	module string
+}
+
+// Name returns the core-kernel symbol at exactly addr (the first one, if aliased).
 func (k *Kallsyms) Name(addr uint64) (string, bool) {
 	if k.names == nil {
 		k.names = make(map[uint64]string, len(k.addrs))
@@ -32,6 +40,47 @@ func (k *Kallsyms) Name(addr uint64) (string, bool) {
 	}
 	n, ok := k.names[addr]
 	return n, ok
+}
+
+// ModuleFunc returns the function and module name at exact entry address addr
+// if addr belongs to a visible loadable module in /proc/kallsyms.
+func (k *Kallsyms) ModuleFunc(addr uint64) (name, module string, ok bool) {
+	ms, ok := k.modAddrs[addr]
+	if !ok {
+		return "", "", false
+	}
+	return ms.name, ms.module, true
+}
+
+// LookupModule resolves addr to the nearest visible module symbol at or below
+// addr within maxModSymOffset (64 KiB). A module that hid itself with list_del
+// disappears from /proc/kallsyms, so its addresses do not resolve here.
+func (k *Kallsyms) LookupModule(addr uint64) (name, module string, offset uint64, ok bool) {
+	const maxModSymOffset = 64 * 1024
+	if len(k.modAddrs) == 0 {
+		return "", "", 0, false
+	}
+	if k.modSorted == nil {
+		k.modSorted = make([]modSym, 0, len(k.modAddrs))
+		for _, ms := range k.modAddrs {
+			k.modSorted = append(k.modSorted, ms)
+		}
+		sort.Slice(k.modSorted, func(i, j int) bool {
+			if k.modSorted[i].addr != k.modSorted[j].addr {
+				return k.modSorted[i].addr < k.modSorted[j].addr
+			}
+			return k.modSorted[i].name < k.modSorted[j].name
+		})
+	}
+	i := sort.Search(len(k.modSorted), func(i int) bool { return k.modSorted[i].addr > addr })
+	if i == 0 {
+		return "", "", 0, false
+	}
+	ms := k.modSorted[i-1]
+	if addr-ms.addr > maxModSymOffset {
+		return "", "", 0, false
+	}
+	return ms.name, ms.module, addr - ms.addr, true
 }
 
 // ErrAddressesHidden means /proc/kallsyms reports zero addresses,
@@ -50,15 +99,17 @@ func LoadKallsyms() (*Kallsyms, error) {
 
 // ParseKallsyms parses kallsyms-formatted text: "address type name [module]".
 func ParseKallsyms(r io.Reader) (*Kallsyms, error) {
-	ks := &Kallsyms{addrs: make(map[string]uint64, 1<<17)}
+	ks := &Kallsyms{
+		addrs:    make(map[string]uint64, 1<<17),
+		modAddrs: make(map[uint64]modSym, 1<<12),
+	}
 	nonZero := false
 
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
 		fields := strings.Fields(sc.Text())
-		if len(fields) < 3 || len(fields) > 3 {
-			// Skip malformed lines and module symbols ("[module]" 4th field).
+		if len(fields) < 3 || len(fields) > 4 {
 			continue
 		}
 		addr, err := strconv.ParseUint(fields[0], 16, 64)
@@ -68,6 +119,15 @@ func ParseKallsyms(r io.Reader) (*Kallsyms, error) {
 		if addr != 0 {
 			nonZero = true
 		}
+		if len(fields) == 4 {
+			mod := strings.TrimSuffix(strings.TrimPrefix(fields[3], "["), "]")
+			if mod != "" {
+				if prev, dup := ks.modAddrs[addr]; !dup || fields[2] < prev.name {
+					ks.modAddrs[addr] = modSym{addr: addr, name: fields[2], module: mod}
+				}
+			}
+			continue
+		}
 		if _, dup := ks.addrs[fields[2]]; !dup {
 			ks.addrs[fields[2]] = addr
 		}
@@ -75,7 +135,7 @@ func ParseKallsyms(r io.Reader) (*Kallsyms, error) {
 	if err := sc.Err(); err != nil {
 		return nil, fmt.Errorf("reading kallsyms: %w", err)
 	}
-	if len(ks.addrs) > 0 && !nonZero {
+	if (len(ks.addrs)+len(ks.modAddrs)) > 0 && !nonZero {
 		return nil, ErrAddressesHidden
 	}
 	return ks, nil

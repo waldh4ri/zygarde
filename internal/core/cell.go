@@ -62,15 +62,21 @@ func WrapBPF(op string, err error) error {
 	return &BPFError{Op: op, Err: err}
 }
 
+// MaxObservations caps the observations kept per Cell. A host with tens of
+// thousands of ftrace hooks would otherwise produce a report too large to
+// read, and a worker message too large to pass to the supervisor.
+const MaxObservations = 2000
+
 // Recorder collects a Cell's observations while it runs.
 type Recorder struct {
-	log      *slog.Logger
-	message  string
-	findings []Finding
-	observed []Finding
-	canaries []CanaryCheck
-	limits   []string
-	dropped  int // observations over MaxObservations
+	log       *slog.Logger
+	message   string
+	findings  []Finding
+	observed  []Finding
+	canaries  []CanaryCheck
+	limits    []string
+	footprint []FootprintItem
+	dropped   int // observations over MaxObservations
 }
 
 // NewRecorder returns an empty Recorder; the runner creates one per Cell.
@@ -90,11 +96,6 @@ func (r *Recorder) Suspicious(f Finding) {
 	r.log.Debug("finding", "description", f.Description)
 	r.findings = append(r.findings, f)
 }
-
-// MaxObservations caps the observations kept per Cell. A host with tens of
-// thousands of ftrace hooks would otherwise produce a report too large to
-// read, and a worker message too large to pass to the supervisor.
-const MaxObservations = 2000
 
 // Observe records context that is worth reporting but not suspicious by
 // itself, such as an inventory of legitimate hooks.
@@ -124,6 +125,14 @@ func (r *Recorder) Limit(format string, args ...any) {
 func (r *Recorder) Canary(canary, view string, observed bool) {
 	r.log.Debug("canary", "canary", canary, "view", view, "observed", observed)
 	r.canaries = append(r.canaries, CanaryCheck{Canary: canary, View: view, Observed: observed})
+}
+
+// Footprint records a transient artifact Zygarde created while scanning so
+// DFIR analysts can deconflict scanner activity from host audit/EDR logs.
+func (r *Recorder) Footprint(kind, value string) {
+	if value != "" {
+		r.footprint = append(r.footprint, FootprintItem{Kind: kind, Value: value})
+	}
 }
 
 // Message sets the summary line shown for the Cell.

@@ -90,6 +90,7 @@ func dotEntries(rec *core.Recorder, dir string, names map[string]bool, seen map[
 		}
 		suspicious++
 		details["executables"] = strings.Join(truncated(exes, 10), ", ")
+		fsutil.MergeMetadata(details, "first_exe_", fsutil.FileMetadata(exes[0]))
 		rec.Suspicious(core.Finding{
 			Description: fmt.Sprintf("Hidden %s %s in a system directory holds %d executable(s)", kindOf(st), path, len(exes)),
 			Details:     details,
@@ -111,32 +112,37 @@ func kindOf(st fs.FileInfo) string {
 }
 
 // executablesUnder lists executable regular files below dir, without
-// following symbolic links, within the walk limits.
+// following symbolic links, within the walk limits and using O_NOATIME.
 func executablesUnder(dir string) []string {
 	var out []string
 	seen := 0
-	base := strings.Count(dir, string(filepath.Separator))
-	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+	var walk func(cur string, depth int)
+	walk = func(cur string, depth int) {
+		if depth > maxWalkDepth || seen > maxWalkEntries {
+			return
+		}
+		entries, err := fsutil.ReadDirNoAtime(cur)
 		if err != nil {
-			return nil
+			return
 		}
-		if seen++; seen > maxWalkEntries {
-			return filepath.SkipAll
-		}
-		if d.IsDir() {
-			if strings.Count(path, string(filepath.Separator))-base >= maxWalkDepth {
-				return filepath.SkipDir
+		for _, d := range entries {
+			if seen++; seen > maxWalkEntries {
+				return
 			}
-			return nil
+			p := filepath.Join(cur, d.Name())
+			if d.IsDir() {
+				walk(p, depth+1)
+				continue
+			}
+			if !d.Type().IsRegular() {
+				continue
+			}
+			if st, err := d.Info(); err == nil && isExecutable(p, st) {
+				out = append(out, p)
+			}
 		}
-		if !d.Type().IsRegular() {
-			return nil
-		}
-		if st, err := d.Info(); err == nil && isExecutable(path, st) {
-			out = append(out, path)
-		}
-		return nil
-	})
+	}
+	walk(dir, 1)
 	return out
 }
 
@@ -146,8 +152,7 @@ func isExecutable(path string, st fs.FileInfo) bool {
 	if st.Mode().Perm()&0o111 != 0 {
 		return true
 	}
-	// Not os.Open: the entry may have been swapped for a FIFO or a device
-	// symlink since it was listed.
+	// fsutil.Open refuses symlinks, FIFOs and devices and uses O_NOATIME.
 	f, err := fsutil.Open(path)
 	if err != nil {
 		return false

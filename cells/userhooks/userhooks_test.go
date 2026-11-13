@@ -32,7 +32,8 @@ func TestParseEnviron(t *testing.T) {
 	}
 }
 
-// TestRun checks a fixture system with every kind of injection point.
+// TestRun checks a fixture system with every kind of injection point,
+// including poisoned ld.so.cache and injected libraries in /proc/<pid>/maps.
 func TestRun(t *testing.T) {
 	root := t.TempDir()
 	proc := t.TempDir()
@@ -50,6 +51,7 @@ func TestRun(t *testing.T) {
 	write(root, "/etc/ld.so.conf", "include ld.so.conf.d/*.conf\n/usr/local/lib\n", 0o644)
 	write(root, "/etc/ld.so.conf.d/x86_64.conf", "/usr/lib/x86_64-linux-gnu\n", 0o644)
 	write(root, "/etc/ld.so.conf.d/bad.conf", "/var/tmp/.lib\n", 0o644)
+	write(root, "/etc/ld.so.cache", "glibc-ld.so.cache1.1\x00/usr/lib/libc.so.6\x00/dev/shm/libpoison.so\x00", 0o644)
 
 	// Process 100 preloads a library that no longer exists in its root.
 	write(proc, "100/environ", "PATH=/bin\x00LD_PRELOAD=/opt/gone.so\x00", 0o644)
@@ -58,6 +60,8 @@ func TestRun(t *testing.T) {
 	}
 	write(proc, "101/environ", "LD_LIBRARY_PATH=/dev/shm/x:/usr/lib\x00", 0o644)
 	write(proc, "102/environ", "HOME=/root\x00", 0o644)
+	// Process 102 has a shared library injected in memory without LD_PRELOAD in environ.
+	write(proc, "102/maps", "7f0000000000-7f0000004000 r-xp 00000000 00:19 999 /dev/shm/injected.so (deleted)\n", 0o644)
 
 	c := &Cell{root: root, proc: proc}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -75,14 +79,16 @@ func TestRun(t *testing.T) {
 		"/etc/ld.so.preload preloads 2 libraries",
 		"Preloaded library /dev/shm/libevil.so (/etc/ld.so.preload): it lives in a memory-backed directory",
 		"searches /var/tmp/.lib for libraries",
+		"/etc/ld.so.cache resolves shared libraries from /dev/shm",
 		"Preloaded library /opt/gone.so (LD_PRELOAD of process 100): it is missing from disk",
+		"Executable library /dev/shm/injected.so (deleted) (mapped from a memory-backed directory) is mapped into 1 process(es)",
 	} {
 		if !strings.Contains(all, want) {
 			t.Errorf("missing finding %q in:\n%s", want, all)
 		}
 	}
-	if len(got) != 4 {
-		t.Errorf("got %d findings, want 4:\n%s", len(got), all)
+	if len(got) != 6 {
+		t.Errorf("got %d findings, want 6:\n%s", len(got), all)
 	}
 }
 

@@ -28,6 +28,7 @@ import (
 	"github.com/waldh4ri/zygarde/cells/userhooks"
 	"github.com/waldh4ri/zygarde/internal/canary"
 	"github.com/waldh4ri/zygarde/internal/core"
+	"github.com/waldh4ri/zygarde/internal/kernel"
 	"github.com/waldh4ri/zygarde/internal/report"
 	"github.com/waldh4ri/zygarde/internal/supervisor"
 )
@@ -57,6 +58,7 @@ func parseFlags(args []string) (options, error) {
 	fs.BoolVar(&o.noColor, "no-color", false, "disable colors (also disabled when NO_COLOR is set or output is not a terminal)")
 	fs.StringVar(&o.output, "o", "", "also save the JSON report to this file")
 	fs.StringVar(&o.output, "output", "", "also save the JSON report to this file")
+	fs.StringVar(&o.settings.PreserveDir, "preserve-dir", "", "directory where volatile suspicious binaries (deleted/memfd) are saved (mode 0700)")
 	fs.BoolVar(&o.noIsolate, "no-isolation", false, "run Cells in this process instead of a supervised worker")
 	fs.BoolVar(&o.list, "list", false, "list available Cells and exit")
 	fs.StringVar(&o.cells, "cells", "", "comma-separated Cell IDs to run (default: all)")
@@ -96,6 +98,13 @@ func selectCells(all []core.Cell, list string) ([]core.Cell, error) {
 		out = append(out, all[i])
 	}
 	return out, nil
+}
+
+func hasPrivileges() bool {
+	if st, err := kernel.SelfStatus(); err == nil && st.HasCaps {
+		return kernel.InInitUserNS() && (st.HasCap(kernel.CapSysAdmin) || st.HasCap(kernel.CapBPF))
+	}
+	return os.Geteuid() == 0
 }
 
 func main() {
@@ -148,10 +157,16 @@ func run() int {
 	}
 
 	out := newPrinter(os.Stdout, o.json, o.verbose, colorEnabled(os.Stdout, o.noColor), termWidth(os.Stdout))
-	if os.Geteuid() != 0 {
-		return out.fatal("zygarde must run as root to load eBPF programs (try: sudo zygarde)")
+	if !hasPrivileges() {
+		return out.fatal("zygarde needs CAP_BPF/CAP_SYS_ADMIN in the initial user namespace (try: sudo zygarde)")
 	}
-	rep := report.New(version)
+	if o.output != "" {
+		if err := checkOutputWritable(o.output); err != nil {
+			return out.fatal(fmt.Sprintf("cannot write output file %s: %v", o.output, err))
+		}
+	}
+
+	rep := report.New(version, os.Args[1:])
 	out.header(rep, selected)
 	canary.RemoveStale(canary.FileDir)
 
@@ -164,7 +179,12 @@ func run() int {
 	}()
 
 	var results []core.Result
-	cb := supervisor.Callbacks{Start: out.start, Result: out.result}
+	var workerPIDs []int
+	cb := supervisor.Callbacks{
+		Start:     out.start,
+		Result:    out.result,
+		WorkerPID: func(pid int) { workerPIDs = append(workerPIDs, pid) },
+	}
 	if o.noIsolate {
 		env := core.ProbeEnv(o.settings, log)
 		for _, c := range selected {
@@ -181,17 +201,24 @@ func run() int {
 		}
 	} else {
 		results = supervisor.Supervise(ctx, selected, os.Args[1:], log, cb)
+		rep.AddWorkerPIDs(workerPIDs)
 	}
 
 	rep.Finish(results)
 	saved := ""
+	saveErr := false
 	if o.output != "" {
 		if err := saveReport(rep, o.output); err != nil {
 			fmt.Fprintf(os.Stderr, "zygarde: saving report: %v\n", err)
+			saveErr = true
 		} else {
 			saved = o.output
 		}
 	}
 	out.summary(rep, saved)
-	return rep.ExitCode()
+	code := rep.ExitCode()
+	if saveErr && code == 0 {
+		return 1
+	}
+	return code
 }

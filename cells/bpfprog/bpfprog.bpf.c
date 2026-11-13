@@ -12,12 +12,20 @@
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 // ---------------------------------------------------------------------------
-// Kernel view: every loaded program, read from the program IDR.
+// Kernel view: every loaded program, read from the program IDR along with
+// forensic metadata (tag, load_time, loader UID, sizes) so even programs that
+// block BPF_PROG_GET_FD_BY_ID still yield full triage indicators.
 // ---------------------------------------------------------------------------
 
 struct prog_info {
 	__u32 id;
 	__u32 type;
+	__u32 expected_attach_type;
+	__u32 uid;
+	__u32 xlated_bytes;
+	__u32 jited_len;
+	__u64 load_time;
+	__u8 tag[8];
 	char name[16];
 };
 
@@ -35,6 +43,20 @@ int dump_bpf_prog(struct bpf_iter__bpf_prog *ctx)
 	struct bpf_prog_aux *aux = prog->aux;
 	info.id = aux->id;
 	info.type = prog->type;
+	info.expected_attach_type = prog->expected_attach_type;
+	info.xlated_bytes = prog->len * 8;
+	info.jited_len = prog->jited_len;
+	if (bpf_core_field_exists(aux->load_time))
+		info.load_time = BPF_CORE_READ(aux, load_time);
+	if (bpf_core_field_exists(aux->user)) {
+		struct user_struct *u = BPF_CORE_READ(aux, user);
+		if (u)
+			info.uid = BPF_CORE_READ(u, uid.val);
+	}
+#pragma unroll
+	for (int i = 0; i < 8; i++)
+		info.tag[i] = prog->tag[i];
+#pragma unroll
 	for (int i = 0; i < sizeof(info.name); i++)
 		info.name[i] = aux->name[i];
 
@@ -48,7 +70,6 @@ int dump_bpf_prog(struct bpf_iter__bpf_prog *ctx)
 // ---------------------------------------------------------------------------
 
 #define CMD_PROG_GET_NEXT_ID 11
-
 
 struct enum_call {
 	__u64 attr;
@@ -82,7 +103,7 @@ int BPF_PROG(bpf_enter, struct pt_regs *regs, long nr)
 	__u64 id = bpf_get_current_pid_tgid();
 	struct enum_call call = {};
 
-	if (nr != NR_bpf || PT_REGS_PARM1_SYSCALL(regs) != CMD_PROG_GET_NEXT_ID || !is_target())
+	if (nr != NR_bpf || (__u32)PT_REGS_PARM1_SYSCALL(regs) != CMD_PROG_GET_NEXT_ID || !is_target())
 		return 0;
 
 	call.attr = PT_REGS_PARM2_SYSCALL(regs);

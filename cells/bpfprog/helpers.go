@@ -28,11 +28,6 @@ var helperRisk = map[string]struct {
 }
 
 // helperCalls resolves the helper functions a loaded program calls.
-//
-// In the translated instructions the kernel returns (BPF_OBJ_GET_INFO_BY_FD),
-// a helper call's immediate is the helper's address relative to
-// __bpf_call_base (bpf_insn_prepare_dump() in kernel/bpf/syscall.c), so
-// kallsyms names it exactly.
 func helperCalls(prog *ebpf.Program, ks *kernel.Kallsyms, callBase uint64) ([]string, error) {
 	info, err := prog.Info()
 	if err != nil {
@@ -64,13 +59,9 @@ func resolveHelpers(insns asm.Instructions, ks *kernel.Kallsyms, callBase uint64
 	return names
 }
 
-// auditHelpers records programs that call helpers able to modify the system.
-// selfID is zygarde's own iterator program, whose bpf_seq_write() call must
-// be resolved: a canary for the decoding itself.
-//
-// A program attached to a sensitive point (directory listing, bpf(), kill,
-// ptrace) that can rewrite user memory or return values is suspicious even
-// when the helper alone would only be an observation.
+// auditHelpers records programs that call helpers able to modify the system,
+// as well as fmod_ret / LSM programs attached to sensitive rootkit hook points
+// (which modify return values directly via R0 without calling a helper).
 func auditHelpers(rec *core.Recorder, env *core.Env, progs map[uint32]bpfprogProgInfo, selfID uint32, attach map[uint32][]attachment) {
 	ks, err := env.Kallsyms()
 	if err != nil {
@@ -91,6 +82,30 @@ func auditHelpers(rec *core.Recorder, env *core.Env, progs map[uint32]bpfprogPro
 
 	var uninspectable []string
 	for _, id := range ids {
+		p := progs[id]
+		var sens []string
+		hasReturnModAttach := false
+		for _, a := range attach[id] {
+			if s := sensitive(a.Name); s != "" {
+				sens = append(sens, a.Where+" ("+s+")")
+				if a.AttachType == ebpf.AttachModifyReturn || ebpf.ProgramType(p.Type) == ebpf.LSM {
+					hasReturnModAttach = true
+				}
+			}
+		}
+
+		if id != selfID && hasReturnModAttach {
+			details := progBaseDetails(env, id, p)
+			details["attached_to"] = wheres(attach[id])
+			rec.Suspicious(core.Finding{
+				Description: fmt.Sprintf("BPF program #%d (%s) can override return values on %s", id, bpfutil.Int8String(p.Name[:]), strings.Join(sens, ", ")),
+				Details:     details,
+				Why: "fmod_ret and BPF-LSM programs change what the hooked kernel function returns directly via R0 " +
+					"(without calling bpf_override_return). On bpf(), kill(), ptrace() or getdents(), that can block scanners or protect hidden implants.",
+				Benign: "An endpoint security agent enforcing policy on bpf(), ptrace() or signal delivery. Check held_by and loaded_at.",
+			})
+		}
+
 		prog, err := ebpf.NewProgramFromID(ebpf.ProgramID(id))
 		if err != nil {
 			uninspectable = append(uninspectable, strconv.Itoa(int(id)))
@@ -116,27 +131,16 @@ func auditHelpers(rec *core.Recorder, env *core.Env, progs map[uint32]bpfprogPro
 			continue
 		}
 
-		p := progs[id]
-		var sens []string
-		for _, a := range attach[id] {
-			if s := sensitive(a.Name); s != "" {
-				sens = append(sens, a.Where+" ("+s+")")
-			}
-		}
 		for _, h := range helpers {
 			risk, ok := helperRisk[h]
 			if !ok {
 				continue
 			}
 			name := bpfutil.Int8String(p.Name[:])
-			details := map[string]string{
-				"program_id":   strconv.Itoa(int(id)),
-				"program_name": name,
-				"program_type": ebpf.ProgramType(p.Type).String(),
-				"helper":       h,
-				"capability":   risk.what,
-				"all_helpers":  strings.Join(helpers, ", "),
-			}
+			details := progBaseDetails(env, id, p)
+			details["helper"] = h
+			details["capability"] = risk.what
+			details["all_helpers"] = strings.Join(helpers, ", ")
 			desc := fmt.Sprintf("BPF program #%d (%s) calls %s: %s", id, name, h, risk.what)
 			if atts := attach[id]; len(atts) > 0 {
 				details["attached_to"] = wheres(atts)

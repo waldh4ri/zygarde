@@ -11,6 +11,7 @@ import (
 
 	"github.com/waldh4ri/zygarde/internal/bpfutil"
 	"github.com/waldh4ri/zygarde/internal/core"
+	"github.com/waldh4ri/zygarde/internal/fsutil"
 )
 
 // pfKthread marks kernel threads (include/linux/sched.h; unchanged since 2.6).
@@ -22,25 +23,26 @@ var kthreadPrefixes = []string{
 	"kworker/", "ksoftirqd/", "migration/", "rcu_", "cpuhp/", "watchdog/", "irq/",
 	"kthreadd", "kswapd", "kcompactd", "khugepaged", "kauditd", "khungtaskd", "kblockd",
 	"jbd2/", "scsi_eh_", "scsi_tmf_", "kdevtmpfs", "oom_reaper", "writeback", "kintegrityd",
-	"ksmd", "kthrotld", "kstrp", "ipv6_addrconf", "idle_inject/", "card0-crtc", "netns",
+	"ksmd", "kthrotld", "kstrp", "ipv6_addrconf", "idle_inject/", "card0-crtc", "card1-crtc", "netns",
+	"psimon", "hv_balloon", "ecryptfs-kthread",
 }
 
-// looksLikeKthread reports whether a name imitates a kernel thread: a known
-// kernel thread name, or a bracketed command line like ps prints for them.
 func looksLikeKthread(comm, cmdline string) bool {
 	if strings.HasPrefix(cmdline, "[") && strings.Contains(cmdline, "]") {
 		return true
 	}
+	if strings.HasPrefix(comm, "[") && strings.Contains(comm, "]") {
+		return true
+	}
+	cleanComm := strings.Trim(comm, "[]")
 	for _, p := range kthreadPrefixes {
-		if strings.HasPrefix(comm, p) {
+		if strings.HasPrefix(cleanComm, p) {
 			return true
 		}
 	}
 	return false
 }
 
-// exeLocation classifies where a process's executable lives, from the
-// /proc/<pid>/exe link target. It returns "" for ordinary locations.
 func exeLocation(target string) string {
 	deleted := strings.HasSuffix(target, " (deleted)")
 	path := strings.TrimSuffix(target, " (deleted)")
@@ -59,13 +61,27 @@ func exeLocation(target string) string {
 	return ""
 }
 
+func suspiciousExe(euid uint32, target, loc string) bool {
+	deleted := strings.HasSuffix(target, " (deleted)")
+	path := strings.TrimSuffix(target, " (deleted)")
+	if loc == "deleted" && packaged(path) {
+		return false
+	}
+	if loc == "memfd" {
+		return true
+	}
+	if deleted && (loc == "memory-backed directory" || loc == "temporary directory" || loc == "hidden directory") {
+		return true
+	}
+	return euid == 0
+}
+
 func under(path, dir string) bool {
 	return path == dir || strings.HasPrefix(path, dir+"/")
 }
 
-// hiddenDir reports whether any directory component of path starts with a dot.
 func hiddenDir(path string) bool {
-	parts := strings.Split(filepath.Dir(path), "/")
+	parts := strings.Split(filepath.ToSlash(filepath.Dir(path)), "/")
 	for _, p := range parts {
 		if strings.HasPrefix(p, ".") && p != "." && p != ".." {
 			return true
@@ -74,8 +90,6 @@ func hiddenDir(path string) bool {
 	return false
 }
 
-// packaged reports whether path is in a directory managed by the package
-// manager, where an upgrade leaves running processes with a deleted binary.
 func packaged(path string) bool {
 	for _, d := range []string{"/usr", "/bin", "/sbin", "/lib", "/lib64", "/opt", "/snap", "/nix"} {
 		if under(path, d) {
@@ -85,13 +99,8 @@ func packaged(path string) bool {
 	return false
 }
 
-// paddingRun is the shortest run of spaces or NULs, followed by more
-// arguments, treated as padding: enough to push the rest out of ps's view.
 const paddingRun = 32
 
-// padded reports whether a raw /proc/<pid>/cmdline hides arguments behind a
-// long run of spaces or NULs. Trailing NULs alone are left by programs that
-// rewrite their title (setproctitle) and are not counted.
 func padded(cmdline []byte) (int, bool) {
 	trimmed := bytes.TrimRight(cmdline, "\x00")
 	run, longest := 0, 0
@@ -109,11 +118,10 @@ func padded(cmdline []byte) (int, bool) {
 }
 
 // checkMasquerade looks for processes disguised as kernel threads or running
-// from deleted, memory-backed or out-of-place executables. procs holds the
-// processes seen in both kernel snapshots. alive returns the start time of
-// every process in a kernel snapshot taken after the /proc reads: a PID
-// reused while /proc was being read is not judged on the new process's files.
-func checkMasquerade(rec *core.Recorder, procs map[uint32]processTaskInfo, skip map[uint32]bool, alive func() (map[uint32]uint64, error)) error {
+// from deleted, memory-backed or out-of-place executables. Findings are only
+// emitted once alive() confirms each process outlived the reads of its /proc
+// files (same start_time), so a PID reused mid-read is never misjudged.
+func checkMasquerade(env *core.Env, rec *core.Recorder, procs map[uint32]processTaskInfo, skip map[uint32]bool, alive func() (map[uint32]uint64, error)) error {
 	selfExe, _ := os.Readlink("/proc/self/exe")
 	pids := make([]uint32, 0, len(procs))
 	for pid := range procs {
@@ -121,8 +129,6 @@ func checkMasquerade(rec *core.Recorder, procs map[uint32]processTaskInfo, skip 
 	}
 	sort.Slice(pids, func(i, j int) bool { return pids[i] < pids[j] })
 
-	// Results are recorded once the kernel confirms each process outlived
-	// the reads of its /proc files.
 	type pending struct {
 		pid   uint32
 		start uint64
@@ -137,26 +143,47 @@ func checkMasquerade(rec *core.Recorder, procs map[uint32]processTaskInfo, skip 
 		}
 		dir := "/proc/" + strconv.Itoa(int(pid))
 		comm := bpfutil.Int8String(t.Comm[:])
-		raw, _ := os.ReadFile(dir + "/cmdline")
+		raw, cmdErr := fsutil.ReadFileNoAtime(dir + "/cmdline")
 		cmdline := strings.TrimRight(strings.ReplaceAll(string(raw), "\x00", " "), " ")
 		exe, exeErr := os.Readlink(dir + "/exe")
 		if exeErr == nil && exe == selfExe {
-			continue // zygarde itself, its worker and canaries
+			continue
 		}
-		details := func() map[string]string {
-			return map[string]string{
+		details := func(enrich bool) map[string]string {
+			d := map[string]string{
 				"pid":     strconv.Itoa(int(pid)),
 				"comm":    comm,
 				"cmdline": truncate(cmdline, 200),
+				"uid":     strconv.Itoa(int(t.Uid)),
 				"euid":    strconv.Itoa(int(t.Euid)),
 				"ppid":    strconv.Itoa(int(t.Ppid)),
 				"exe":     exe,
 			}
+			if env != nil {
+				if ts := env.FormatBootOffset(t.StartTime); ts != "" {
+					d["started_at"] = ts
+				}
+			}
+			if enrich {
+				enrichProcFiles(env, int(pid), comm, d)
+			}
+			return d
+		}
+
+		isKthreadMask := looksLikeKthread(comm, cmdline)
+		emptyCmd := !isKthreadMask && cmdErr == nil && len(bytes.TrimRight(raw, "\x00")) == 0 && t.HasMm != 0
+		var loc string
+		if exeErr == nil {
+			loc = exeLocation(exe)
+		}
+		padLen, isPadded := padded(raw)
+		if !isKthreadMask && !emptyCmd && loc == "" && !isPadded {
+			continue
 		}
 
 		queue = append(queue, pending{pid, t.StartTime, func() {
-			if looksLikeKthread(comm, cmdline) {
-				d := details()
+			if isKthreadMask {
+				d := details(true)
 				d["has_user_address_space"] = strconv.FormatBool(t.HasMm != 0)
 				rec.Suspicious(core.Finding{
 					Description: fmt.Sprintf("Process %d (%s) poses as a kernel thread but is a user process", pid, firstNonEmpty(cmdline, comm)),
@@ -165,40 +192,37 @@ func checkMasquerade(rec *core.Recorder, procs map[uint32]processTaskInfo, skip 
 						"it runs a user program. Malware renames itself this way to blend into ps output.",
 					Benign: "Rare. Check the executable (exe above) and its package; some tools rename worker processes.",
 				})
+			} else if emptyCmd {
+				rec.Observe(fmt.Sprintf("User process %d (%s) has an empty command line (shown as [%s] in ps)", pid, comm, comm), details(false))
 			}
 
-			if exeErr == nil {
-				if loc := exeLocation(exe); loc != "" {
-					path := strings.TrimSuffix(exe, " (deleted)")
-					desc := fmt.Sprintf("Process %d (%s) runs from a %s executable: %s", pid, comm, loc, exe)
-					if loc == "deleted" {
-						desc = fmt.Sprintf("Process %d (%s) runs from a deleted executable: %s", pid, comm, exe)
-					}
-					d := details()
-					d["location"] = loc
-					// Package upgrades leave daemons running from deleted
-					// binaries in system directories: not worth a finding.
-					upgraded := loc == "deleted" && packaged(path)
-					if t.Euid == 0 && !upgraded {
-						rec.Suspicious(core.Finding{
-							Description: desc,
-							Details:     d,
-							Why: "A root process whose program lives only in memory, in a temporary directory or a hidden one, " +
-								"or was deleted after starting, leaves nothing on disk to inspect: a common way to run " +
-								"implants. The binary can still be recovered from /proc/<pid>/exe.",
-							Benign: "Software updated in place outside the package manager, installers running from /tmp, " +
-								"or tools that execute from a memfd (e.g. runc while starting a container).",
-						})
-					} else {
-						rec.Observe(desc, d)
-					}
+			if loc != "" {
+				desc := fmt.Sprintf("Process %d (%s) runs from a %s executable: %s", pid, comm, loc, exe)
+				if loc == "deleted" {
+					desc = fmt.Sprintf("Process %d (%s) runs from a deleted executable: %s", pid, comm, exe)
+				}
+				susp := suspiciousExe(t.Euid, exe, loc)
+				d := details(susp)
+				d["location"] = loc
+				if susp {
+					rec.Suspicious(core.Finding{
+						Description: desc,
+						Details:     d,
+						Why: "A process whose program lives only in memory (memfd), was deleted from a temporary or " +
+							"memory-backed directory after starting, or runs as root from an unusual path leaves " +
+							"little on disk to inspect: a common way to run fileless implants. The binary can still be recovered from /proc/<pid>/exe.",
+						Benign: "Software updated in place outside the package manager, installers running from /tmp, " +
+							"or container runtimes (e.g. runc) briefly executing from a memfd.",
+					})
+				} else {
+					rec.Observe(desc, d)
 				}
 			}
 
-			if n, ok := padded(raw); ok {
-				d := details()
-				d["padding"] = strconv.Itoa(n)
-				rec.Observe(fmt.Sprintf("Process %d (%s) pads its command line with %d blank characters", pid, comm, n), d)
+			if isPadded {
+				d := details(false)
+				d["padding"] = strconv.Itoa(padLen)
+				rec.Observe(fmt.Sprintf("Process %d (%s) pads its command line with %d blank characters", pid, comm, padLen), d)
 			}
 		}})
 	}
