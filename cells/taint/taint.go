@@ -13,6 +13,7 @@ import (
 
 	"github.com/waldh4ri/zygarde/internal/core"
 	"github.com/waldh4ri/zygarde/internal/fsutil"
+	"github.com/waldh4ri/zygarde/internal/kmsg"
 )
 
 // flag is a taint bit that the kernel charges to a module
@@ -51,10 +52,13 @@ var systemFlags = []flag{
 type Cell struct {
 	tainted   string
 	sysModule string
+	kmsg      func() ([]kmsg.Record, error) // the kernel log (replaced in tests)
 }
 
 // New returns the kernel taint Cell.
-func New() *Cell { return &Cell{tainted: "/proc/sys/kernel/tainted", sysModule: "/sys/module"} }
+func New() *Cell {
+	return &Cell{tainted: "/proc/sys/kernel/tainted", sysModule: "/sys/module", kmsg: kmsg.Read}
+}
 
 func (*Cell) ID() string                    { return "kernel_taint" }
 func (*Cell) Name() string                  { return "Kernel Taint Consistency" }
@@ -114,9 +118,15 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 		})
 	}
 
-	if len(unexplained) == 0 {
+	oopses := c.checkOopses(rec, mask)
+	switch {
+	case oopses > 0 && len(unexplained) > 0:
+		rec.Message("%d kernel oops(es) logged, %d module taint flag(s) not explained by any visible module", oopses, len(unexplained))
+	case oopses > 0:
+		rec.Message("%d kernel oops(es) since boot", oopses)
+	case len(unexplained) == 0:
 		rec.Message("%s", summary(mask, carriers))
-	} else {
+	default:
 		rec.Message("%d module taint flag(s) not explained by any visible module", len(unexplained))
 	}
 	return nil
