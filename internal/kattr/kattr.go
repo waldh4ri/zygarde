@@ -16,6 +16,7 @@ package kattr
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -141,16 +142,22 @@ func Load() (*Resolver, error) {
 	defer ks.Close()
 
 	var mods io.Reader
-	if f, err := os.Open("/proc/modules"); err == nil {
-		defer f.Close()
-		mods = f
+	var visible map[string]bool // modules listed in /proc/modules
+	if b, err := os.ReadFile("/proc/modules"); err == nil {
+		mods = bytes.NewReader(b)
+		if list, err := ParseModules(bytes.NewReader(b)); err == nil {
+			visible = make(map[string]bool, len(list))
+			for _, m := range list {
+				visible[m.Name] = true
+			}
+		}
 	}
 	var vm io.Reader
 	if f, err := os.Open("/proc/vmallocinfo"); err == nil {
 		defer f.Close()
 		vm = f
 	}
-	r, err := New(ks, mods, ReadSections("/sys/module"), vm)
+	r, err := New(ks, mods, ReadSections("/sys/module", visible), vm)
 	if errors.Is(err, ErrAddressesHidden) {
 		return nil, kernel.HiddenAddressesError()
 	}
@@ -159,13 +166,22 @@ func Load() (*Resolver, error) {
 
 // ReadSections returns, per module, the start address of each ELF section
 // from <dir>/<module>/sections. Unreadable entries are skipped.
-func ReadSections(dir string) map[string]map[string]uint64 {
+//
+// only, when not nil, restricts the read to those modules. Callers pass the
+// modules listed in /proc/modules: a module that is in /sys/module but hidden
+// from that list is one a rootkit unlinked, and Diamorphine-style hiding frees
+// its section attributes, so reading them is a use-after-free in the kernel
+// (a general protection fault in sysfs_kf_bin_read that kills the reader).
+func ReadSections(dir string, only map[string]bool) map[string]map[string]uint64 {
 	out := map[string]map[string]uint64{}
 	mods, err := os.ReadDir(dir)
 	if err != nil {
 		return out
 	}
 	for _, m := range mods {
+		if only != nil && !only[m.Name()] {
+			continue
+		}
 		sdir := filepath.Join(dir, m.Name(), "sections")
 		entries, err := os.ReadDir(sdir)
 		if err != nil {
