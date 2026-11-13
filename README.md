@@ -83,6 +83,23 @@ make vm-report     # Markdown matrix of the results
 
 On a clean VM every Cell must be OK or SKIPPED with all canaries seen. Fixture targets (`*-fixtures`) plant harmless stand-ins to check that detections still fire. See [docs/testing.md](docs/testing.md).
 
+## Validated against real samples
+
+Besides the clean-kernel matrix and planted fixtures, Zygarde has been run against real Linux rootkit and backdoor samples on disposable VMs (Ubuntu 7.0, AlmaLinux 10 with SELinux, Debian 11, and emulated arm64), each compared with a clean baseline scan of the same VM.
+
+| Detected | Through |
+|----------|---------|
+| BPFDoor (several builds, including ones with 0 detections on VirusTotal) | `hidden_process`, `hidden_socket` (packet-sniffer rule) |
+| Prism | `hidden_socket` (raw ICMP socket) |
+| HiddenWasp | `hidden_file` |
+| Ebury (trojaned `libkeyutils`) | `userspace_hooks` (package checksum verification) |
+| LinkPro (preload module), Auto-color, perfctl | `userspace_hooks` |
+| Symbiote, Azazel, Jynx, OrBit, Facefish, libprocesshider and other process hiders | `userspace_hooks` |
+| Winnti (process named `[scsi_eh]`), XMRig (`.kworker_sys`), Mirai/JoyBot-style bot (memfd, `kworker`) | `hidden_process` |
+| Diamorphine (module failed to load) | `kernel_taint` |
+
+Not detected: persistence-only implants that hide nothing until a later stage arrives (a Go agent posing as `systemd-netd`), and dormant or silent samples (Skidmap, Kaiji, XorDDoS, a dormant Prism variant). Prebuilt kernel-module and libbpf 0.x eBPF rootkits (Boopkit, TripleCross, ebpfkit, most LKMs) do not load on current kernels, so the kernel-side Cells were exercised through the fixtures instead.
+
 ## Documentation
 
 | | |
@@ -101,6 +118,12 @@ On a clean VM every Cell must be OK or SKIPPED with all canaries seen. Fixture t
 - [x86/syscall: Don't force use of indirect calls for system calls](https://git.kernel.org/torvalds/c/1e3ad78334a6)
 - [libbpf/vmlinux.h](https://github.com/libbpf/vmlinux.h) (source of `bpf/include/arm64/vmlinux.h`)
 - Rootkit analyses behind the checks: Synacktiv, [LinkPro](https://www.synacktiv.com/publications/linkpro-analyse-dun-rootkit-ebpf); Sandfly Security, [Linux Scales eBPF Rootkit](https://sandflysecurity.com/blog/linux-scales-ebpf-rootkit-detection-and-analysis); ExaTrack, [Mélofée](https://exatrack.com/publications/melofee.html); Elastic Security Labs, [Linux Rootkits 2: Caught in the Act](https://www.elastic.co/security-labs/threat-command/linux-rootkits-2-caught-in-the-act)
+- Malware and rootkit families the checks were designed against or tested on (see [Validated against real samples](#validated-against-real-samples)):
+  - **eBPF:** LinkPro, Scales, Boopkit, TripleCross, ebpfkit
+  - **Kernel modules and function hooking:** Reptile, Mélofée (khook), Diamorphine, adore-ng, Snapekit, VoidLink, Singularity, Syslogk, FontOnLake
+  - **Backdoors waiting for a trigger packet:** BPFDoor (Red Menshen), Prism
+  - **`LD_PRELOAD` and library trojans:** Azazel, Jynx, OrBit, Symbiote, Facefish, HiddenWasp, Auto-color, perfctl, Ebury, libprocesshider
+  - **Disguised processes and loaders:** Winnti, XMRig miners, Mirai/JoyBot-style bots, Skidmap, Kaiji, XorDDoS
 
 ## License
 
