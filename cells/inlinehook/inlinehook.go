@@ -9,8 +9,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,26 +19,31 @@ import (
 
 	"github.com/waldh4ri/zygarde/internal/bpfutil"
 	"github.com/waldh4ri/zygarde/internal/core"
+	"github.com/waldh4ri/zygarde/internal/fsutil"
 	"github.com/waldh4ri/zygarde/internal/kernel"
 )
 
-const maxFuncs = 64 // MAX_FUNCS in inlinehook.bpf.c
+const (
+	maxFuncs  = 64 // MAX_FUNCS in inlinehook.bpf.c
+	codeBytes = 24 // CODE_BYTES in inlinehook.bpf.c
+)
 
 // canarySymbol is where the reader's kprobe is attached (sys_getuid).
 const canarySymbol = "__x64_sys_getuid"
 
 // hotPaths are functions rootkits hook to hide files, processes, connections
-// and modules: syscall handlers, directory listing, /proc, the /proc/net show
-// functions, and module loading. Reptile-family rootkits (khook) patch
-// several of these directly.
+// and modules: syscall dispatchers & handlers, directory listing, /proc, the
+// /proc/net and sock_diag handlers, and module/cred/audit hooks.
 var hotPaths = []string{
+	"x64_sys_call", "do_syscall_64",
 	"__x64_sys_getdents64", "__x64_sys_getdents", "__x64_sys_kill", "__x64_sys_bpf",
 	"__x64_sys_openat", "__x64_sys_read", "__x64_sys_ptrace", "__x64_sys_recvmsg",
 	"__x64_sys_init_module", "__x64_sys_finit_module", "__x64_sys_delete_module", "__x64_sys_execve",
 	"filldir64", "filldir", "fillonedir", "iterate_dir",
 	"proc_pid_readdir", "proc_root_readdir", "proc_pid_lookup", "proc_root_lookup", "next_tgid",
 	"vfs_read", "vfs_statx", "do_sys_openat2", "__d_lookup", "__d_lookup_rcu",
-	"tcp4_seq_show", "tcp6_seq_show", "udp4_seq_show", "udp6_seq_show",
+	"tcp4_seq_show", "tcp6_seq_show", "udp4_seq_show", "udp6_seq_show", "raw_seq_show", "packet_seq_show",
+	"inet_diag_handler_cmd", "tcp_diag_dump",
 	"inet_ioctl", "packet_rcv", "tpacket_rcv",
 	"load_elf_binary", "copy_creds", "commit_creds", "audit_alloc", "do_init_module",
 }
@@ -51,12 +56,6 @@ var ftraceTargets = map[string]bool{
 
 // Cell reads the first bytes of the functions on rootkits' hot paths and
 // checks them against what the kernel itself writes there.
-//
-// On x86-64, a function starts with an optional endbr64 and a 5-byte ftrace
-// site: a NOP when unused, or a call to ftrace (or to a trampoline) when
-// hooked through ftrace, which enabled_functions then lists. A jump in that
-// place sends every call elsewhere: an inline hook (khook, used by Reptile
-// and Mélofée). A call that ftrace doesn't account for is one too.
 type Cell struct{}
 
 // New returns the inline hook Cell.
@@ -66,7 +65,7 @@ func (*Cell) ID() string             { return "inline_hook" }
 func (*Cell) Name() string           { return "Inline Hook Detection" }
 func (*Cell) Timeout() time.Duration { return 15 * time.Second }
 func (*Cell) Description() string {
-	return "Reads the first instructions of syscall handlers and VFS, /proc and /proc/net functions and flags jumps out of the kernel's text"
+	return "Reads the first instructions of syscall handlers and VFS, /proc and /proc/net functions and flags jumps out of the kernel's text or overwritten ftrace sites"
 }
 
 func (*Cell) Supported(env *core.Env) error {
@@ -129,18 +128,22 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 		funcs = append(funcs, function{canarySymbol, canarySymbol, canaryAddr})
 	}
 
-	code, err := readCode(env, funcs)
+	code, readErrs, err := readCode(env, rec, funcs)
 	if err != nil {
 		return err
 	}
 	if haveCanary {
 		last := len(funcs) - 1
-		e := decodeEntry(code[last], canaryAddr)
-		rec.Canary("kprobe on "+canarySymbol, "first instructions read from kernel memory", e.Kind == entryCall || e.Kind == entryInt3)
-		funcs, code = funcs[:last], code[:last]
+		if readErrs[last] == 0 {
+			e := decodeEntry(code[last], canaryAddr)
+			rec.Canary("kprobe on "+canarySymbol, "first instructions read from kernel memory", e.Kind == entryCall || e.Kind == entryInt3)
+		} else {
+			rec.Canary("kprobe on "+canarySymbol, "first instructions read from kernel memory", false)
+		}
+		funcs, code, readErrs = funcs[:last], code[:last], readErrs[:last]
 	}
 
-	traced, tracedErr := enabledFunctions()
+	traced, filterable, tracedErr := tracefsState()
 	if tracedErr != nil {
 		rec.Limit("Calls at ftrace sites not checked against ftrace's own list (%v)", tracedErr)
 	}
@@ -152,16 +155,22 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	checked, hooked := 0, 0
 	unknown := []string{}
 	for i, f := range funcs {
+		if readErrs[i] != 0 {
+			rec.Limit("Could not read instructions of %s (%#x): errno %d", f.sym, f.addr, -readErrs[i])
+			continue
+		}
 		e := decodeEntry(code[i], f.addr)
-		suspicious, observe, why := judge(e, f, ks, inText, traced, tracedErr == nil)
+		hasFtraceSite := filterable != nil && (filterable[f.sym] || filterable[f.name])
+		suspicious, observe, why := judge(e, f, ks, inText, traced, tracedErr == nil, hasFtraceSite)
 		if (suspicious || observe != "") && again == nil {
-			if again, err = readCode(env, funcs); err != nil {
-				return err
+			var err2 error
+			if again, _, err2 = readCode(env, nil, funcs); err2 != nil {
+				return err2
 			}
 		}
 		if suspicious || observe != "" {
 			e2 := decodeEntry(again[i], f.addr)
-			if e2.Kind != e.Kind || e2.Target != e.Target {
+			if e2.Kind != e.Kind || e2.Target != e.Target || e2.PostNop != e.PostNop {
 				continue // changed between reads: ftrace at work
 			}
 		}
@@ -171,13 +180,16 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 			"address":  fmt.Sprintf("%#x", f.addr),
 			"bytes":    fmt.Sprintf("% x", code[i]),
 			"entry":    e.Kind.String(),
+			"offset":   strconv.Itoa(e.Offset),
 		}
 		if e.Target != 0 {
 			details["target"] = fmt.Sprintf("%#x", e.Target)
 			if name, off, ok := ks.Lookup(e.Target); ok && inText(e.Target) {
 				details["target_symbol"] = fmt.Sprintf("%s+%#x", name, off)
+			} else if fn, mod, off, ok := ks.LookupModule(e.Target); ok {
+				details["target_symbol"] = fmt.Sprintf("%s+%#x [%s]", fn, off, mod)
 			} else {
-				details["target_symbol"] = "outside the kernel's text (module, BPF or allocated memory)"
+				details["target_symbol"] = "outside the kernel's text (hidden module, BPF or allocated memory)"
 			}
 		}
 		switch {
@@ -186,16 +198,20 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 			rec.Suspicious(core.Finding{
 				Description: fmt.Sprintf("%s starts with %s", f.sym, why),
 				Details:     details,
-				Why: "The kernel only ever writes a NOP or an ftrace call at the start of these functions. A jump " +
-					"there diverts every call to other code before the function runs: an inline hook, the way " +
-					"Reptile-family rootkits hide files, processes and connections without ftrace or kprobes.",
+				Why: "The kernel only ever writes a NOP or an ftrace call at the start of traceable functions, and " +
+					"never jumps out of kernel text right after it. Overwriting the prologue diverts or neuters " +
+					"every call without registering in ftrace or kprobes.",
 				Benign: "Very rare: some security products and old live-patching tools patch functions directly. " +
 					"Check which module owns the target address.",
 			})
 		case observe != "":
 			rec.Observe(fmt.Sprintf("%s starts with %s", f.sym, observe), details)
 		case e.Kind == entryUnknown:
-			unknown = append(unknown, f.sym)
+			// Functions marked noinstr/notrace (e.g. x64_sys_call) legitimately
+			// have no ftrace NOP; only report when we couldn't check filterable.
+			if filterable == nil {
+				unknown = append(unknown, f.sym)
+			}
 		}
 	}
 	if len(unknown) > 0 {
@@ -210,17 +226,44 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	return nil
 }
 
-// judge decides what an entry means. It returns whether it is suspicious,
-// or an observation to record, with a phrase describing the entry.
-func judge(e entry, f function, ks *kernel.Kallsyms, inText func(uint64) bool, traced map[string]bool, haveTraced bool) (bool, string, string) {
+// judge decides what an entry means. hasFtraceSite is true when tracefs's
+// available_filter_functions confirms the compiler placed a 5-byte ftrace slot
+// at this function's entry.
+func judge(e entry, f function, ks *kernel.Kallsyms, inText func(uint64) bool, traced map[string]bool, haveTraced, hasFtraceSite bool) (bool, string, string) {
 	target := fmt.Sprintf("%#x", e.Target)
 	if name, off, ok := ks.Lookup(e.Target); ok && inText(e.Target) {
 		target = fmt.Sprintf("%s+%#x", name, off)
+	} else if fn, mod, off, ok := ks.LookupModule(e.Target); ok {
+		target = fmt.Sprintf("%s+%#x [%s]", fn, off, mod)
 	}
+
+	if e.PostNop {
+		// Immediately after an unused 5-byte ftrace NOP: normal kernel code may
+		// contain intra-text static_branch or tail-call jumps, but never jumps
+		// out of _stext.._etext, indirect jumps or push+ret/movabs gadgets.
+		switch e.Kind {
+		case entryIndirect:
+			return true, "", "an indirect jump immediately after its ftrace NOP"
+		case entryJump:
+			if !inText(e.Target) || e.Gadget {
+				return true, "", "a jump immediately after its ftrace NOP to " + target
+			}
+		}
+		return false, "", ""
+	}
+
 	switch e.Kind {
 	case entryJump:
 		if !inText(e.Target) {
+			if haveTraced && (traced[f.sym] || traced[f.name]) {
+				// CONFIG_DYNAMIC_FTRACE_WITH_JMP direct(jmp) trampoline; hook_inventory attributes it.
+				return false, "", ""
+			}
 			return true, "", "a jump out of the kernel's text, to " + target
+		}
+		if hasFtraceSite || e.Gadget {
+			// Ftrace never writes a jump to another core-kernel symbol over a traceable __fentry__ slot.
+			return true, "", "a jump overwriting its ftrace site, to " + target
 		}
 		return false, "a jump to " + target + " inside the kernel's text", ""
 	case entryIndirect:
@@ -239,88 +282,112 @@ func judge(e entry, f function, ks *kernel.Kallsyms, inText func(uint64) bool, t
 		return true, "", "a call to " + target + " that ftrace did not place there"
 	case entryInt3:
 		return false, "a breakpoint (int3), e.g. a kprobe not using ftrace", ""
+	case entryUnknown:
+		if hasFtraceSite {
+			return true, "", "non-standard instructions overwriting its ftrace site"
+		}
 	}
 	return false, "", ""
 }
 
-// readCode triggers the BPF reader and returns the first bytes of each function.
-func readCode(env *core.Env, funcs []function) ([][]byte, error) {
+// readCode triggers the BPF reader and returns the first bytes and per-entry
+// kernel-read errno for each function.
+func readCode(env *core.Env, rec *core.Recorder, funcs []function) ([][]byte, []int32, error) {
 	spec, err := loadInlinehook()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := bpfutil.SetTarget(env, spec); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var addrs [maxFuncs]uint64
 	for i, f := range funcs {
 		addrs[i] = f.addr
 	}
 	if err := bpfutil.SetVariable(spec, "nr_funcs", uint32(len(funcs))); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := bpfutil.SetVariable(spec, "addrs", addrs); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var objs inlinehookObjects
 	if err := bpfutil.Load(env, spec, &objs); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer objs.Close()
+	if rec != nil {
+		if id, err := bpfutil.ProgramID(objs.ReadCode); err == nil {
+			rec.Footprint("bpf_prog_id", strconv.FormatUint(uint64(id), 10))
+		}
+	}
 
 	// cilium/ebpf adds the architecture prefix (__x64_sys_getuid).
 	kp, err := link.Kprobe("sys_getuid", objs.ReadCode, nil)
 	if err != nil {
-		return nil, core.WrapBPF("attach kprobe sys_getuid", err)
+		return nil, nil, core.WrapBPF("attach kprobe sys_getuid", err)
 	}
 	defer kp.Close()
 
-	out := make([][]byte, len(funcs))
+	var first inlinehookFuncCode
 	for attempt := 0; attempt < 3; attempt++ {
 		unix.Getuid() // a real syscall: Go doesn't cache getuid
-		var c inlinehookFuncCode
-		if err := objs.Prologues.Lookup(uint32(0), &c); err != nil {
-			return nil, core.WrapBPF("read prologues map", err)
+		if err := objs.Prologues.Lookup(uint32(0), &first); err != nil {
+			return nil, nil, core.WrapBPF("read prologues map", err)
 		}
-		if c.Bytes != [16]uint8{} {
+		if first.Fired != 0 {
 			break
 		}
 	}
+	if first.Fired == 0 {
+		return nil, nil, errors.New("the kprobe on getuid() never fired")
+	}
+
+	out := make([][]byte, len(funcs))
+	errs := make([]int32, len(funcs))
 	for i := range funcs {
 		var c inlinehookFuncCode
 		if err := objs.Prologues.Lookup(uint32(i), &c); err != nil {
-			return nil, core.WrapBPF("read prologues map", err)
+			return nil, nil, core.WrapBPF("read prologues map", err)
 		}
-		if c.Bytes == [16]uint8{} {
-			return nil, errors.New("the kprobe on getuid() never fired")
-		}
+		errs[i] = c.Err
 		out[i] = append([]byte(nil), c.Bytes[:]...)
 	}
-	return out, nil
+	return out, errs, nil
 }
 
-// enabledFunctions returns the functions ftrace has patched, from
-// <tracefs>/enabled_functions.
-func enabledFunctions() (map[string]bool, error) {
+// tracefsState returns the functions ftrace has currently patched
+// (enabled_functions) and all functions that carry a compile-time ftrace site
+// (available_filter_functions).
+func tracefsState() (traced, filterable map[string]bool, err error) {
 	dir, cleanup, err := kernel.Tracefs()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer cleanup()
-	f, err := os.Open(filepath.Join(dir, "enabled_functions"))
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	out := map[string]bool{}
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for sc.Scan() {
-		line := sc.Text()
-		if line == "" || line[0] == ' ' || line[0] == '\t' {
-			continue
+
+	readFirstCol := func(name string) (map[string]bool, error) {
+		f, err := fsutil.OpenNoAtime(filepath.Join(dir, name))
+		if err != nil {
+			return nil, err
 		}
-		out[strings.Fields(line)[0]] = true
+		defer f.Close()
+		out := map[string]bool{}
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for sc.Scan() {
+			line := sc.Text()
+			if line == "" || line[0] == ' ' || line[0] == '\t' {
+				continue
+			}
+			out[strings.Fields(line)[0]] = true
+		}
+		return out, sc.Err()
 	}
-	return out, sc.Err()
+
+	traced, err = readFirstCol("enabled_functions")
+	if err != nil {
+		return nil, nil, err
+	}
+	filterable, _ = readFirstCol("available_filter_functions")
+	return traced, filterable, nil
 }

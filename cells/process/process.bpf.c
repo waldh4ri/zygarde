@@ -1,7 +1,9 @@
 //go:build ignore
 
 // SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
-// Hidden process detection: dump every task the kernel knows about.
+// Hidden process detection: dump every task from the PID IDR (iter/task),
+// walk init_task.tasks directly via open-coded task iterators on Linux 6.7+,
+// and sample the scheduler (tp_btf/sched_switch).
 
 #include "vmlinux.h"
 #include "bpf_helpers.h"
@@ -18,15 +20,19 @@ struct task_struct___old {
 } __attribute__((preserve_access_index));
 
 struct task_info {
-	__u32 tgid;        // process ID, in zygarde's PID namespace
-	__u32 pid;         // thread ID, in zygarde's PID namespace
-	__u32 ppid;        // 0 if the parent is outside zygarde's PID namespace
+	__u32 tgid;           // process ID, in zygarde's PID namespace
+	__u32 pid;            // thread ID, in zygarde's PID namespace
+	__u32 ppid;           // 0 if the parent is outside zygarde's PID namespace
 	__u32 state;
-	__u32 global_tgid; // init-namespace IDs, to match the scheduler view
+	__u32 global_tgid;    // init-namespace IDs, to match scheduler & init_task views
 	__u32 global_pid;
-	__u32 flags;       // PF_* (PF_KTHREAD: a kernel thread)
-	__u32 has_mm;      // has a user address space
+	__u32 flags;          // PF_* (PF_KTHREAD: a kernel thread)
+	__u32 has_mm;         // has a user address space
+	__u32 uid;
 	__u32 euid;
+	__u32 gid;
+	__u32 pad;
+	__u64 start_boottime; // nanoseconds since boot
 	char comm[16];
 };
 
@@ -64,7 +70,9 @@ int BPF_PROG(on_sched_switch, bool preempt, struct task_struct *prev, struct tas
 
 	// Exiting tasks keep being scheduled after sched_process_exit, then
 	// leave the PID table normally: ignore them (PF_EXITING is set first).
-	if (tid == 0 || (next->flags & PF_EXITING) || bpf_map_lookup_elem(&ran, &tid))
+	if (tid == 0 || (next->flags & PF_EXITING))
+		return 0;
+	if (bpf_map_lookup_elem(&ran, &tid))
 		return 0;
 	seen.tgid = next->tgid;
 	for (int i = 0; i < sizeof(seen.comm); i++)
@@ -90,6 +98,49 @@ int BPF_PROG(on_sched_exit, struct task_struct *p)
 	return 0;
 }
 
+// ---------------------------------------------------------------------------
+// init_task.tasks view (Linux 6.7+): walks the global task list via
+// bpf_iter_task_new/next rather than the PID IDR, catching sleeping tasks
+// unlinked from pid_namespace->idr. Loaded only when kernel BTF supports it.
+// ---------------------------------------------------------------------------
+
+const volatile __u32 walk_target_tgid = 0;
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 65536);
+	__type(key, __u32); // init-namespace thread ID (task->pid)
+	__type(value, struct sched_seen);
+} tasklist SEC(".maps");
+
+SEC("raw_tp/sys_enter")
+int walk_init_tasks(struct bpf_raw_tracepoint_args *ctx)
+{
+	struct bpf_iter_task it;
+	struct task_struct *t;
+	__u32 caller_tgid = bpf_get_current_pid_tgid() >> 32;
+
+	if (!walk_target_tgid || caller_tgid != walk_target_tgid)
+		return 0;
+
+	bpf_rcu_read_lock();
+	bpf_iter_task_new(&it, NULL, 1 /* BPF_TASK_ITER_ALL_THREADS */);
+	while ((t = bpf_iter_task_next(&it))) {
+		__u32 tid = BPF_CORE_READ(t, pid);
+		__u32 flags = BPF_CORE_READ(t, flags);
+		struct sched_seen seen = {};
+
+		if (tid == 0 || (flags & PF_EXITING))
+			continue;
+		seen.tgid = BPF_CORE_READ(t, tgid);
+		BPF_CORE_READ_STR_INTO(&seen.comm, t, comm);
+		bpf_map_update_elem(&tasklist, &tid, &seen, BPF_ANY);
+	}
+	bpf_iter_task_destroy(&it);
+	bpf_rcu_read_unlock();
+	return 0;
+}
+
 // pid_nr returns the number of pid in the namespace at the given level,
 // like the kernel's pid_nr_ns(). task->pid and task->tgid are init-namespace
 // numbers, which don't match /proc inside a container.
@@ -111,6 +162,7 @@ int dump_task(struct bpf_iter__task *ctx)
 	struct task_struct *task = ctx->task;
 	struct task_struct *self = (struct task_struct *)bpf_get_current_task();
 	struct task_info info = {};
+	const struct cred *cred;
 	__u32 level;
 
 	if (!task)
@@ -128,7 +180,16 @@ int dump_task(struct bpf_iter__task *ctx)
 		info.state = BPF_CORE_READ((struct task_struct___old *)task, state);
 	info.flags = BPF_CORE_READ(task, flags);
 	info.has_mm = BPF_CORE_READ(task, mm) != NULL;
-	info.euid = BPF_CORE_READ(task, cred, euid.val);
+	cred = BPF_CORE_READ(task, cred);
+	if (cred) {
+		info.uid = BPF_CORE_READ(cred, uid.val);
+		info.euid = BPF_CORE_READ(cred, euid.val);
+		info.gid = BPF_CORE_READ(cred, gid.val);
+	}
+	if (bpf_core_field_exists(task->start_boottime))
+		info.start_boottime = BPF_CORE_READ(task, start_boottime);
+	else
+		info.start_boottime = BPF_CORE_READ(task, start_time);
 	BPF_CORE_READ_STR_INTO(&info.comm, task, comm);
 
 	bpf_seq_write(ctx->meta->seq, &info, sizeof(info));

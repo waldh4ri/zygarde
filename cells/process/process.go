@@ -1,4 +1,6 @@
-// Package process detects processes hidden from /proc.
+// Package process detects processes and threads hidden from /proc or the PID
+// table, as well as processes masquerading as kernel threads or running from
+// deleted or memory-backed executables.
 package process
 
 //go:generate go tool bpf2go -target amd64,arm64 -cflags "-Wall -Werror -Wno-missing-declarations" -type task_info -type sched_seen process process.bpf.c -- -I../../bpf/include
@@ -7,24 +9,23 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
+	"golang.org/x/sys/unix"
 
 	"github.com/waldh4ri/zygarde/internal/bpfutil"
 	"github.com/waldh4ri/zygarde/internal/canary"
 	"github.com/waldh4ri/zygarde/internal/core"
+	"github.com/waldh4ri/zygarde/internal/fsutil"
 )
 
-// Cell compares the kernel's task list (BPF task iterator) with the process
-// directories listed in /proc.
-//
-// /proc lists only thread-group leaders, so the comparison is per process
-// (TGID). The kernel is snapshotted before and after reading /proc; a process
-// only counts as hidden if it is in both snapshots, which rules out processes
-// that started or exited during the scan.
+// Cell compares the kernel's task views (BPF task iterator, init_task.tasks
+// kfunc walk on Linux 6.7+, and scheduler tracepoints) with /proc.
 type Cell struct{}
 
 // New returns the hidden process Cell.
@@ -34,7 +35,7 @@ func (*Cell) ID() string             { return "hidden_process" }
 func (*Cell) Name() string           { return "Hidden Process Detection" }
 func (*Cell) Timeout() time.Duration { return 30 * time.Second }
 func (*Cell) Description() string {
-	return "Compares the kernel task list (BPF task iterator) with the processes listed in /proc, and flags processes disguised as kernel threads or running from deleted or memory-backed files"
+	return "Compares kernel task views (BPF task iterator, init_task.tasks and scheduler) with /proc processes and threads, and flags disguised or fileless processes"
 }
 
 func (*Cell) Supported(env *core.Env) error {
@@ -71,6 +72,9 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 		return err
 	}
 	defer iter.DumpTask.Close()
+	if id, err := bpfutil.ProgramID(iter.DumpTask); err == nil {
+		rec.Footprint("bpf_prog_id", strconv.FormatUint(uint64(id), 10))
+	}
 
 	sched, err := startScheduler(env, spec, rec)
 	if err != nil {
@@ -84,7 +88,9 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	}
 	defer cp.Stop()
 	canaryPID := uint32(cp.PID())
+	rec.Footprint("canary_pid", strconv.FormatUint(uint64(canaryPID), 10))
 
+	initBefore, haveInitWalk := snapshotInitTaskList(env, rec)
 	before, err := kernelTasks(iter.DumpTask)
 	if err != nil {
 		return err
@@ -93,6 +99,8 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	if err != nil {
 		return err
 	}
+	listedThreads := procThreads(listed)
+
 	if sched != nil {
 		select {
 		case <-time.After(sampleWindow):
@@ -105,35 +113,121 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	if err != nil {
 		return err
 	}
+	var initAfter map[uint32]processSchedSeen
+	if haveInitWalk {
+		initAfter, _ = snapshotInitTaskList(env, nil)
+	}
 
 	name := fmt.Sprintf("process %d", canaryPID)
 	_, inKernel := before.procs[canaryPID]
 	rec.Canary(name, "BPF task iterator", inKernel)
 	rec.Canary(name, "/proc directory listing", listed[canaryPID])
+	if haveInitWalk {
+		if cInfo, ok := before.procs[canaryPID]; ok {
+			_, inInit := initBefore[cInfo.GlobalPid]
+			rec.Canary(name, "init_task.tasks walk", inInit)
+		}
+	}
 
-	for tgid, t := range before.procs {
+	var tgidList []uint32
+	for tgid := range before.procs {
+		tgidList = append(tgidList, tgid)
+	}
+	sort.Slice(tgidList, func(i, j int) bool { return tgidList[i] < tgidList[j] })
+
+	for _, tgid := range tgidList {
+		t := before.procs[tgid]
 		if _, stillThere := after.procs[tgid]; !stillThere || listed[tgid] || tgid == 0 {
 			continue
 		}
 		comm := bpfutil.Int8String(t.Comm[:])
+		d := map[string]string{
+			"pid":   strconv.Itoa(int(tgid)),
+			"comm":  comm,
+			"ppid":  strconv.Itoa(int(t.Ppid)),
+			"uid":   strconv.Itoa(int(t.Uid)),
+			"euid":  strconv.Itoa(int(t.Euid)),
+			"gid":   strconv.Itoa(int(t.Gid)),
+			"state": strconv.Itoa(int(t.State)),
+		}
+		if ts := env.FormatBootOffset(t.StartBoottime); ts != "" {
+			d["started_at"] = ts
+		}
+		enrichProcFiles(env, int(tgid), comm, d)
 		rec.Suspicious(core.Finding{
 			Description: fmt.Sprintf("Process %d (%s) exists in the kernel but is hidden from /proc", tgid, comm),
-			Details: map[string]string{
-				"pid":   strconv.Itoa(int(tgid)),
-				"comm":  comm,
-				"ppid":  strconv.Itoa(int(t.Ppid)),
-				"state": strconv.Itoa(int(t.State)),
-			},
+			Details:     d,
 			Why: "Every process has a directory in /proc, which ps, top and most tools read. This one is running " +
 				"but filtered out of the /proc listing, so those tools can't see it.",
 			Benign: "None expected: the process was seen in two kernel snapshots taken around the /proc listing.",
 		})
 	}
 
+	// Hidden sub-threads inside visible processes (/proc/<tgid>/task/<tid>).
+	for tid, t := range before.nsThreads {
+		if tid == t.Tgid || tid == 0 || !listed[t.Tgid] {
+			continue
+		}
+		if _, stillThere := after.nsThreads[tid]; !stillThere {
+			continue
+		}
+		procTaskSet, ok := listedThreads[t.Tgid]
+		if !ok || procTaskSet[tid] {
+			continue
+		}
+		// Re-read /proc/<tgid>/task once to rule out thread churn.
+		freshSet, err := readTaskDir(t.Tgid)
+		if err != nil || freshSet[tid] {
+			continue
+		}
+		if _, stillAfter := readSingleThreadCheck(iter.DumpTask, tid); !stillAfter {
+			continue
+		}
+		comm := bpfutil.Int8String(t.Comm[:])
+		d := map[string]string{
+			"tid":  strconv.Itoa(int(tid)),
+			"pid":  strconv.Itoa(int(t.Tgid)),
+			"comm": comm,
+			"euid": strconv.Itoa(int(t.Euid)),
+		}
+		if ts := env.FormatBootOffset(t.StartBoottime); ts != "" {
+			d["started_at"] = ts
+		}
+		rec.Suspicious(core.Finding{
+			Description: fmt.Sprintf("Thread %d (%s) of process %d exists in the kernel but is hidden from /proc/%d/task", tid, comm, t.Tgid, t.Tgid),
+			Details:     d,
+			Why:         "Every thread of a process appears under /proc/<pid>/task. Hiding an injected thread while keeping its host process visible conceals execution inside trusted daemons.",
+			Benign:      "None expected: the thread was present before and after reading /proc/<pid>/task.",
+		})
+	}
+
+	// Tasks present on init_task.tasks (both snapshots) yet unlinked from PID IDR.
+	reportedUnlinked := map[uint32]bool{}
+	if haveInitWalk && initAfter != nil {
+		for gtid, seen := range initBefore {
+			if _, ok := initAfter[gtid]; !ok || before.threads[gtid] || after.threads[gtid] {
+				continue
+			}
+			reportedUnlinked[gtid] = true
+			comm := bpfutil.Int8String(seen.Comm[:])
+			rec.Suspicious(core.Finding{
+				Description: fmt.Sprintf("Task %d (%s, process %d) is on init_task.tasks but missing from the kernel's PID table", gtid, comm, seen.Tgid),
+				Details: map[string]string{
+					"global_tid":  strconv.Itoa(int(gtid)),
+					"global_tgid": strconv.Itoa(int(seen.Tgid)),
+					"comm":        comm,
+				},
+				Why: "Walking init_task.tasks found this task in kernel memory (even if sleeping), yet the PID " +
+					"table (pid_namespace->idr) has no entry for it. Unlinking a task from the PID table hides it from /proc and standard iterators.",
+				Benign: "None expected: the task persisted across two snapshots without exiting.",
+			})
+		}
+	}
+
 	ran := 0
 	if sched != nil {
 		self := before.procs[uint32(os.Getpid())]
-		ran, err = sched.check(rec, before, after, self.GlobalTgid)
+		ran, err = sched.check(rec, before, after, self.GlobalTgid, reportedUnlinked)
 		if err != nil {
 			return err
 		}
@@ -148,7 +242,7 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 			stable[tgid] = t
 		}
 	}
-	checkMasquerade(rec, stable, map[uint32]bool{uint32(os.Getpid()): true, canaryPID: true})
+	checkMasquerade(env, rec, stable, map[uint32]bool{uint32(os.Getpid()): true, canaryPID: true})
 	disguised := len(rec.Findings()) - hidden
 
 	switch {
@@ -168,12 +262,17 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 
 // snapshot is one pass of the task iterator.
 type snapshot struct {
-	procs   map[uint32]processTaskInfo // by TGID in zygarde's namespace, leader preferred
-	threads map[uint32]bool            // init-namespace thread IDs
+	procs     map[uint32]processTaskInfo // by TGID in zygarde's namespace, leader preferred
+	nsThreads map[uint32]processTaskInfo // by TID in zygarde's namespace
+	threads   map[uint32]bool            // init-namespace thread IDs
 }
 
 func kernelTasks(prog *ebpf.Program) (snapshot, error) {
-	s := snapshot{procs: map[uint32]processTaskInfo{}, threads: map[uint32]bool{}}
+	s := snapshot{
+		procs:     map[uint32]processTaskInfo{},
+		nsThreads: map[uint32]processTaskInfo{},
+		threads:   map[uint32]bool{},
+	}
 	data, err := bpfutil.ReadIter(prog)
 	if err != nil {
 		return s, err
@@ -184,6 +283,9 @@ func kernelTasks(prog *ebpf.Program) (snapshot, error) {
 	}
 	for _, t := range tasks {
 		s.threads[t.GlobalPid] = true
+		if t.Pid != 0 {
+			s.nsThreads[t.Pid] = t
+		}
 		if t.Tgid == 0 {
 			continue // not representable in our PID namespace
 		}
@@ -192,6 +294,76 @@ func kernelTasks(prog *ebpf.Program) (snapshot, error) {
 		}
 	}
 	return s, nil
+}
+
+func readSingleThreadCheck(prog *ebpf.Program, tid uint32) (processTaskInfo, bool) {
+	s, err := kernelTasks(prog)
+	if err != nil {
+		return processTaskInfo{}, false
+	}
+	t, ok := s.nsThreads[tid]
+	return t, ok
+}
+
+// snapshotInitTaskList walks init_task.tasks on Linux 6.7+ using open-coded
+// task iterators. Returns (nil, false) on older kernels or inside child PID
+// namespaces.
+func snapshotInitTaskList(env *core.Env, rec *core.Recorder) (map[uint32]processSchedSeen, bool) {
+	if env.BTF == nil {
+		return nil, false
+	}
+	if _, err := env.BTF.AnyTypeByName("bpf_iter_task_new"); err != nil {
+		return nil, false
+	}
+	if init, err := bpfutil.InInitPIDNS(); err != nil || !init {
+		return nil, false
+	}
+	spec, err := loadProcess()
+	if err != nil {
+		return nil, false
+	}
+	if err := bpfutil.SetVariable(spec, "walk_target_tgid", uint32(unix.Getpid())); err != nil {
+		return nil, false
+	}
+	var objs struct {
+		WalkInitTasks *ebpf.Program `ebpf:"walk_init_tasks"`
+		Tasklist      *ebpf.Map     `ebpf:"tasklist"`
+	}
+	if err := bpfutil.Load(env, spec, &objs); err != nil {
+		if rec != nil {
+			rec.Log().Debug("init_task.tasks walk unavailable", "err", err)
+		}
+		return nil, false
+	}
+	defer objs.WalkInitTasks.Close()
+	defer objs.Tasklist.Close()
+	if rec != nil {
+		if id, err := bpfutil.ProgramID(objs.WalkInitTasks); err == nil {
+			rec.Footprint("bpf_prog_id", strconv.FormatUint(uint64(id), 10))
+		}
+	}
+
+	l, err := link.AttachRawTracepoint(link.RawTracepointOptions{Name: "sys_enter", Program: objs.WalkInitTasks})
+	if err != nil {
+		if rec != nil {
+			rec.Log().Debug("attach walk_init_tasks failed", "err", err)
+		}
+		return nil, false
+	}
+	unix.Getuid() // trigger sys_enter once in our TGID
+	l.Close()
+
+	out := map[uint32]processSchedSeen{}
+	var tid uint32
+	var seen processSchedSeen
+	it := objs.Tasklist.Iterate()
+	for it.Next(&tid, &seen) {
+		out[tid] = seen
+	}
+	if len(out) == 0 {
+		return nil, false
+	}
+	return out, true
 }
 
 // scheduler records which threads run, independently of the PID table.
@@ -222,6 +394,11 @@ func startScheduler(env *core.Env, spec *ebpf.CollectionSpec, rec *core.Recorder
 	s := &scheduler{}
 	if err := bpfutil.Load(env, spec, &s.progs); err != nil {
 		return nil, err
+	}
+	for _, p := range []*ebpf.Program{s.progs.OnSchedSwitch, s.progs.OnSchedExit} {
+		if id, err := bpfutil.ProgramID(p); err == nil {
+			rec.Footprint("bpf_prog_id", strconv.FormatUint(uint64(id), 10))
+		}
 	}
 	var err error
 	if s.exitLink, err = link.AttachTracing(link.TracingOptions{Program: s.progs.OnSchedExit}); err != nil {
@@ -259,7 +436,7 @@ func (s *scheduler) Close() {
 
 // check reports threads that ran during the window but are in neither task
 // iterator snapshot and did not exit. It returns how many threads ran.
-func (s *scheduler) check(rec *core.Recorder, before, after snapshot, selfTgid uint32) (int, error) {
+func (s *scheduler) check(rec *core.Recorder, before, after snapshot, selfTgid uint32, alreadyReported map[uint32]bool) (int, error) {
 	type entry struct {
 		tid  uint32
 		seen processSchedSeen
@@ -280,7 +457,7 @@ func (s *scheduler) check(rec *core.Recorder, before, after snapshot, selfTgid u
 		if e.seen.Tgid == selfTgid {
 			sawSelf = true
 		}
-		if e.seen.Exited != 0 || before.threads[e.tid] || after.threads[e.tid] {
+		if e.seen.Exited != 0 || before.threads[e.tid] || after.threads[e.tid] || alreadyReported[e.tid] {
 			continue
 		}
 		// The exit probe is still attached: give a thread exiting right now
@@ -307,18 +484,82 @@ func (s *scheduler) check(rec *core.Recorder, before, after snapshot, selfTgid u
 	return len(all), nil
 }
 
-// procPIDs lists the numeric entries of /proc. This goes through getdents64,
-// the syscall rootkits typically hook to hide processes.
+// procPIDs lists the numeric entries of /proc under comm "ps".
 func procPIDs() (map[uint32]bool, error) {
-	entries, err := os.ReadDir("/proc")
+	return fsutil.WithCommVal("ps", func() (map[uint32]bool, error) {
+		entries, err := fsutil.ReadDirNoAtime("/proc")
+		if err != nil {
+			return nil, fmt.Errorf("listing /proc: %w", err)
+		}
+		pids := make(map[uint32]bool, len(entries))
+		for _, e := range entries {
+			if pid, err := strconv.ParseUint(e.Name(), 10, 32); err == nil {
+				pids[uint32(pid)] = true
+			}
+		}
+		return pids, nil
+	})
+}
+
+func procThreads(listed map[uint32]bool) map[uint32]map[uint32]bool {
+	out := make(map[uint32]map[uint32]bool, len(listed))
+	_ = fsutil.WithComm("ps", func() error {
+		for tgid := range listed {
+			if set, err := readTaskDirRaw(tgid); err == nil {
+				out[tgid] = set
+			}
+		}
+		return nil
+	})
+	return out
+}
+
+func readTaskDir(tgid uint32) (map[uint32]bool, error) {
+	return fsutil.WithCommVal("ps", func() (map[uint32]bool, error) {
+		return readTaskDirRaw(tgid)
+	})
+}
+
+func readTaskDirRaw(tgid uint32) (map[uint32]bool, error) {
+	entries, err := fsutil.ReadDirNoAtime(fmt.Sprintf("/proc/%d/task", tgid))
 	if err != nil {
-		return nil, fmt.Errorf("listing /proc: %w", err)
+		return nil, err
 	}
-	pids := make(map[uint32]bool, len(entries))
+	tids := make(map[uint32]bool, len(entries))
 	for _, e := range entries {
-		if pid, err := strconv.ParseUint(e.Name(), 10, 32); err == nil {
-			pids[uint32(pid)] = true
+		if tid, err := strconv.ParseUint(e.Name(), 10, 32); err == nil {
+			tids[uint32(tid)] = true
 		}
 	}
-	return pids, nil
+	return tids, nil
+}
+
+// enrichProcFiles adds cgroup, cwd and executable hash metadata when accessible
+// (hidden processes often remain accessible by direct /proc/<pid> open even
+// when filtered out of getdents64).
+func enrichProcFiles(env *core.Env, pid int, comm string, d map[string]string) {
+	dir := "/proc/" + strconv.Itoa(pid)
+	if cwd, err := os.Readlink(dir + "/cwd"); err == nil && cwd != "" {
+		d["cwd"] = cwd
+	}
+	if cg, err := fsutil.ReadFileNoAtime(dir + "/cgroup"); err == nil {
+		if line := strings.TrimSpace(string(cg)); line != "" {
+			d["cgroup"] = truncate(strings.ReplaceAll(line, "\n", "; "), 160)
+		}
+	}
+	exeLink := dir + "/exe"
+	if exe, err := os.Readlink(exeLink); err == nil && exe != "" {
+		d["exe"] = exe
+	}
+	if sum, err := fsutil.SHA256File(exeLink); err == nil {
+		d["exe_sha256"] = sum
+	}
+	if env != nil && env.Settings.PreserveDir != "" {
+		if saved, sum, err := fsutil.PreserveBinary(exeLink, env.Settings.PreserveDir, fmt.Sprintf("pid-%d-%s", pid, comm)); err == nil && saved != "" {
+			d["preserved_exe"] = saved
+			if d["exe_sha256"] == "" && sum != "" {
+				d["exe_sha256"] = sum
+			}
+		}
+	}
 }

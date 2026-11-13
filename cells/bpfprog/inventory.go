@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/link"
 	"golang.org/x/sys/unix"
 
 	"github.com/waldh4ri/zygarde/internal/bpfutil"
@@ -46,6 +47,20 @@ func collect(env *core.Env, rec *core.Recorder, progs map[uint32]bpfprogProgInfo
 	}
 	inv.links = linkIDs
 
+	// Build a lookup set of cgroup links so BPF_PROG_QUERY doesn't duplicate them.
+	linkedCgroups := map[string]bool{}
+	var lit link.Iterator
+	for lit.Next() {
+		if info, err := lit.Link.Info(); err == nil && info.Type == link.CgroupType {
+			if cg := info.Cgroup(); cg != nil {
+				linkedCgroups[fmt.Sprintf("%d:%d:%d", info.Program, cg.CgroupId, uint32(cg.AttachType))] = true
+			}
+		}
+	}
+	lit.Close()
+	cgroups := cgroupAttachments(linkedCgroups)
+	tailTargets := progArrayTargets()
+
 	if err := fdowner.Supported(env); err != nil {
 		rec.Limit("Owners of BPF objects not identified: %v", err)
 	} else if inv.table, err = fdowner.Snapshot(env); err != nil {
@@ -79,7 +94,7 @@ func collect(env *core.Env, rec *core.Recorder, progs map[uint32]bpfprogProgInfo
 			inv.add(a)
 		}
 	}
-	for _, list := range [][]attachment{links, perf, tc} {
+	for _, list := range [][]attachment{links, perf, tc, cgroups, tailTargets} {
 		for _, a := range list {
 			inv.add(a)
 		}
@@ -147,7 +162,7 @@ func wheres(atts []attachment) string {
 
 // report records the inventory: ownership findings, attachments, unowned
 // objects and pins. own lists zygarde's own programs, which are skipped.
-func (inv *inventory) report(rec *core.Recorder, progs map[uint32]bpfprogProgInfo, enumSet map[uint32]bool, own map[uint32]bool, selfID uint32) {
+func (inv *inventory) report(env *core.Env, rec *core.Recorder, progs map[uint32]bpfprogProgInfo, enumSet map[uint32]bool, own map[uint32]bool, selfID uint32) {
 	self := uint32(os.Getpid())
 	if inv.table != nil {
 		held := false
@@ -172,11 +187,7 @@ func (inv *inventory) report(rec *core.Recorder, progs map[uint32]bpfprogProgInf
 		name := bpfutil.Int8String(p.Name[:])
 		atts := inv.attach[id]
 		holders := inv.holders(fdowner.Prog, id)
-		base := map[string]string{
-			"program_id":   strconv.Itoa(int(id)),
-			"program_name": name,
-			"program_type": ebpf.ProgramType(p.Type).String(),
-		}
+		base := progBaseDetails(env, id, p)
 		with := func(extra map[string]string) map[string]string {
 			d := map[string]string{}
 			for k, v := range base {
@@ -232,11 +243,17 @@ func (inv *inventory) report(rec *core.Recorder, progs map[uint32]bpfprogProgInf
 			rec.Observe(desc, with(map[string]string{"via": a.Via, "held_by": heldBy, "pinned_at": pinnedAt, "tc_filter_name": a.TCName}))
 		}
 
-		if inv.table != nil && len(holders) == 0 && inv.pinned[id] == "" && !anyNet(atts) {
+		if inv.table != nil && len(holders) == 0 && inv.pinned[id] == "" && !anyNet(atts) && len(atts) == 0 {
 			rec.Observe(fmt.Sprintf("BPF program %s is held by no process and is not pinned under %s", label, bpffsRoot), with(map[string]string{
 				"attached_to": wheres(atts),
-				"note": "kept alive by the kernel: e.g. attached with BPF_PROG_ATTACH (systemd's cgroup programs), " +
-					"a tail-call target, or a struct_ops/LSM attachment",
+				"note": "kept alive by the kernel: e.g. attached in another cgroup/netns, sockmap, " +
+					"or a struct_ops attachment",
+			}))
+		} else if len(atts) == 0 {
+			// Ensure every loaded program appears in the inventory for DFIR completeness.
+			rec.Observe(fmt.Sprintf("BPF program %s is loaded (no active attachment found in scanned namespaces)", label), with(map[string]string{
+				"held_by":   heldBy,
+				"pinned_at": inv.pinned[id],
 			}))
 		}
 	}

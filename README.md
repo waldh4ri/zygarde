@@ -19,23 +19,23 @@ Zygarde is a portable forensic triage tool for Linux. It is organised in detecti
 
 It ships as a single static binary with no runtime dependencies, for x86_64 and arm64. Thanks to CO-RE and BTF, the same eBPF bytecode is relocated at load time for the running kernel. It is built on the [cilium/ebpf](https://github.com/cilium/ebpf) Go library.
 
-> **Note:** *Zygarde is experimental, aimed at exploring what eBPF can do for DFIR. A clean result raises the bar for an attacker; it cannot prove that a kernel-level compromise is absent. If you suspect one, capture memory (e.g. AVML/LiME) and analyse it offline (e.g. Volatility 3).*
+> **Note (Order of volatility):** *Zygarde is experimental, aimed at exploring what eBPF can do for DFIR. Loading eBPF programs and probing kernel structures inherently leaves live-kernel traces (BPF/PID allocations, audit events), though Zygarde opens files and directories with `O_NOATIME` and keeps temporary mounts in private mount namespaces. If you already suspect a specific high-value host, capture RAM first (e.g. AVML/LiME) and analyse it offline (e.g. Volatility 3); use Zygarde first for rapid fleet-wide triage.*
 
 ## The Cells
 
 | Cell | Kernel view | Userspace view | Needs |
 |------|-------------|----------------|-------|
-| `ebpf_integrity` | canary program and map loaded by Zygarde | `BPF_PROG/MAP_GET_NEXT_ID`, `GET_FD_BY_ID` | root |
+| `ebpf_integrity` | randomised canary program and map loaded by Zygarde | `BPF_PROG/MAP_GET_NEXT_ID`, `GET_FD_BY_ID` | `CAP_BPF`/`CAP_SYS_ADMIN` |
 | `altered_syscall_table` | `sys_call_table` entries read with a kprobe | handler addresses in `/proc/kallsyms` | x86_64, `CONFIG_KALLSYMS_ALL`, a kernel that still dispatches through the table |
-| `hook_inventory` | ftrace's list of patched functions (`enabled_functions`) with each hook's handler | — (attribution: kernel, visible module, BPF, livepatch) | dynamic ftrace, tracefs (mounted temporarily if needed) |
-| `inline_hook` | first instructions of syscall handlers and VFS, `/proc` and `/proc/net` functions, read from kernel memory | what the kernel writes there (ftrace NOP or call, `endbr64`), cross-checked with `enabled_functions` | x86_64, Linux 5.2+ |
-| `hidden_kernel_module` | module kobjects in `/sys/module`, module BTF | module list in `/proc/modules`; plus modules configured to load at boot | — |
+| `hook_inventory` | ftrace's `enabled_functions` and `kprobes/list` | — (attribution: kernel, visible module, BPF, per-function livepatch) | dynamic ftrace, tracefs (mounted in a private mountns if needed) |
+| `inline_hook` | first 24 bytes of syscall dispatchers/handlers and VFS, `/proc` and `/proc/net` functions (including post-NOP instructions) | what the kernel writes there (ftrace NOP or call, `endbr64`), cross-checked with `enabled_functions` and `available_filter_functions` | x86_64, Linux 5.2+ |
+| `hidden_kernel_module` | module kobjects in `/sys/module`, module BTF | module list in `/proc/modules`; plus boot persistence (`modules-load.d`, `modprobe.d`, rc/profile scripts, systemd units, udev rules) | — |
 | `kernel_taint` | kernel taint flags (`/proc/sys/kernel/tainted`) | per-module taint (`/sys/module/*/taint`) | — |
-| `hidden_process` | BPF task iterator (with task flags and executable) | `/proc` directory listing; plus processes disguised as kernel threads or run from deleted or memory-backed files | BTF, Linux 5.8+ |
-| `hidden_file` | entries the filesystem produces (kprobe on `filldir64`) | entries `getdents64` returns, for sensitive directories, `/proc` and `/sys/module`; plus dot-entries in binary and library directories | BTF, Linux 5.8+ |
-| `hidden_ebpf_program` | BPF program iterator, plus Zygarde's own `bpf()` calls traced at syscall exit; holders read from every task's file table | `BPF_PROG_GET_NEXT_ID`, `/sys/fs/bpf` pins; plus where each program is attached (links, perf events, XDP, tc) | BTF, Linux 5.9+ |
-| `hidden_socket` | sockets reported over netlink `sock_diag` (what `ss` reads); holders read from every task's file table | `/proc/net/{tcp,udp}{,6}` (what `netstat` reads) | — (owners: BTF, Linux 5.8+) |
-| `userspace_hooks` | — (Zygarde doesn't use libc, so these hooks can't fool it) | dynamic linker injection: `/etc/ld.so.preload`, `ld.so.conf` directories, `LD_PRELOAD`/`LD_AUDIT` in process environments | — |
+| `hidden_process` | BPF task iterator, `init_task.tasks` open-coded kfunc walk (Linux 6.7+), and `sched_switch` sampling | `/proc` process and `/proc/<pid>/task` thread listings; plus disguised or `memfd`/deleted processes | BTF, Linux 5.8+ |
+| `hidden_file` | entries the filesystem produces (`kprobe/filldir64`) and VFS `f_op->iterate_shared` handler addresses (`kprobe/iterate_dir`) | entries `getdents64` returns, for sensitive directories, `/proc` and `/sys/module`; plus dot-entries in binary and library directories | BTF, Linux 5.8+ |
+| `hidden_ebpf_program` | BPF program iterator (with `tag`, `loaded_at`, `uid`), plus Zygarde's own `bpf()` calls traced at syscall exit; holders read from every task's file table | `BPF_PROG_GET_NEXT_ID`, `/sys/fs/bpf` pins; plus attachments across links, perf events, legacy `BPF_PROG_ATTACH` cgroups, `prog_array` tail calls, XDP and tc | BTF, Linux 5.9+ |
+| `hidden_socket` | BPF TCP/UDP socket iterators, netlink `sock_diag` (`ss`), and every socket FD across task file tables (`AF_PACKET`, `SOCK_RAW`, child netns) | `/proc/net/{tcp,udp,raw}{,6}` and `/proc/net/packet` (`netstat`) | — (iterators/owners: BTF, Linux 5.8+) |
+| `userspace_hooks` | — (Zygarde doesn't use libc, so these hooks can't fool it) | `/etc/ld.so.preload`, `ld.so.conf`, `/etc/ld.so.cache`, `LD_PRELOAD`/`LD_AUDIT` per mount namespace, and injected libraries in `/proc/<pid>/maps` | — |
 
 Notes:
 
@@ -57,25 +57,26 @@ Notes:
 
 A rootkit can attack the scanner itself. Zygarde is built to make that visible:
 
-- **Canaries.** Cells plant objects they know exist (a child process, a file, their own BPF programs, their own syscalls) and look for them in every view. A canary missing from a view means that view is filtered: SUSPICIOUS.
-- **Blocked eBPF is a finding.** A `bpf()` permission error is reported as SUSPICIOUS when every other source says it should work: root, no seccomp filter, and a lockdown mode that allows it. A kernel that simply lacks a feature gives SKIPPED instead.
-- **Supervised worker.** Cells run in a child process. If it is killed mid-Cell, the parent reports the signal (SUSPICIOUS), cleans up, and resumes the remaining Cells in a new worker. A Cell that hangs past its timeout is reported too.
+- **Canaries & `comm` baiting.** Cells plant randomised objects they know exist (a child process, an in-memory file, their own BPF programs, their own sockets and syscalls) and look for them in every view, while querying userspace interfaces under standard tool names (`ps`, `ls`, `bpftool`, `ss`, `netstat`) so `comm`-targeted rootkits reveal themselves. A canary missing from a view means that view is filtered: SUSPICIOUS.
+- **Blocked eBPF is a finding.** A `bpf()` permission error is reported as SUSPICIOUS when non-`bpf()` sources confirm it should work: `CAP_BPF`/`CAP_SYS_ADMIN` in the initial user namespace, no seccomp filter, unconfined LSM context, and a lockdown mode that allows it. A kernel that simply lacks a feature gives SKIPPED instead.
+- **Supervised worker.** Cells run in a process-group-isolated child worker with a private mount namespace and close-on-exec event pipe. If it is killed mid-Cell, the parent reports the signal (SUSPICIOUS), cleans up, and resumes the remaining Cells in a new worker. A Cell that hangs past its timeout is reported too.
 - **No libc.** The binary is static Go and makes syscalls directly, so `LD_PRELOAD` and libc-hooking rootkits don't affect it. `userspace_hooks` reports those hooks instead, since they still fool every other tool.
 
 ## Usage
 
 ```bash
-sudo ./zygarde                          # run all checks, human-readable report
-sudo ./zygarde -o report.json           # same, and save the full JSON report
+sudo ./zygarde                                         # run all checks, human-readable report
+sudo ./zygarde -o report.json --preserve-dir ./evid    # save JSON report + copies of volatile binaries
 sudo ./zygarde --json | jq '.results[] | select(.status == 2)'
 sudo ./zygarde --cells hidden_process,hidden_kernel_module
-sudo ./zygarde -v                       # also show what each check does, observations and canaries
-./zygarde --list                        # list checks
+sudo ./zygarde -v                                      # also show what each check does, observations and canaries
+./zygarde --list                                       # list checks
 ```
 
 | Flag | Meaning |
 |------|---------|
-| `-o`, `--output <file>` | also save the JSON report to a file (mode 0600) |
+| `-o`, `--output <file>` | atomically save the JSON report to a file (mode 0600) |
+| `--preserve-dir <dir>` | save copies of volatile suspicious binaries (deleted/memfd) into `<dir>` (mode 0700/0600) |
 | `--json` | print the JSON report on stdout instead of text |
 | `-v` | verbose: check descriptions, observations (e.g. legitimate hooks) and canaries |
 | `--no-color` | no colors; they are also off when `NO_COLOR` is set or output isn't a terminal |
@@ -103,7 +104,7 @@ The exit code is `2` if anything is SUSPICIOUS, `1` if any check errored, and `0
 
 ### JSON report
 
-`--json` and `--output` produce one object: `tool`, `version`, `host` (`hostname`, `distro`, `kernel`, `arch`, `lockdown`, `btf`, `boot_id`), `started_at`, `finished_at`, `verdict` (`clean`, `suspicious` or `incomplete`), `findings` (count) and `results`. Each result has `cell`, `name`, `status`, `status_text`, `message`, `findings` (`description`, `details`, `why`, `benign_causes`), `observations`, `canaries` (`canary`, `view`, `observed`), `limitations`, `error` and `duration_seconds`.
+`--json` and `--output` produce one object: `tool`, `version`, `host` (`hostname`, `machine_id`, `distro`, `kernel`, `kernel_version`, `arch`, `lockdown`, `btf`, `boot_id`, `boot_time`), `scanner_footprint` (`pid`, `worker_pids`, `binary_sha256`, `args`, `artifacts`), `started_at`, `finished_at`, `verdict` (`clean`, `suspicious` or `incomplete`), `findings` (count) and `results`. Each result has `cell`, `name`, `status`, `status_text`, `message`, `findings` (`description`, `details`, `why`, `benign_causes`), `observations`, `canaries` (`canary`, `view`, `observed`), `limitations`, `footprint`, `error` and `duration_seconds`.
 
 ## Building
 
@@ -192,7 +193,7 @@ build/vmtest.Dockerfile VM test harness (QEMU, vimto, cloud-image tools)
 - [BPF iterators](https://docs.kernel.org/bpf/bpf_iterators.html)
 - [x86/syscall: Don't force use of indirect calls for system calls](https://git.kernel.org/torvalds/c/1e3ad78334a6)
 - [libbpf/vmlinux.h](https://github.com/libbpf/vmlinux.h) (source of `bpf/include/arm64/vmlinux.h`)
-- Rootkits and detection guidance behind the inventory, ownership, socket, preload and inline-hook checks: Synacktiv, [LinkPro : analyse d'un rootkit eBPF](https://www.synacktiv.com/publications/linkpro-analyse-dun-rootkit-ebpf); Sandfly Security, [Linux Scales eBPF Rootkit Detection and Analysis](https://sandflysecurity.com/blog/linux-scales-ebpf-rootkit-detection-and-analysis); ExaTrack, [Mélofée](https://exatrack.com/publications/melofee.html); Elastic Security Labs, [Linux Rootkits 2: Caught in the Act](https://www.elastic.co/security-labs/threat-command/linux-rootkits-2-caught-in-the-act); LinuxSecurity, [Linux Rootkit Detection & Defense Guide](https://linuxsecurity.com/features/linux-rootkit-detection-defense-guide)
+- Rootkits and detection guidance behind the inventory, ownership, socket, preload and inline-hook checks: Synacktiv, [LinkPro : analyse d'un rootkit eBPF](https://www.synacktiv.com/publications/linkpro-analyse-dun-rootkit-ebpf); Sandfly Security, [Linux Scales eBPF Rootkit Detection and Analysis](https://sandflysecurity.com/blog/linux-scales-ebpf-rootkit-detection-and-analysis); ExaTrack, [Mélofée](https://exatrack.com/publications/melofee.html); Elastic Security Labs, [Linux Rootkits 2: Caught in the Act](https://www.elastic.co/security-labs/threat-command/linux-rootkits-2-caught-in-the-act);
 
 ## License
 

@@ -11,31 +11,34 @@ const base = 0xffffffff81000000
 
 func TestDecodeEntry(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		code   []byte
-		kind   entryKind
-		off    int
-		target uint64
+		name    string
+		code    []byte
+		kind    entryKind
+		off     int
+		target  uint64
+		postNop bool
 	}{
-		{"ftrace nop", []byte{0x0f, 0x1f, 0x44, 0x00, 0x00, 0x55}, entryNop, 0, 0},
-		{"endbr + nop", []byte{0xf3, 0x0f, 0x1e, 0xfa, 0x0f, 0x1f, 0x44, 0x00, 0x00}, entryNop, 4, 0},
-		{"sealed endbr + nop", []byte{0x0f, 0x1f, 0x40, 0xd6, 0x0f, 0x1f, 0x44, 0x00, 0x00}, entryNop, 4, 0},
-		{"old sealed endbr + nop", []byte{0x66, 0x0f, 0x1f, 0x00, 0x0f, 0x1f, 0x44, 0x00, 0x00}, entryNop, 4, 0},
-		{"endbr + call", []byte{0xf3, 0x0f, 0x1e, 0xfa, 0xe8, 0x10, 0x00, 0x00, 0x00}, entryCall, 4, base + 4 + 5 + 0x10},
-		{"jmp rel32 backwards", []byte{0xe9, 0xfb, 0xff, 0xff, 0xff}, entryJump, 0, base},
-		{"jmp rel8", []byte{0xeb, 0x02}, entryJump, 0, base + 4},
-		{"jmp [rip+x]", []byte{0xff, 0x25, 0, 0, 0, 0}, entryIndirect, 0, 0},
-		{"push imm32; ret", []byte{0x68, 0x00, 0x10, 0x00, 0xa0, 0xc3}, entryJump, 0, 0xffffffffa0001000},
-		{"movabs rax; jmp rax", []byte{0x48, 0xb8, 0x00, 0x10, 0x00, 0xc0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xe0}, entryJump, 0, 0xffffffffc0001000},
-		{"movabs r11; jmp r11", []byte{0x49, 0xbb, 0x00, 0x10, 0x00, 0xc0, 0xff, 0xff, 0xff, 0xff, 0x41, 0xff, 0xe3}, entryJump, 0, 0xffffffffc0001000},
-		{"int3", []byte{0xcc, 0x1f, 0x44, 0x00, 0x00}, entryInt3, 0, 0},
-		{"push rbp", []byte{0x55, 0x48, 0x89, 0xe5, 0, 0, 0, 0, 0, 0, 0, 0}, entryUnknown, 0, 0},
+		{"ftrace nop", []byte{0x0f, 0x1f, 0x44, 0x00, 0x00, 0x55}, entryNop, 0, 0, false},
+		{"endbr + nop", []byte{0xf3, 0x0f, 0x1e, 0xfa, 0x0f, 0x1f, 0x44, 0x00, 0x00}, entryNop, 4, 0, false},
+		{"sealed endbr + nop", []byte{0x0f, 0x1f, 0x40, 0xd6, 0x0f, 0x1f, 0x44, 0x00, 0x00}, entryNop, 4, 0, false},
+		{"old sealed endbr + nop", []byte{0x66, 0x0f, 0x1f, 0x00, 0x0f, 0x1f, 0x44, 0x00, 0x00}, entryNop, 4, 0, false},
+		{"endbr + call", []byte{0xf3, 0x0f, 0x1e, 0xfa, 0xe8, 0x10, 0x00, 0x00, 0x00}, entryCall, 4, base + 4 + 5 + 0x10, false},
+		{"endbr + nop + jmp out", []byte{0xf3, 0x0f, 0x1e, 0xfa, 0x0f, 0x1f, 0x44, 0x00, 0x00, 0xe9, 0x10, 0x00, 0x00, 0x3f}, entryJump, 9, base + 9 + 5 + 0x3f000010, true},
+		{"jmp rel32 backwards", []byte{0xe9, 0xfb, 0xff, 0xff, 0xff}, entryJump, 0, base, false},
+		{"jmp rel8", []byte{0xeb, 0x02}, entryJump, 0, base + 4, false},
+		{"jmp [rip+x]", []byte{0xff, 0x25, 0, 0, 0, 0}, entryIndirect, 0, 0, false},
+		{"push imm32; ret", []byte{0x68, 0x00, 0x10, 0x00, 0xa0, 0xc3}, entryJump, 0, 0xffffffffa0001000, false},
+		{"movabs rax; jmp rax", []byte{0x48, 0xb8, 0x00, 0x10, 0x00, 0xc0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xe0}, entryJump, 0, 0xffffffffc0001000, false},
+		{"movabs r11; jmp r11", []byte{0x49, 0xbb, 0x00, 0x10, 0x00, 0xc0, 0xff, 0xff, 0xff, 0xff, 0x41, 0xff, 0xe3}, entryJump, 0, 0xffffffffc0001000, false},
+		{"int3", []byte{0xcc, 0x1f, 0x44, 0x00, 0x00}, entryInt3, 0, 0, false},
+		{"push rbp", []byte{0x55, 0x48, 0x89, 0xe5, 0, 0, 0, 0, 0, 0, 0, 0}, entryUnknown, 0, 0, false},
 	} {
-		code := make([]byte, 16)
+		code := make([]byte, codeBytes)
 		copy(code, tc.code)
 		e := decodeEntry(code, base)
-		if e.Kind != tc.kind || e.Offset != tc.off || e.Target != tc.target {
-			t.Errorf("%s: got %v off=%d target=%#x, want %v off=%d target=%#x", tc.name, e.Kind, e.Offset, e.Target, tc.kind, tc.off, tc.target)
+		if e.Kind != tc.kind || e.Offset != tc.off || e.Target != tc.target || e.PostNop != tc.postNop {
+			t.Errorf("%s: got %v off=%d target=%#x postNop=%v, want %v off=%d target=%#x postNop=%v",
+				tc.name, e.Kind, e.Offset, e.Target, e.PostNop, tc.kind, tc.off, tc.target, tc.postNop)
 		}
 	}
 }
@@ -54,23 +57,29 @@ ffffffff82000000 T _etext
 	f := function{"filldir64", "filldir64", 0xffffffff81000200}
 
 	for _, tc := range []struct {
-		name       string
-		e          entry
-		traced     map[string]bool
-		haveTraced bool
-		suspicious bool
-		observed   bool
+		name          string
+		e             entry
+		traced        map[string]bool
+		haveTraced    bool
+		hasFtraceSite bool
+		suspicious    bool
+		observed      bool
 	}{
-		{"nop", entry{Kind: entryNop}, nil, true, false, false},
-		{"jump out of text", entry{Kind: entryJump, Target: 0xffffffffc0001000}, nil, true, true, false},
-		{"jump inside text", entry{Kind: entryJump, Target: 0xffffffff81000300}, nil, true, false, true},
-		{"call ftrace_caller", entry{Kind: entryCall, Target: 0xffffffff81000100}, nil, true, false, false},
-		{"call trampoline, traced", entry{Kind: entryCall, Target: 0xffffffffc0002000}, map[string]bool{"filldir64": true}, true, false, false},
-		{"call trampoline, not traced", entry{Kind: entryCall, Target: 0xffffffffc0002000}, map[string]bool{}, true, true, false},
-		{"call trampoline, no tracefs", entry{Kind: entryCall, Target: 0xffffffffc0002000}, nil, false, false, true},
-		{"indirect", entry{Kind: entryIndirect}, nil, true, true, false},
+		{"nop", entry{Kind: entryNop}, nil, true, true, false, false},
+		{"jump out of text", entry{Kind: entryJump, Target: 0xffffffffc0001000}, nil, true, false, true, false},
+		{"jump inside text (no ftrace site)", entry{Kind: entryJump, Target: 0xffffffff81000300}, nil, true, false, false, true},
+		{"jump inside text overwriting ftrace site", entry{Kind: entryJump, Target: 0xffffffff81000300}, nil, true, true, true, false},
+		{"post-nop jump inside text (static branch/tailcall)", entry{Kind: entryJump, Target: 0xffffffff81000230, PostNop: true}, nil, true, true, false, false},
+		{"post-nop jump out of text", entry{Kind: entryJump, Target: 0xffffffffc0001000, PostNop: true}, nil, true, true, true, false},
+		{"overwritten ftrace site with ret", entry{Kind: entryUnknown}, nil, true, true, true, false},
+		{"notrace function without ftrace site", entry{Kind: entryUnknown}, nil, true, false, false, false},
+		{"call ftrace_caller", entry{Kind: entryCall, Target: 0xffffffff81000100}, nil, true, true, false, false},
+		{"call trampoline, traced", entry{Kind: entryCall, Target: 0xffffffffc0002000}, map[string]bool{"filldir64": true}, true, true, false, false},
+		{"call trampoline, not traced", entry{Kind: entryCall, Target: 0xffffffffc0002000}, map[string]bool{}, true, true, true, false},
+		{"call trampoline, no tracefs", entry{Kind: entryCall, Target: 0xffffffffc0002000}, nil, false, false, false, true},
+		{"indirect", entry{Kind: entryIndirect}, nil, true, true, true, false},
 	} {
-		susp, obs, _ := judge(tc.e, f, ks, inText, tc.traced, tc.haveTraced)
+		susp, obs, _ := judge(tc.e, f, ks, inText, tc.traced, tc.haveTraced, tc.hasFtraceSite)
 		if susp != tc.suspicious || (obs != "") != tc.observed {
 			t.Errorf("%s: suspicious=%v observed=%q, want %v/%v", tc.name, susp, obs, tc.suspicious, tc.observed)
 		}

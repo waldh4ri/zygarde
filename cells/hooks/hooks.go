@@ -1,5 +1,5 @@
-// Package hooks inventories kernel functions hooked through ftrace and flags
-// hooks that redirect execution or run code that can't be attributed.
+// Package hooks inventories kernel functions hooked through ftrace and kprobes,
+// flagging hooks that redirect execution or run code that can't be attributed.
 package hooks
 
 //go:generate go tool bpf2go -target amd64,arm64 -cflags "-Wall -Werror -Wno-missing-declarations" hooks hooks.bpf.c -- -I../../bpf/include
@@ -9,8 +9,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +21,7 @@ import (
 
 	"github.com/waldh4ri/zygarde/internal/bpfutil"
 	"github.com/waldh4ri/zygarde/internal/core"
+	"github.com/waldh4ri/zygarde/internal/fsutil"
 	"github.com/waldh4ri/zygarde/internal/kernel"
 )
 
@@ -31,17 +34,8 @@ var canaryCandidates = []string{
 	"__ia32_sys_getppid", "ksys_sync",
 }
 
-// Cell reads ftrace's list of patched functions (enabled_functions).
-//
-// On kernels that no longer use sys_call_table, rootkits hook functions
-// through ftrace (often redirecting execution, the "I" flag), kprobes or BPF
-// trampolines, and all of these appear in that list along with their handler.
-// A handler that resolves to no symbol lives in code that is not part of the
-// kernel, a visible module or a named BPF program: typically a module that
-// removed itself from the module list.
-//
-// Hooks that are common and legitimate (BPF tracing tools, kprobes, livepatch)
-// are reported as observations, not findings.
+// Cell reads ftrace's list of patched functions (enabled_functions) and, when
+// available, /sys/kernel/debug/kprobes/list.
 type Cell struct{}
 
 // New returns the hook inventory Cell.
@@ -51,7 +45,7 @@ func (*Cell) ID() string             { return "hook_inventory" }
 func (*Cell) Name() string           { return "Kernel Hook Inventory" }
 func (*Cell) Timeout() time.Duration { return 30 * time.Second }
 func (*Cell) Description() string {
-	return "Lists functions hooked through ftrace (kprobes, BPF trampolines, ftrace ops) and flags unattributed or redirecting hooks"
+	return "Lists functions hooked through ftrace (kprobes, BPF trampolines, ftrace ops) and kprobes/list, flagging unattributed or redirecting hooks"
 }
 
 func (*Cell) Supported(env *core.Env) error {
@@ -81,7 +75,7 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 		rec.Limit("No canary hook could be planted on this kernel, so the hook list itself is unverified")
 	}
 
-	f, err := os.Open(path)
+	f, err := fsutil.OpenNoAtime(path)
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", path, err)
 	}
@@ -101,17 +95,22 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 		rec.Canary(kind+" hook on "+target, "ftrace enabled_functions", seen)
 	}
 
-	livepatch := livepatchActive()
+	livepatched := livepatchedFunctions("/sys/kernel/livepatch")
 	hooked, suspicious := 0, 0
 	for _, h := range hooks {
-		if target != "" && baseName(h.Function) == target {
-			continue // our own canary
+		// Only skip the canary function when our canary is the sole hook on it
+		// and no execution redirection or unattributed handler is present;
+		// otherwise a rootkit co-hooking getppid would hide behind our canary.
+		if target != "" && baseName(h.Function) == target && isSoleCanary(h) {
+			continue
 		}
 		hooked++
-		if classify(rec, h, livepatch) {
+		if classify(rec, h, livepatched) {
 			suspicious++
 		}
 	}
+
+	suspicious += checkKprobesList(rec, target)
 
 	switch {
 	case suspicious > 0:
@@ -124,11 +123,25 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 	return nil
 }
 
+func isSoleCanary(h hook) bool {
+	if h.RefCount > 1 || h.Flags['I'] {
+		return false
+	}
+	for _, s := range h.Handlers {
+		if unresolved(s) {
+			return false
+		}
+	}
+	return true
+}
+
 // classify records one hooked function and reports whether it is suspicious.
-func classify(rec *core.Recorder, h hook, livepatch bool) bool {
+// livepatched holds the exact function names currently patched by kernel livepatch.
+func classify(rec *core.Recorder, h hook, livepatched map[string]bool) bool {
 	fn := h.Function
 	details := map[string]string{
 		"function": fn,
+		"refcount": strconv.Itoa(h.RefCount),
 		"flags":    flagString(h.Flags),
 	}
 	if len(h.Handlers) > 0 {
@@ -169,8 +182,8 @@ func classify(rec *core.Recorder, h hook, livepatch bool) bool {
 			details["note"] = "kprobe with a post handler, registered by kernel code (module or built-in), not by BPF or perf"
 			rec.Observe(fmt.Sprintf("%s has a kernel-registered kprobe%s", fn, note), details)
 			return false
-		case !attributed(h.Handlers) && livepatch:
-			rec.Observe(fmt.Sprintf("%s has an execution-redirecting hook (livepatch is active)", fn), details)
+		case !attributed(h.Handlers) && livepatched[baseName(fn)]:
+			rec.Observe(fmt.Sprintf("%s has an execution-redirecting hook (accounted for by livepatch)", fn), details)
 			return false
 		default:
 			rec.Suspicious(core.Finding{
@@ -201,6 +214,52 @@ func classify(rec *core.Recorder, h hook, livepatch bool) bool {
 	return false
 }
 
+// checkKprobesList inspects /sys/kernel/debug/kprobes/list when readable,
+// catching jump-optimized kprobes ([OPTIMIZED]) and kprobes at non-entry
+// offsets that do not go through ftrace enabled_functions.
+func checkKprobesList(rec *core.Recorder, canaryFn string) int {
+	f, err := fsutil.OpenNoAtime("/sys/kernel/debug/kprobes/list")
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+	return parseKprobesList(rec, f, canaryFn)
+}
+
+func parseKprobesList(rec *core.Recorder, r io.Reader, canaryFn string) int {
+	suspicious := 0
+	sc := bufio.NewScanner(r)
+	for sc.Scan() {
+		fields := strings.Fields(sc.Text())
+		if len(fields) < 3 {
+			continue
+		}
+		addr, kind, sym := fields[0], fields[1], fields[2]
+		if canaryFn != "" && baseName(sym) == canaryFn {
+			continue
+		}
+		flags := strings.Join(fields[3:], " ")
+		details := map[string]string{"address": addr, "probe_type": kind, "target": sym}
+		if flags != "" {
+			details["flags"] = flags
+		}
+		if unresolved(baseName(sym)) {
+			suspicious++
+			rec.Suspicious(core.Finding{
+				Description: fmt.Sprintf("Kprobe (%s) is registered at unattributed kernel address %s", kind, sym),
+				Details:     details,
+				Why:         "A kprobe placed on an address with no kernel or visible module symbol points to hidden code or a scrubbed symbol.",
+				Benign:      "Rare; check loaded BPF programs and module addresses.",
+			})
+			continue
+		}
+		if !strings.Contains(flags, "[FTRACE]") {
+			rec.Observe(fmt.Sprintf("Non-ftrace kprobe (%s) on %s %s", kind, sym, flags), details)
+		}
+	}
+	return suspicious
+}
+
 // attributed reports whether any handler names a specific owner rather than
 // ftrace's generic list dispatcher.
 func attributed(handlers []string) bool {
@@ -222,14 +281,53 @@ func flagString(flags map[byte]bool) string {
 	return b.String()
 }
 
-func livepatchActive() bool {
-	entries, err := os.ReadDir("/sys/kernel/livepatch")
-	return err == nil && len(entries) > 0
+// livepatchedFunctions returns the exact set of functions patched by active
+// kernel livepatches (/sys/kernel/livepatch/<patch>/<object>/<func[,sympos]>).
+// Checking per-function entries prevents a rootkit from hiding an IPMODIFY hook
+// on an unrelated syscall merely because livepatch is enabled on the host.
+func livepatchedFunctions(root string) map[string]bool {
+	funcs := map[string]bool{}
+	patches, err := fsutil.ReadDirNoAtime(root)
+	if err != nil {
+		return funcs
+	}
+	for _, p := range patches {
+		if !p.IsDir() {
+			continue
+		}
+		patchDir := filepath.Join(root, p.Name())
+		if b, err := fsutil.ReadFileNoAtime(filepath.Join(patchDir, "enabled")); err == nil && strings.TrimSpace(string(b)) == "0" {
+			continue
+		}
+		objs, err := fsutil.ReadDirNoAtime(patchDir)
+		if err != nil {
+			continue
+		}
+		for _, obj := range objs {
+			if !obj.IsDir() {
+				continue
+			}
+			fns, err := fsutil.ReadDirNoAtime(filepath.Join(patchDir, obj.Name()))
+			if err != nil {
+				continue
+			}
+			for _, fn := range fns {
+				if !fn.IsDir() {
+					continue
+				}
+				name, _, _ := strings.Cut(fn.Name(), ",")
+				if name != "" {
+					funcs[name] = true
+				}
+			}
+		}
+	}
+	return funcs
 }
 
 // canaryTarget returns the first canary candidate that ftrace can patch, or "".
 func canaryTarget(tracefs string) string {
-	f, err := os.Open(filepath.Join(tracefs, "available_filter_functions"))
+	f, err := fsutil.OpenNoAtime(filepath.Join(tracefs, "available_filter_functions"))
 	if err != nil {
 		return ""
 	}
@@ -237,7 +335,8 @@ func canaryTarget(tracefs string) string {
 	traceable := make(map[string]bool)
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
-		traceable[sc.Text()] = true
+		name, _, _ := strings.Cut(sc.Text(), " ")
+		traceable[name] = true
 	}
 	for _, c := range canaryCandidates {
 		if traceable[c] {
@@ -269,6 +368,10 @@ func plantCanary(env *core.Env, rec *core.Recorder, target string) (string, stri
 		}
 		if err := bpfutil.Load(env, spec, &p); err == nil {
 			if l, err := link.AttachTracing(link.TracingOptions{Program: p.Prog}); err == nil {
+				if id, err := bpfutil.ProgramID(p.Prog); err == nil {
+					rec.Footprint("canary_bpf_prog_id", strconv.FormatUint(uint64(id), 10))
+				}
+				rec.Footprint("canary_fentry", target)
 				return target, "fentry", func() { l.Close(); p.Prog.Close() }
 			} else {
 				rec.Log().Debug("fentry canary attach failed, trying kprobe", "err", err)
@@ -297,5 +400,9 @@ func plantCanary(env *core.Env, rec *core.Recorder, target string) (string, stri
 		rec.Log().Debug("kprobe canary attach failed", "err", err)
 		return "", "", nop
 	}
+	if id, err := bpfutil.ProgramID(p.Prog); err == nil {
+		rec.Footprint("canary_bpf_prog_id", strconv.FormatUint(uint64(id), 10))
+	}
+	rec.Footprint("canary_kprobe", target)
 	return target, "kprobe", func() { l.Close(); p.Prog.Close() }
 }

@@ -10,13 +10,15 @@
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 #define MAX_FUNCS  64
-#define CODE_BYTES 16
+#define CODE_BYTES 24
 
 // Set by userspace before loading.
 const volatile __u32 nr_funcs = 0;
 const volatile __u64 addrs[MAX_FUNCS] = {};
 
 struct func_code {
+	__u32 fired;
+	__s32 err;
 	__u8 bytes[CODE_BYTES];
 };
 
@@ -42,9 +44,9 @@ int read_code(void *ctx)
 	for (int i = 0; i < MAX_FUNCS; i++) {
 		if (i < nr_funcs) {
 			__u32 key = i;
-			struct func_code c = {};
+			struct func_code c = { .fired = 1 };
 
-			bpf_probe_read_kernel(&c.bytes, sizeof(c.bytes), (void *)addrs[i]);
+			c.err = bpf_probe_read_kernel(&c.bytes, sizeof(c.bytes), (void *)addrs[i]);
 			bpf_map_update_elem(&prologues, &key, &c, BPF_ANY);
 		}
 	}

@@ -15,7 +15,9 @@ import (
 
 type inlinehookFuncCode struct {
 	_     structs.HostLayout
-	Bytes [16]uint8
+	Fired uint32
+	Err   int32
+	Bytes [24]uint8
 }
 
 // Names of all BPF objects in the ELF.

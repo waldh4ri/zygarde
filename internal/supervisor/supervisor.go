@@ -22,6 +22,7 @@ import (
 
 	"github.com/waldh4ri/zygarde/internal/canary"
 	"github.com/waldh4ri/zygarde/internal/core"
+	"github.com/waldh4ri/zygarde/internal/kernel"
 )
 
 const (
@@ -43,10 +44,11 @@ type event struct {
 	Result *core.Result `json:"result,omitempty"`
 }
 
-// Callbacks let the caller stream progress.
+// Callbacks let the caller stream progress and observe worker PIDs.
 type Callbacks struct {
-	Start  func(c core.Cell)
-	Result func(r core.Result)
+	Start     func(c core.Cell)
+	Result    func(r core.Result)
+	WorkerPID func(pid int)
 }
 
 // Supervise runs cells in worker processes and returns their results in order.
@@ -57,6 +59,7 @@ func Supervise(ctx context.Context, cells []core.Cell, args []string, log *slog.
 		byID[c.ID()] = c
 	}
 	results := make(map[string]core.Result, len(cells))
+	tag := canary.ScanTag()
 
 	pending := func() []core.Cell {
 		var out []core.Cell
@@ -79,7 +82,7 @@ func Supervise(ctx context.Context, cells []core.Cell, args []string, log *slog.
 		if len(todo) == 0 || ctx.Err() != nil {
 			break
 		}
-		failed := runWorker(ctx, todo, args, log, byID, cb, record)
+		failed := runWorker(ctx, todo, args, tag, log, byID, cb, record)
 		if failed == nil {
 			continue
 		}
@@ -98,9 +101,22 @@ func Supervise(ctx context.Context, cells []core.Cell, args []string, log *slog.
 	return out
 }
 
+// killGroup terminates the worker's process group (worker + any children) and
+// closes the parent's pipe reader so the scanner goroutine always unblocks
+// even if a descendant hangs in uninterruptible sleep.
+func killGroup(cmd *exec.Cmd, pr *os.File) {
+	if cmd != nil && cmd.Process != nil && cmd.Process.Pid > 0 {
+		_ = unix.Kill(-cmd.Process.Pid, unix.SIGKILL)
+		_ = cmd.Process.Kill()
+	}
+	if pr != nil {
+		_ = pr.Close()
+	}
+}
+
 // runWorker runs one worker until it finishes or dies. If it dies or hangs
 // in the middle of a Cell, it returns a Result describing that for the Cell.
-func runWorker(ctx context.Context, todo []core.Cell, args []string, log *slog.Logger,
+func runWorker(ctx context.Context, todo []core.Cell, args []string, tag string, log *slog.Logger,
 	byID map[string]core.Cell, cb Callbacks, record func(core.Result)) *core.Result {
 
 	ids := make([]string, len(todo))
@@ -113,10 +129,15 @@ func runWorker(ctx context.Context, todo []core.Cell, args []string, log *slog.L
 		return workerFailure(todo[0], fmt.Errorf("creating pipe: %w", err), 0)
 	}
 	cmd := exec.Command("/proc/self/exe", args...)
-	cmd.Env = append(os.Environ(), canary.RoleEnv+"="+RoleWorker, CellsEnv+"="+strings.Join(ids, ","))
+	cmd.Env = append(os.Environ(),
+		canary.RoleEnv+"="+RoleWorker,
+		canary.TagEnv+"="+tag,
+		CellsEnv+"="+strings.Join(ids, ","),
+	)
 	cmd.Stdout = os.Stderr // the worker must not write to our stdout (JSON mode)
 	cmd.Stderr = os.Stderr
 	cmd.ExtraFiles = []*os.File{pw}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		pr.Close()
 		pw.Close()
@@ -124,6 +145,9 @@ func runWorker(ctx context.Context, todo []core.Cell, args []string, log *slog.L
 	}
 	pw.Close()
 	defer pr.Close()
+	if cb.WorkerPID != nil {
+		cb.WorkerPID(cmd.Process.Pid)
+	}
 	log.Debug("worker started", "pid", cmd.Process.Pid, "cells", ids)
 
 	events := make(chan event)
@@ -181,23 +205,29 @@ loop:
 			}
 		case <-timer.C:
 			timedOut = true
-			log.Debug("cell exceeded its timeout, killing worker", "cell", current.ID())
-			_ = cmd.Process.Kill()
+			if current != nil {
+				log.Debug("cell exceeded its timeout, killing worker", "cell", current.ID())
+			}
+			killGroup(cmd, pr)
 		case <-ctx.Done():
-			_ = cmd.Process.Kill()
+			killGroup(cmd, pr)
 		}
 	}
 
 	waitErr := cmd.Wait()
-	canary.RemoveFiles(canary.FileDir, cmd.Process.Pid)
+	canary.RemoveFiles(tag, cmd.Process.Pid)
 	if done && waitErr == nil {
 		return nil
 	}
 	if current == nil {
 		if waitErr != nil {
-			log.Error("worker exited between cells", "err", waitErr)
+			log.Error("worker exited before starting next cell", "err", waitErr)
+			if cb.Start != nil {
+				cb.Start(todo[0])
+			}
+			return deathResult(todo[0], waitErr, 0)
 		}
-		return nil // the next attempt runs the remaining cells
+		return nil
 	}
 	elapsed := time.Since(started)
 	switch {
@@ -242,9 +272,13 @@ func workerFailure(c core.Cell, err error, elapsed time.Duration) *core.Result {
 	return r
 }
 
-// Worker is the body of a worker process: run the Cells named in CellsEnv
-// and stream events to the parent.
+// Worker is the body of a worker process: isolate mounts, mark the event pipe
+// close-on-exec so grandchildren never inherit it, run the Cells named in
+// CellsEnv, and stream events to the parent.
 func Worker(ctx context.Context, all []core.Cell, env *core.Env) error {
+	unix.CloseOnExec(workerFD)
+	kernel.IsolateMountNS()
+
 	out := os.NewFile(workerFD, "events")
 	if out == nil {
 		return errors.New("event pipe missing")

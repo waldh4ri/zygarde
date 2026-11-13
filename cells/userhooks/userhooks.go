@@ -1,6 +1,7 @@
 // Package userhooks detects libraries injected into processes through the
-// dynamic linker: /etc/ld.so.preload, unusual library directories and
-// LD_PRELOAD.
+// dynamic linker: /etc/ld.so.preload, unusual library directories in
+// ld.so.conf or /etc/ld.so.cache, LD_PRELOAD/LD_AUDIT in environments, and
+// executable shared objects mapped from unusual paths in /proc/<pid>/maps.
 package userhooks
 
 import (
@@ -18,16 +19,11 @@ import (
 	"time"
 
 	"github.com/waldh4ri/zygarde/internal/core"
+	"github.com/waldh4ri/zygarde/internal/fsutil"
 )
 
-// Cell looks for userland rootkits that hook libc through the dynamic linker.
-//
-// Zygarde itself is a static binary that makes syscalls directly, so these
-// hooks can't hide anything from it, and the kernel-side comparisons stay
-// clean while libc lies to every other program. This Cell reports the
-// injection points instead (the same ones Elastic and Sandfly treat as
-// primary signals). LinkPro falls back to /etc/ld.so.preload when its eBPF
-// module can't load.
+// Cell looks for userland rootkits that hook libc through the dynamic linker
+// or inject shared libraries into running processes.
 type Cell struct {
 	root string // prefixes system paths (tests use a fixture tree)
 	proc string
@@ -41,23 +37,29 @@ func (*Cell) Name() string                  { return "Userspace Hook Detection" 
 func (*Cell) Timeout() time.Duration        { return 30 * time.Second }
 func (*Cell) Supported(env *core.Env) error { return nil }
 func (*Cell) Description() string {
-	return "Checks dynamic linker injection points: /etc/ld.so.preload, ld.so.conf library directories and LD_PRELOAD in process environments"
+	return "Checks dynamic linker injection points (/etc/ld.so.preload, ld.so.conf, ld.so.cache, LD_PRELOAD) and suspicious mapped libraries in process memory"
 }
 
 func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	suspicious := 0
 	suspicious += c.checkPreloadFile(rec)
 	suspicious += c.checkLdSoConf(rec)
+	suspicious += c.checkLdSoCache(rec)
 	n, err := c.checkEnvironments(ctx, rec)
 	if err != nil {
 		return err
 	}
 	suspicious += n
+	m, err := c.checkProcessMaps(ctx, rec)
+	if err != nil {
+		return err
+	}
+	suspicious += m
 
 	if suspicious > 0 {
-		rec.Message("%d dynamic linker injection point(s)", suspicious)
+		rec.Message("%d dynamic linker or memory injection point(s)", suspicious)
 	} else {
-		rec.Message("No preloaded libraries or unusual library directories")
+		rec.Message("No preloaded libraries, unusual library directories or injected libraries")
 	}
 	return nil
 }
@@ -66,7 +68,7 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 // listed there into every dynamically linked program.
 func (c *Cell) checkPreloadFile(rec *core.Recorder) int {
 	const name = "/etc/ld.so.preload"
-	data, err := os.ReadFile(c.path(name))
+	data, err := fsutil.ReadFileNoAtime(c.path(name))
 	if err != nil {
 		return 0
 	}
@@ -86,9 +88,11 @@ func (c *Cell) checkPreloadFile(rec *core.Recorder) int {
 		return n
 	}
 	n++
+	details := map[string]string{"path": name, "libraries": strings.Join(libs, ", ")}
+	fsutil.MergeMetadata(details, "preload_file_", fsutil.FileMetadata(c.path(name)))
 	rec.Suspicious(core.Finding{
 		Description: fmt.Sprintf("%s preloads %d librar%s into every program: %s", name, len(libs), plural(len(libs), "y", "ies"), strings.Join(libs, ", ")),
-		Details:     map[string]string{"path": name, "libraries": strings.Join(libs, ", ")},
+		Details:     details,
 		Why: "The dynamic linker loads these libraries into every dynamically linked program before libc. Userland " +
 			"rootkits use it to hook libc functions (readdir, open, stat...) and hide files, processes and connections " +
 			"from ls, ps and netstat. Zygarde doesn't use libc, so its own views are unaffected.",
@@ -96,7 +100,7 @@ func (c *Cell) checkPreloadFile(rec *core.Recorder) int {
 			"preload. Check which package owns each library (dpkg -S, rpm -qf).",
 	})
 	for _, lib := range libs {
-		n += c.checkLibrary(rec, lib, "", name)
+		n += c.checkLibrary(rec, lib, nil, name)
 	}
 	return n
 }
@@ -142,14 +146,12 @@ type confDir struct {
 	dir, source string
 }
 
-// ldSoConfDirs parses an ld.so.conf file and its includes (ldconfig(8)):
-// directories separated by whitespace, ':' or ','; "include <glob>" lines;
-// "hwcap" lines (ignored); '#' comments.
+// ldSoConfDirs parses an ld.so.conf file and its includes (ldconfig(8)).
 func (c *Cell) ldSoConfDirs(file string, depth int) []confDir {
 	if depth > 8 {
 		return nil
 	}
-	f, err := os.Open(c.path(file))
+	f, err := fsutil.OpenNoAtime(c.path(file))
 	if err != nil {
 		return nil
 	}
@@ -165,19 +167,24 @@ func (c *Cell) ldSoConfDirs(file string, depth int) []confDir {
 		switch fields[0] {
 		case "include":
 			for _, pattern := range fields[1:] {
-				if !filepath.IsAbs(pattern) {
-					pattern = filepath.Join(filepath.Dir(file), pattern)
+				if !strings.HasPrefix(pattern, "/") && !filepath.IsAbs(pattern) {
+					pattern = filepath.ToSlash(filepath.Join(filepath.Dir(file), pattern))
 				}
 				matches, _ := filepath.Glob(c.path(pattern))
 				sort.Strings(matches)
 				for _, m := range matches {
-					out = append(out, c.ldSoConfDirs(strings.TrimPrefix(m, c.root), depth+1)...)
+					rel := m
+					if c.root != "" {
+						if r, err := filepath.Rel(c.root, m); err == nil {
+							rel = "/" + strings.TrimPrefix(filepath.ToSlash(r), "/")
+						}
+					}
+					out = append(out, c.ldSoConfDirs(rel, depth+1)...)
 				}
 			}
 		case "hwcap":
 		default:
 			for _, d := range strings.FieldsFunc(line, func(r rune) bool { return r == ':' || r == ',' || r == ' ' || r == '\t' }) {
-				// "dir=TYPE" (libc5/libc6 hint) is still accepted by ldconfig.
 				d, _, _ = strings.Cut(d, "=")
 				out = append(out, confDir{d, fmt.Sprintf("%s:%d", file, n)})
 			}
@@ -190,21 +197,25 @@ func (c *Cell) ldSoConfDirs(file string, depth int) []confDir {
 // root prefixes the path when it must be resolved in another mount
 // namespace (/proc/<pid>/root).
 func (c *Cell) unusualDir(dir, root string) string {
-	if !filepath.IsAbs(dir) {
+	slash := filepath.ToSlash(dir)
+	if !strings.HasPrefix(slash, "/") {
 		return ""
 	}
-	dir = filepath.Clean(dir)
+	slash = filepath.ToSlash(filepath.Clean(slash))
+	if !strings.HasPrefix(slash, "/") {
+		slash = "/" + slash
+	}
 	switch {
-	case under(dir, "/dev/shm"), under(dir, "/run/shm"):
+	case under(slash, "/dev/shm"), under(slash, "/run/shm"):
 		return "a memory-backed directory"
-	case under(dir, "/tmp"), under(dir, "/var/tmp"):
+	case under(slash, "/tmp"), under(slash, "/var/tmp"):
 		return "a temporary directory"
-	case hiddenComponent(dir):
+	case hiddenComponent(slash):
 		return "a hidden directory"
 	}
-	full := c.path(dir)
+	full := c.path(slash)
 	if root != "" {
-		full = filepath.Join(root, dir)
+		full = filepath.Join(root, slash)
 	}
 	if st, err := os.Stat(full); err == nil && st.IsDir() && st.Mode().Perm()&0o002 != 0 {
 		return "a world-writable directory"
@@ -212,22 +223,38 @@ func (c *Cell) unusualDir(dir, root string) string {
 	return ""
 }
 
+// resolveLiveRoot picks the first /proc/<pid>/root from candidateRoots that
+// still exists on disk, so a single short-lived process exiting mid-scan does
+// not skip inspection for other processes in the same mount namespace.
+func resolveLiveRoot(candidateRoots []string) (string, bool) {
+	if len(candidateRoots) == 0 {
+		return "", true
+	}
+	for _, r := range candidateRoots {
+		if _, err := os.Stat(r); err == nil {
+			return r, true
+		}
+	}
+	return "", false
+}
+
 // checkLibrary reports a preloaded library that is missing, lives in an
-// unusual directory or is hidden from its directory's listing. root is the
-// process's root directory (/proc/<pid>/root) or "" for the host.
-func (c *Cell) checkLibrary(rec *core.Recorder, lib, root, source string) int {
-	if !filepath.IsAbs(lib) || strings.Contains(lib, "$") {
+// unusual directory or is hidden from its directory's listing.
+func (c *Cell) checkLibrary(rec *core.Recorder, lib string, candidateRoots []string, source string) int {
+	slash := filepath.ToSlash(lib)
+	if !strings.HasPrefix(slash, "/") || strings.Contains(slash, "$") {
 		return 0 // searched in the library path, or a dynamic string token
 	}
-	full := c.path(lib)
+	root, ok := resolveLiveRoot(candidateRoots)
+	if !ok {
+		return 0 // every candidate process in this namespace exited
+	}
+	full := c.path(slash)
 	if root != "" {
-		if _, err := os.Stat(root); err != nil {
-			return 0 // the process exited
-		}
-		full = filepath.Join(root, lib)
+		full = filepath.Join(root, slash)
 	}
 	var why string
-	if w := c.unusualDir(filepath.Dir(lib), root); w != "" {
+	if w := c.unusualDir(filepath.ToSlash(filepath.Dir(slash)), root); w != "" {
 		why = "it lives in " + w
 	} else if _, err := os.Lstat(full); errors.Is(err, fs.ErrNotExist) {
 		why = "it is missing from disk"
@@ -237,9 +264,11 @@ func (c *Cell) checkLibrary(rec *core.Recorder, lib, root, source string) int {
 	if why == "" {
 		return 0
 	}
+	details := map[string]string{"library": lib, "preloaded_by": source, "reason": why}
+	fsutil.MergeMetadata(details, "file_", fsutil.FileMetadata(full))
 	rec.Suspicious(core.Finding{
 		Description: fmt.Sprintf("Preloaded library %s (%s): %s", lib, source, why),
-		Details:     map[string]string{"library": lib, "preloaded_by": source, "reason": why},
+		Details:     details,
 		Why: "A preloaded library runs inside every affected program. One that was deleted after loading, sits in a " +
 			"temporary, memory-backed or hidden directory, or is filtered out of listings is hiding where it came from.",
 		Benign: "A library uninstalled while a long-running process that preloads it is still running.",
@@ -251,17 +280,18 @@ func (c *Cell) checkLibrary(rec *core.Recorder, lib, root, source string) int {
 var injectionVars = []string{"LD_PRELOAD", "LD_AUDIT"}
 
 // checkEnvironments reports processes started with LD_PRELOAD, LD_AUDIT or
-// an LD_LIBRARY_PATH pointing at an unusual directory.
+// an LD_LIBRARY_PATH pointing at an unusual directory, grouping by mount
+// namespace so container filesystems never shadow host processes.
 func (c *Cell) checkEnvironments(ctx context.Context, rec *core.Recorder) (int, error) {
-	entries, err := os.ReadDir(c.proc)
+	entries, err := fsutil.ReadDirNoAtime(c.proc)
 	if err != nil {
 		return 0, fmt.Errorf("listing %s: %w", c.proc, err)
 	}
 	type use struct {
-		variable, value string
+		mntNS, variable, value string
 	}
 	pids := map[use][]string{}
-	roots := map[use]string{}
+	roots := map[use][]string{}
 	unreadable := 0
 	for _, e := range entries {
 		if ctx.Err() != nil {
@@ -271,26 +301,25 @@ func (c *Cell) checkEnvironments(ctx context.Context, rec *core.Recorder) (int, 
 		if _, err := strconv.Atoi(pid); err != nil {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(c.proc, pid, "environ"))
+		data, err := fsutil.ReadFileNoAtime(filepath.Join(c.proc, pid, "environ"))
 		if err != nil {
-			// Kernel threads have no environment (an empty command line).
-			cmdline, cerr := os.ReadFile(filepath.Join(c.proc, pid, "cmdline"))
+			cmdline, cerr := fsutil.ReadFileNoAtime(filepath.Join(c.proc, pid, "cmdline"))
 			if !errors.Is(err, fs.ErrNotExist) && cerr == nil && len(cmdline) > 0 {
 				unreadable++
 			}
 			continue
 		}
+		mntNS, _ := os.Readlink(filepath.Join(c.proc, pid, "ns", "mnt"))
+		procRoot := filepath.Join(c.proc, pid, "root")
 		for k, v := range ParseEnviron(data) {
 			isInjection := false
 			for _, iv := range injectionVars {
 				isInjection = isInjection || k == iv
 			}
 			if (isInjection && strings.TrimSpace(v) != "") || k == "LD_LIBRARY_PATH" {
-				u := use{k, v}
+				u := use{mntNS, k, v}
 				pids[u] = append(pids[u], pid)
-				if _, ok := roots[u]; !ok {
-					roots[u] = filepath.Join(c.proc, pid, "root")
-				}
+				roots[u] = append(roots[u], procRoot)
 			}
 		}
 	}
@@ -302,7 +331,9 @@ func (c *Cell) checkEnvironments(ctx context.Context, rec *core.Recorder) (int, 
 	for u := range pids {
 		keys = append(keys, u)
 	}
-	sort.Slice(keys, func(i, j int) bool { return keys[i].variable+keys[i].value < keys[j].variable+keys[j].value })
+	sort.Slice(keys, func(i, j int) bool {
+		return keys[i].variable+keys[i].value+keys[i].mntNS < keys[j].variable+keys[j].value+keys[j].mntNS
+	})
 
 	n := 0
 	for _, u := range keys {
@@ -313,12 +344,16 @@ func (c *Cell) checkEnvironments(ctx context.Context, rec *core.Recorder) (int, 
 			shown = append(shown[:20:20], fmt.Sprintf("… (%d more)", len(list)-20))
 		}
 		details := map[string]string{"variable": u.variable, "value": u.value, "pids": strings.Join(shown, ", ")}
+		if u.mntNS != "" {
+			details["mount_ns"] = u.mntNS
+		}
 		source := fmt.Sprintf("%s of process %s", u.variable, list[0])
 
 		if u.variable == "LD_LIBRARY_PATH" {
+			liveRoot, _ := resolveLiveRoot(roots[u])
 			var odd []string
-			for _, d := range filepath.SplitList(u.value) {
-				if why := c.unusualDir(d, roots[u]); why != "" {
+			for _, d := range strings.Split(u.value, ":") {
+				if why := c.unusualDir(d, liveRoot); why != "" {
 					odd = append(odd, d+" ("+why+")")
 				}
 			}
@@ -358,7 +393,7 @@ func hiddenFromListing(full string) bool {
 	if _, err := os.Lstat(full); err != nil {
 		return false
 	}
-	entries, err := os.ReadDir(filepath.Dir(full))
+	entries, err := fsutil.ReadDirNoAtime(filepath.Dir(full))
 	if err != nil {
 		return false
 	}
@@ -374,7 +409,7 @@ func hiddenFromListing(full string) bool {
 func under(p, dir string) bool { return p == dir || strings.HasPrefix(p, dir+"/") }
 
 func hiddenComponent(p string) bool {
-	for _, part := range strings.Split(p, "/") {
+	for _, part := range strings.Split(filepath.ToSlash(p), "/") {
 		if strings.HasPrefix(part, ".") && part != "." && part != ".." {
 			return true
 		}

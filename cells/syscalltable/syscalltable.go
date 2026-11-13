@@ -1,7 +1,7 @@
 // Package syscalltable checks x86_64 sys_call_table entries for hooks.
 package syscalltable
 
-//go:generate go tool bpf2go -target amd64,arm64 -cflags "-Wall -Werror -Wno-missing-declarations" syscalltable syscalltable.bpf.c -- -I../../bpf/include
+//go:generate go tool bpf2go -target amd64,arm64 -cflags "-Wall -Werror -Wno-missing-declarations" -type table_entry syscalltable syscalltable.bpf.c -- -I../../bpf/include
 
 import (
 	"context"
@@ -31,7 +31,7 @@ var watched = []syscall{
 	{43, "accept"}, {44, "sendto"}, {45, "recvfrom"}, {62, "kill"},
 	{78, "getdents"}, {101, "ptrace"}, {140, "getpriority"}, {157, "prctl"},
 	{175, "init_module"}, {176, "delete_module"}, {217, "getdents64"},
-	{257, "openat"}, {313, "finit_module"},
+	{257, "openat"}, {313, "finit_module"}, {321, "bpf"},
 }
 
 // Cell compares sys_call_table entries read from kernel memory with the
@@ -93,6 +93,9 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 		}
 		checks = append(checks, check{s, sym, addr})
 	}
+	if len(checks) == 0 {
+		return core.Skip("no syscall handler symbols found in /proc/kallsyms")
+	}
 	if len(checks) > maxEntries {
 		return fmt.Errorf("too many syscalls to check (%d > %d)", len(checks), maxEntries)
 	}
@@ -123,6 +126,9 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 		return err
 	}
 	defer objs.Close()
+	if id, err := bpfutil.ProgramID(objs.ReadTable); err == nil {
+		rec.Footprint("bpf_prog_id", strconv.FormatUint(uint64(id), 10))
+	}
 
 	// cilium/ebpf adds the architecture prefix (__x64_sys_getuid).
 	kp, err := link.Kprobe("sys_getuid", objs.ReadTable, nil)
@@ -131,7 +137,7 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	}
 	defer kp.Close()
 
-	actual := make([]uint64, len(checks))
+	actual := make([]syscalltableTableEntry, len(checks))
 	for attempt := 0; attempt < 3; attempt++ {
 		unix.Getuid() // a real syscall: Go doesn't cache getuid
 		for i := range checks {
@@ -139,29 +145,40 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 				return core.WrapBPF("read entries map", err)
 			}
 		}
-		if actual[0] != 0 {
+		if actual[0].Fired != 0 {
 			break
 		}
 	}
-	if len(checks) > 0 && actual[0] == 0 {
+	if actual[0].Fired == 0 {
 		return fmt.Errorf("the kprobe on getuid() never fired")
 	}
 
-	hooked := 0
+	hooked, verified := 0, 0
 	for i, c := range checks {
-		if actual[i] == c.expected {
+		if actual[i].Err != 0 {
+			rec.Limit("Could not read sys_call_table[%d] (%s): errno %d", c.nr, c.name, -actual[i].Err)
+			continue
+		}
+		verified++
+		if actual[i].Addr == c.expected {
 			continue
 		}
 		hooked++
+		details := map[string]string{
+			"syscall":          c.name,
+			"syscall_number":   strconv.Itoa(int(c.nr)),
+			"expected_symbol":  c.symbol,
+			"expected_address": fmt.Sprintf("%#x", c.expected),
+			"actual_address":   fmt.Sprintf("%#x", actual[i].Addr),
+		}
+		if fn, mod, off, ok := ks.LookupModule(actual[i].Addr); ok {
+			details["actual_symbol"] = fmt.Sprintf("%s+%#x [%s]", fn, off, mod)
+		} else if fn, off, ok := ks.Lookup(actual[i].Addr); ok {
+			details["actual_symbol"] = fmt.Sprintf("%s+%#x", fn, off)
+		}
 		rec.Suspicious(core.Finding{
-			Description: fmt.Sprintf("sys_call_table[%d] (%s) points to %#x instead of %s", c.nr, c.name, actual[i], c.symbol),
-			Details: map[string]string{
-				"syscall":          c.name,
-				"syscall_number":   strconv.Itoa(int(c.nr)),
-				"expected_symbol":  c.symbol,
-				"expected_address": fmt.Sprintf("%#x", c.expected),
-				"actual_address":   fmt.Sprintf("%#x", actual[i]),
-			},
+			Description: fmt.Sprintf("sys_call_table[%d] (%s) points to %#x instead of %s", c.nr, c.name, actual[i].Addr, c.symbol),
+			Details:     details,
 			Why: "Each syscall table entry points at the kernel's own handler. A different address sends every " +
 				"call of this syscall through other code first, which can alter or hide its results.",
 			Benign: "Some older security or monitoring modules patch the table. Check which module owns the " +
@@ -170,9 +187,9 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	}
 
 	if hooked > 0 {
-		rec.Message("%d of %d checked syscall table entries are hooked", hooked, len(checks))
+		rec.Message("%d of %d checked syscall table entries are hooked", hooked, verified)
 	} else {
-		rec.Message("All %d checked syscall table entries are intact", len(checks))
+		rec.Message("All %d checked syscall table entries are intact", verified)
 	}
 	return nil
 }

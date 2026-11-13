@@ -28,10 +28,16 @@ type bpfprogEnumEvent struct {
 }
 
 type bpfprogProgInfo struct {
-	_    structs.HostLayout
-	Id   uint32
-	Type uint32
-	Name [16]int8
+	_                  structs.HostLayout
+	Id                 uint32
+	Type               uint32
+	ExpectedAttachType uint32
+	Uid                uint32
+	XlatedBytes        uint32
+	JitedLen           uint32
+	LoadTime           uint64
+	Tag                [8]uint8
+	Name               [16]int8
 }
 
 // Names of all BPF objects in the ELF.

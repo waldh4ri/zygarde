@@ -5,7 +5,6 @@ package taint
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/waldh4ri/zygarde/internal/core"
+	"github.com/waldh4ri/zygarde/internal/fsutil"
 )
 
 // flag is a taint bit that the kernel charges to a module
@@ -33,13 +33,21 @@ var moduleFlags = []flag{
 	{18, 'N', "test module"},
 }
 
+var systemFlags = []flag{
+	{2, 'S', "kernel running on out-of-specification system"},
+	{3, 'R', "module force-unloaded"},
+	{4, 'M', "processor reported a Machine Check Exception"},
+	{5, 'B', "bad page referenced or corrupted page flags"},
+	{6, 'U', "taint requested by userspace"},
+	{7, 'D', "kernel died recently (OOPS or BUG)"},
+	{8, 'A', "ACPI table overridden"},
+	{9, 'W', "kernel issued warning"},
+	{11, 'I', "workaround for platform firmware bug"},
+	{14, 'L', "soft lockup occurred"},
+	{17, 'T', "kernel built with struct randomization"},
+}
+
 // Cell compares /proc/sys/kernel/tainted with /sys/module/*/taint.
-//
-// Loading a module sets its taint flags both on the module and on the
-// kernel, and the kernel's flags stay set until reboot. A rootkit module
-// that hides itself still leaves its taint behind: an out-of-tree (O) or
-// unsigned (E) taint that no visible module carries points to a hidden
-// module, or to one that was loaded and later unloaded.
 type Cell struct {
 	tainted   string
 	sysModule string
@@ -57,7 +65,7 @@ func (*Cell) Description() string {
 }
 
 func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
-	data, err := os.ReadFile(c.tainted)
+	data, err := fsutil.ReadFileNoAtime(c.tainted)
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", c.tainted, err)
 	}
@@ -78,6 +86,16 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 		}
 		if len(carriers[f.letter]) == 0 {
 			unexplained = append(unexplained, f)
+		}
+	}
+
+	for _, f := range systemFlags {
+		if mask&(1<<f.bit) != 0 {
+			rec.Observe(fmt.Sprintf("Kernel taint '%c' is set: %s", f.letter, f.desc), map[string]string{
+				"taint":       string(f.letter),
+				"meaning":     f.desc,
+				"kernel_mask": strconv.FormatUint(mask, 10),
+			})
 		}
 	}
 
@@ -106,13 +124,13 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 
 // moduleTaints maps each taint letter to the modules carrying it.
 func moduleTaints(root string) (map[byte][]string, error) {
-	entries, err := os.ReadDir(root)
+	entries, err := fsutil.ReadDirNoAtime(root)
 	if err != nil {
 		return nil, fmt.Errorf("listing %s: %w", root, err)
 	}
 	carriers := make(map[byte][]string)
 	for _, e := range entries {
-		data, err := os.ReadFile(filepath.Join(root, e.Name(), "taint"))
+		data, err := fsutil.ReadFileNoAtime(filepath.Join(root, e.Name(), "taint"))
 		if err != nil {
 			continue // built-in modules have no taint attribute
 		}

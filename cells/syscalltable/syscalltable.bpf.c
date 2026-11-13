@@ -16,12 +16,20 @@ const volatile __u64 table_addr = 0;
 const volatile __u32 nr_count = 0;
 const volatile __u32 nrs[MAX_ENTRIES] = {};
 
+struct table_entry {
+	__u64 addr;
+	__s32 err;
+	__u32 fired;
+};
+
+const struct table_entry *unused_table_entry __attribute__((unused));
+
 // entries[i] = sys_call_table[nrs[i]]
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
 	__uint(max_entries, MAX_ENTRIES);
 	__type(key, __u32);
-	__type(value, __u64);
+	__type(value, struct table_entry);
 } entries SEC(".maps");
 
 // Attached to getuid(); zygarde calls getuid() once to trigger the read.
@@ -37,11 +45,11 @@ int read_table(void *ctx)
 	for (int i = 0; i < MAX_ENTRIES; i++) {
 		if (i < nr_count) {
 			__u32 key = i;
-			__u64 handler = 0;
+			struct table_entry e = { .fired = 1 };
 
-			bpf_probe_read_kernel(&handler, sizeof(handler),
-					      (void *)(table_addr + (__u64)nrs[i] * sizeof(__u64)));
-			bpf_map_update_elem(&entries, &key, &handler, BPF_ANY);
+			e.err = bpf_probe_read_kernel(&e.addr, sizeof(e.addr),
+						      (void *)(table_addr + (__u64)nrs[i] * sizeof(__u64)));
+			bpf_map_update_elem(&entries, &key, &e, BPF_ANY);
 		}
 	}
 	return 0;

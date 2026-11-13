@@ -6,6 +6,7 @@ import (
 	"os"
 	"runtime"
 	"sync"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/btf"
@@ -19,6 +20,9 @@ type Settings struct {
 	// BTFPath points to an external BTF file for kernels without
 	// /sys/kernel/btf/vmlinux. Empty means use the kernel's own BTF.
 	BTFPath string
+	// PreserveDir optionally saves copies of volatile executables (e.g.
+	// deleted or memfd-backed binaries) discovered during the scan.
+	PreserveDir string
 }
 
 // Env describes the system Zygarde runs on. It is probed once per worker and
@@ -28,11 +32,15 @@ type Env struct {
 	Settings Settings
 	Log      *slog.Logger
 
-	Arch     string // runtime.GOARCH
-	Kernel   string // uname -r
-	EUID     int
-	Status   kernel.ProcStatus
-	Lockdown string // "none", "integrity", "confidentiality" or "" if unknown
+	Arch          string // runtime.GOARCH
+	Kernel        string // uname -r
+	BootTime      time.Time
+	EUID          int
+	Status        kernel.ProcStatus
+	NonInitUserNS bool   // running in an unprivileged / non-initial user namespace
+	LSMLabel      string // /proc/self/attr/current
+	LSMConfined   bool   // confined SELinux/AppArmor domain
+	Lockdown      string // "none", "integrity", "confidentiality" or "" if unknown
 
 	// BTF is the kernel type information used for CO-RE, or nil if
 	// unavailable (see BTFErr).
@@ -52,14 +60,19 @@ type Env struct {
 
 // ProbeEnv gathers facts about the running system.
 func ProbeEnv(settings Settings, log *slog.Logger) *Env {
+	lsmLabel, lsmConfined := kernel.LSMContext()
 	env := &Env{
-		Settings: settings,
-		Log:      log,
-		Arch:     runtime.GOARCH,
-		Kernel:   kernel.Release(),
-		EUID:     os.Geteuid(),
-		Lockdown: kernel.Lockdown(),
-		btfCache: btf.NewCache(),
+		Settings:      settings,
+		Log:           log,
+		Arch:          runtime.GOARCH,
+		Kernel:        kernel.Release(),
+		BootTime:      kernel.BootTime(),
+		EUID:          os.Geteuid(),
+		NonInitUserNS: !kernel.InInitUserNS(),
+		LSMLabel:      lsmLabel,
+		LSMConfined:   lsmConfined,
+		Lockdown:      kernel.Lockdown(),
+		btfCache:      btf.NewCache(),
 	}
 
 	// No-op on kernels that account BPF memory to cgroups (5.11+).
@@ -80,14 +93,24 @@ func ProbeEnv(settings Settings, log *slog.Logger) *Env {
 	log.Debug("environment",
 		"arch", env.Arch, "kernel", env.Kernel, "euid", env.EUID,
 		"capeff", fmt.Sprintf("%#x", st.CapEff), "seccomp", st.Seccomp,
+		"init_userns", !env.NonInitUserNS, "lsm", env.LSMLabel,
 		"lockdown", env.Lockdown, "btf", env.BTF != nil, "btf_err", env.BTFErr,
 		"memlock_err", env.MemlockErr)
 	return env
 }
 
-// Privileged reports whether the process has the privileges eBPF needs.
+// Privileged reports whether the process has the privileges eBPF needs in the
+// initial user namespace. When CapEff could be read from /proc/self/status,
+// actual capabilities govern rather than EUID==0 (containers and hardened
+// services often run as UID 0 with CAP_BPF/CAP_SYS_ADMIN dropped).
 func (e *Env) Privileged() bool {
-	return e.EUID == 0 || e.Status.HasCap(kernel.CapSysAdmin) || e.Status.HasCap(kernel.CapBPF)
+	if e.NonInitUserNS {
+		return false
+	}
+	if e.Status.HasCaps {
+		return e.Status.HasCap(kernel.CapSysAdmin) || e.Status.HasCap(kernel.CapBPF)
+	}
+	return e.EUID == 0
 }
 
 // BPFExpected reports whether, judging only from non-bpf() sources, this
@@ -95,19 +118,34 @@ func (e *Env) Privileged() bool {
 // bpf() is anomalous. The reason explains the verdict either way.
 func (e *Env) BPFExpected() (bool, string) {
 	switch {
+	case e.NonInitUserNS:
+		return false, "process runs in a non-initial user namespace"
 	case !e.Privileged():
 		return false, "process lacks CAP_BPF/CAP_SYS_ADMIN"
+	case e.Status.HasCaps && !e.Status.HasCap(kernel.CapSysAdmin) && !e.Status.HasCap(kernel.CapPerfmon):
+		return false, "process has CAP_BPF without CAP_PERFMON/CAP_SYS_ADMIN; tracing programs may be denied"
 	case e.MemlockErr != nil:
 		return false, fmt.Sprintf("RLIMIT_MEMLOCK could not be raised (%v); bpf() may fail on kernels before 5.11", e.MemlockErr)
 	case e.Status.Seccomp != 0:
 		return false, fmt.Sprintf("a seccomp filter is active (mode %d) and may deny bpf()", e.Status.Seccomp)
+	case e.LSMConfined:
+		return false, fmt.Sprintf("LSM profile %q may restrict bpf()", e.LSMLabel)
 	default:
 		lockdown := e.Lockdown
 		if lockdown == "" {
 			lockdown = "unavailable"
 		}
-		return true, fmt.Sprintf("running as root, no seccomp filter, lockdown=%s", lockdown)
+		return true, fmt.Sprintf("privileged in init userns, no seccomp filter, lockdown=%s", lockdown)
 	}
+}
+
+// FormatBootOffset converts a kernel monotonic/boottime nanosecond offset
+// since boot into an RFC3339 UTC timestamp string, or "" if unavailable.
+func (e *Env) FormatBootOffset(ns uint64) string {
+	if ns == 0 || e.BootTime.IsZero() {
+		return ""
+	}
+	return e.BootTime.Add(time.Duration(ns)).UTC().Format(time.RFC3339)
 }
 
 // RequireBTF returns a Skip error if kernel BTF is unavailable.

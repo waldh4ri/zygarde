@@ -6,17 +6,21 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 
 	"github.com/waldh4ri/zygarde/internal/bpfutil"
+	"github.com/waldh4ri/zygarde/internal/canary"
 	"github.com/waldh4ri/zygarde/internal/core"
+	"github.com/waldh4ri/zygarde/internal/fsutil"
 )
 
-// Cell loads a trivial program and map, then checks that the kernel lets us
-// load them and that userspace enumeration lists them.
+// Cell loads a trivial program and map with randomised names, then checks that
+// the kernel lets us load them and that userspace enumeration (under comm
+// "bpftool") lists them.
 type Cell struct{}
 
 // New returns the eBPF integrity Cell.
@@ -40,7 +44,7 @@ func (*Cell) Supported(env *core.Env) error {
 
 func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	prog, err := ebpf.NewProgram(&ebpf.ProgramSpec{
-		Name: "zyg_canary",
+		Name: canary.ProgName(),
 		Type: ebpf.SocketFilter,
 		Instructions: asm.Instructions{
 			asm.LoadImm(asm.R0, 0, asm.DWord),
@@ -54,7 +58,7 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	defer prog.Close()
 
 	m, err := ebpf.NewMap(&ebpf.MapSpec{
-		Name:       "zyg_canary",
+		Name:       canary.ProgName(),
 		Type:       ebpf.Array,
 		KeySize:    4,
 		ValueSize:  4,
@@ -77,12 +81,14 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	if !ok {
 		return fmt.Errorf("kernel did not report a map ID")
 	}
+	rec.Footprint("canary_bpf_prog_id", strconv.FormatUint(uint64(progID), 10))
+	rec.Footprint("canary_bpf_map_id", strconv.FormatUint(uint64(mapID), 10))
 
-	progIDs, err := bpfutil.EnumerateProgIDs()
+	progIDs, err := fsutil.WithCommVal("bpftool", bpfutil.EnumerateProgIDs)
 	if err != nil {
 		return err
 	}
-	mapIDs, err := bpfutil.EnumerateMapIDs()
+	mapIDs, err := fsutil.WithCommVal("bpftool", bpfutil.EnumerateMapIDs)
 	if err != nil {
 		return err
 	}
@@ -92,7 +98,9 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	rec.Canary(progName, "BPF_PROG_GET_NEXT_ID enumeration", slices.Contains(progIDs, progID))
 	rec.Canary(mapName, "BPF_MAP_GET_NEXT_ID enumeration", slices.Contains(mapIDs, uint32(mapID)))
 
-	byID, err := ebpf.NewProgramFromID(ebpf.ProgramID(progID))
+	byID, err := fsutil.WithCommVal("bpftool", func() (*ebpf.Program, error) {
+		return ebpf.NewProgramFromID(ebpf.ProgramID(progID))
+	})
 	rec.Canary(progName, "BPF_PROG_GET_FD_BY_ID", err == nil)
 	if err == nil {
 		byID.Close()

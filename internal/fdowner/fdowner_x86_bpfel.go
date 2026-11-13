@@ -14,16 +14,19 @@ import (
 )
 
 type fdownerFdRec struct {
-	_      structs.HostLayout
-	Tgid   uint32
-	Fd     uint32
-	Kind   uint32
-	Id     uint32
-	ProgId uint32
-	Pad    uint32
-	Fop    uint64
-	Ino    uint64
-	Comm   [16]int8
+	_       structs.HostLayout
+	Tgid    uint32
+	Tid     uint32
+	Fd      uint32
+	Kind    uint32
+	Id      uint32
+	ProgId  uint32
+	Sfamily uint16
+	Stype   uint16
+	Pad     uint32
+	Fop     uint64
+	Ino     uint64
+	Comm    [16]int8
 }
 
 // Names of all BPF objects in the ELF.
