@@ -129,7 +129,7 @@ make generate         # needs clang and llvm
 make docker-generate  # or inside the pinned toolchain image (build/Dockerfile)
 ```
 
-CI regenerates the bindings in that image and fails if they differ from what is committed.
+CI regenerates the bindings in that image and fails if they differ from what is committed. clang numbers some BTF forward declarations differently depending on the build host CPU, so after `go generate` both targets run `test/bpfsame`, which keeps the committed object when that is the only difference.
 
 ### Developing without a Linux machine
 

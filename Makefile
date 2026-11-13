@@ -23,8 +23,10 @@ help:
 	@echo "make docker-<target> run generate/build/test inside the toolchain image"
 	@echo "make docker-run      run ./zygarde in a privileged container (local smoke test)"
 
+# clang numbers some BTF forward declarations differently depending on the
+# build host CPU; bpfsame keeps the committed object when nothing else changed.
 generate:
-	$(GO) generate ./...
+	$(GO) generate ./... && $(GO) run ./test/bpfsame
 
 build:
 	CGO_ENABLED=0 GOOS=linux $(GO) build -trimpath -ldflags="$(LDFLAGS)" -o zygarde ./cmd/zygarde
@@ -53,7 +55,7 @@ docker-image:
 	docker build -q -t $(IMAGE) build/
 
 docker-generate: docker-image
-	$(DOCKER) $(GO) generate ./...
+	$(DOCKER) sh -c '$(GO) generate ./... && $(GO) run ./test/bpfsame'
 
 docker-dist: docker-image
 	$(DOCKER) make dist
