@@ -72,6 +72,28 @@ func TestRunCell(t *testing.T) {
 		{"bpf denied unprivileged", testEnv(1000, 0), &fakeCell{run: func(*Recorder) error {
 			return WrapBPF("load", unix.EPERM)
 		}}, StatusError, 0},
+		{"bpf denied for root with dropped capabilities", func() *Env {
+			e := testEnv(0, 0)
+			e.Status = kernel.ProcStatus{HasCaps: true, CapEff: 0, Seccomp: 0}
+			return e
+		}(), &fakeCell{run: func(*Recorder) error {
+			return WrapBPF("load", unix.EPERM)
+		}}, StatusError, 0},
+		{"bpf denied in non-init userns", func() *Env {
+			e := testEnv(0, 0)
+			e.NonInitUserNS = true
+			return e
+		}(), &fakeCell{run: func(*Recorder) error {
+			return WrapBPF("load", unix.EPERM)
+		}}, StatusError, 0},
+		{"bpf denied under confined LSM", func() *Env {
+			e := testEnv(0, 0)
+			e.LSMConfined = true
+			e.LSMLabel = "system_u:system_r:httpd_t:s0"
+			return e
+		}(), &fakeCell{run: func(*Recorder) error {
+			return WrapBPF("load", unix.EPERM)
+		}}, StatusError, 0},
 		{"bpf denied with memlock stuck", func() *Env {
 			e := testEnv(0, 0)
 			e.MemlockErr = errors.New("setrlimit: operation not permitted")

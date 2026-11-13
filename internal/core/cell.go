@@ -64,12 +64,13 @@ func WrapBPF(op string, err error) error {
 
 // Recorder collects a Cell's observations while it runs.
 type Recorder struct {
-	log      *slog.Logger
-	message  string
-	findings []Finding
-	observed []Finding
-	canaries []CanaryCheck
-	limits   []string
+	log       *slog.Logger
+	message   string
+	findings  []Finding
+	observed  []Finding
+	canaries  []CanaryCheck
+	limits    []string
+	footprint []FootprintItem
 }
 
 // NewRecorder returns an empty Recorder; the runner creates one per Cell.
@@ -106,6 +107,15 @@ func (r *Recorder) Limit(format string, args ...any) {
 func (r *Recorder) Canary(canary, view string, observed bool) {
 	r.log.Debug("canary", "canary", canary, "view", view, "observed", observed)
 	r.canaries = append(r.canaries, CanaryCheck{Canary: canary, View: view, Observed: observed})
+}
+
+// Footprint records a transient artifact Zygarde created while scanning (e.g.
+// canary PID, file path, socket or BPF object ID) so DFIR analysts can
+// deconflict scanner activity from host audit/EDR logs.
+func (r *Recorder) Footprint(kind, value string) {
+	if value != "" {
+		r.footprint = append(r.footprint, FootprintItem{Kind: kind, Value: value})
+	}
 }
 
 // Message sets the summary line shown for the Cell.

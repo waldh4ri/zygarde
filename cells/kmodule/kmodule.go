@@ -1,5 +1,5 @@
 // Package kmodule detects loadable kernel modules hidden from one of the
-// kernel's two module views.
+// kernel's module views and audits boot-time module persistence.
 package kmodule
 
 import (
@@ -14,25 +14,12 @@ import (
 	"time"
 
 	"github.com/waldh4ri/zygarde/internal/core"
+	"github.com/waldh4ri/zygarde/internal/fsutil"
 	"github.com/waldh4ri/zygarde/internal/kernel"
 )
 
-// Cell compares /proc/modules with /sys/module.
-//
-// /proc/modules walks the kernel's module list; /sys/module comes from each
-// module's kobject. Rootkits commonly unlink themselves from the list
-// (list_del) or delete their kobject (kobject_del), which makes the two views
-// disagree.
-//
-// /sys/module also contains built-in modules. Only loadable modules get the
-// "initstate" attribute (kernel/module/sysfs.c), which tells them apart.
-//
-// It does not use eBPF: there is no module iterator, and the ksym iterator
-// walks the same list as /proc/modules.
-//
-// It also lists modules configured to load at boot (modules-load.d, /etc/modules,
-// modprobe.d install directives, insmod/modprobe in rc scripts and shell
-// profiles) and flags those that don't come from the running kernel.
+// Cell compares /proc/modules with /sys/module and /sys/kernel/btf, and checks
+// boot-time module configuration.
 type Cell struct {
 	procModules string
 	sysModule   string
@@ -141,7 +128,7 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 
 func (c *Cell) snapshot() (views, error) {
 	var v views
-	f, err := os.Open(c.procModules)
+	f, err := fsutil.OpenNoAtime(c.procModules)
 	if err != nil {
 		return v, err
 	}
@@ -160,7 +147,7 @@ func (c *Cell) snapshot() (views, error) {
 // empty set on kernels without module BTF.
 func btfModules(root string) map[string]bool {
 	mods := make(map[string]bool)
-	entries, err := os.ReadDir(root)
+	entries, err := fsutil.ReadDirNoAtime(root)
 	if err != nil {
 		return mods
 	}
@@ -186,7 +173,7 @@ func ParseProcModules(r io.Reader) (map[string]bool, error) {
 
 // loadableSysModules returns /sys/module entries that are loadable modules.
 func loadableSysModules(root string) (map[string]bool, error) {
-	entries, err := os.ReadDir(root)
+	entries, err := fsutil.ReadDirNoAtime(root)
 	if err != nil {
 		return nil, fmt.Errorf("listing %s: %w", root, err)
 	}

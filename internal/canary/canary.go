@@ -11,13 +11,36 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 )
 
 // RoleEnv selects what a re-executed zygarde binary does.
 const RoleEnv = "ZYGARDE_ROLE"
 
+// TagEnv carries a per-scan random prefix for canary files so their names do
+// not contain "zygarde" while still letting the supervisor clean up if a
+// worker is killed mid-check.
+const TagEnv = "ZYGARDE_TAG"
+
 // RoleProcess is the role of a canary process.
 const RoleProcess = "canary"
+
+var (
+	tagOnce sync.Once
+	scanTag string
+)
+
+// ScanTag returns the random tag for this scan, inheriting TagEnv if set.
+func ScanTag() string {
+	tagOnce.Do(func() {
+		if v := os.Getenv(TagEnv); len(v) >= 6 {
+			scanTag = v
+			return
+		}
+		scanTag = Token()[:8]
+	})
+	return scanTag
+}
 
 // Token returns a random hex string to make canary names unpredictable.
 func Token() string {
@@ -26,6 +49,20 @@ func Token() string {
 		panic(err)
 	}
 	return hex.EncodeToString(b)
+}
+
+// ProgName returns an unpredictable BPF object name (<= 15 chars, [a-z_]) so
+// rootkits cannot allowlist a hardcoded canary name like "zyg_canary".
+func ProgName() string {
+	b := make([]byte, 10)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
+	}
+	out := make([]byte, len(b))
+	for i, v := range b {
+		out[i] = 'a' + (v % 26)
+	}
+	return string(out)
 }
 
 // Process is a child process that exists only to be found.
@@ -66,29 +103,46 @@ func RunProcess() {
 }
 
 // FileDir is where canary files are created. It must be one of the
-// directories the hidden file Cell watches.
+// directories the hidden file Cell watches (/dev/shm is tmpfs in RAM, avoiding
+// disk writes when available; falls back to /tmp).
+func ActiveFileDir() string {
+	if st, err := os.Stat("/dev/shm"); err == nil && st.IsDir() {
+		return "/dev/shm"
+	}
+	return FileDir
+}
+
+// FileDir is the fallback directory when /dev/shm is unavailable.
 const FileDir = "/tmp"
 
-// FilePrefix is the name prefix of canary files created by process pid.
-func FilePrefix(pid int) string { return fmt.Sprintf("zygarde-canary-%d-", pid) }
+// FilePrefix is the name prefix of canary files created by process pid under tag.
+func FilePrefix(tag string, pid int) string {
+	if tag == "" {
+		tag = ScanTag()
+	}
+	return fmt.Sprintf("tmp-%s-%d-", tag, pid)
+}
 
-// RemoveFiles deletes canary files in dir left behind by process pid, e.g.
-// because it was killed before it could clean up.
-func RemoveFiles(dir string, pid int) {
-	matches, _ := filepath.Glob(filepath.Join(dir, FilePrefix(pid)+"*"))
-	for _, m := range matches {
-		os.Remove(m)
+// RemoveFiles deletes canary files left behind by process pid, e.g. because
+// it was killed before it could clean up.
+func RemoveFiles(tag string, pid int) {
+	for _, dir := range []string{"/dev/shm", FileDir} {
+		matches, _ := filepath.Glob(filepath.Join(dir, FilePrefix(tag, pid)+"*"))
+		for _, m := range matches {
+			os.Remove(m)
+		}
 	}
 }
 
 // File is a temporary file that exists only to be found.
 type File struct {
+	Dir  string
 	Path string
 }
 
 // CreateFile creates a canary file in dir.
 func CreateFile(dir string) (*File, error) {
-	path := filepath.Join(dir, FilePrefix(os.Getpid())+Token())
+	path := filepath.Join(dir, FilePrefix(ScanTag(), os.Getpid())+Token())
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return nil, err
@@ -97,7 +151,7 @@ func CreateFile(dir string) (*File, error) {
 		os.Remove(path)
 		return nil, err
 	}
-	return &File{Path: path}, nil
+	return &File{Dir: dir, Path: path}, nil
 }
 
 // Touch opens and closes the file so that open syscalls see it.

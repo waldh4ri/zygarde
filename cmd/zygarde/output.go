@@ -6,23 +6,14 @@ import (
 	"io"
 	"maps"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"unicode/utf8"
 
-	"golang.org/x/sys/unix"
-
 	"github.com/waldh4ri/zygarde/internal/core"
 	"github.com/waldh4ri/zygarde/internal/report"
 )
-
-// termWidth is the output width: the terminal's, or 100 when not a terminal.
-func termWidth(f *os.File) int {
-	if ws, err := unix.IoctlGetWinsize(int(f.Fd()), unix.TIOCGWINSZ); err == nil && ws.Col >= 60 {
-		return int(ws.Col)
-	}
-	return 100
-}
 
 // style applies ANSI colors when enabled.
 type style struct{ on bool }
@@ -45,8 +36,7 @@ func colorEnabled(f *os.File, flagOff bool) bool {
 	if flagOff || os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
 		return false
 	}
-	_, err := unix.IoctlGetTermios(int(f.Fd()), unix.TCGETS)
-	return err == nil
+	return isTerminal(f)
 }
 
 // printer renders a scan for a person at a terminal, or only JSON at the end.
@@ -327,8 +317,8 @@ func nextSteps(v report.Verdict) []string {
 	case report.VerdictSuspicious:
 		return []string{
 			"Keep the system running. Don't reboot, unload modules or kill processes yet: memory-resident evidence and the kernel's taint state would be lost.",
-			"Preserve evidence first: save this report (--output) and capture memory, e.g. with AVML or LiME.",
-			"Analyse the memory image offline, e.g. with Volatility 3, and check each finding against its \"Rule out\" notes.",
+			"Preserve evidence first: save this report (--output), preserve volatile binaries (--preserve-dir), and capture RAM (e.g. AVML or LiME) before further live commands.",
+			"Analyse the memory image offline, e.g. with Volatility 3, deconflicting scanner_footprint IDs, and check each finding against its \"Rule out\" notes.",
 			"Until the findings are explained, treat credentials and keys used on this host as exposed.",
 		}
 	case report.VerdictIncomplete:
@@ -339,7 +329,7 @@ func nextSteps(v report.Verdict) []string {
 	default:
 		return []string{
 			"Nothing to act on from this scan. A clean result raises the bar for an attacker but can't prove that a kernel-level compromise is absent.",
-			"If you have other reasons for suspicion, capture memory for offline analysis.",
+			"Order of volatility: if you already suspect a single host, capture memory (AVML/LiME) before running live scanners.",
 		}
 	}
 }
@@ -350,11 +340,50 @@ func (p *printer) writeJSON(r *report.Report) {
 	_ = enc.Encode(r)
 }
 
-// saveReport writes the JSON report to path, readable by the owner only.
+// checkOutputWritable verifies that path's parent directory exists and is
+// writable before running the scan, avoiding lost reports after long runs.
+func checkOutputWritable(path string) error {
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, ".zygarde-out-*")
+	if err != nil {
+		return err
+	}
+	name := f.Name()
+	_ = f.Close()
+	_ = os.Remove(name)
+	return nil
+}
+
+// saveReport writes the JSON report atomically to path, readable by the owner only.
 func saveReport(r *report.Report, path string) error {
 	data, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(data, '\n'), 0o600)
+	data = append(data, '\n')
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".zygarde-report-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	return nil
 }

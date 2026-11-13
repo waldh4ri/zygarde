@@ -11,19 +11,23 @@
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 // Kinds of files reported (fdowner.Kind).
-#define KIND_PROG   1
-#define KIND_MAP    2
-#define KIND_LINK   3
-#define KIND_PERF   4
-#define KIND_SOCKET 5
-#define NR_KINDS    6
+#define KIND_PROG      1
+#define KIND_MAP       2
+#define KIND_LINK      3
+#define KIND_PERF      4
+#define KIND_SOCKET    5
+#define KIND_LINK_POLL 6 // bpf_link_fops_poll, normalised to KIND_LINK
+#define NR_KINDS       7
 
 struct fd_rec {
-	__u32 tgid;    // holder, in zygarde's PID namespace
+	__u32 tgid;    // process ID (thread-group leader), in zygarde's PID namespace
+	__u32 tid;     // thread ID owning this files_struct, in zygarde's PID namespace
 	__u32 fd;
 	__u32 kind;
 	__u32 id;      // program, map or link ID
 	__u32 prog_id; // program a link or perf event runs
+	__u16 sfamily; // socket AF_* family (KIND_SOCKET)
+	__u16 stype;   // socket SOCK_* type (KIND_SOCKET)
 	__u32 pad;
 	__u64 fop;     // f_op address (learning pass only)
 	__u64 ino;     // socket inode
@@ -60,7 +64,7 @@ static __always_inline __u32 kind_of(__u64 fop)
 		__u64 *v = bpf_map_lookup_elem(&fops, &key);
 
 		if (v && *v && *v == fop)
-			return k;
+			return k == KIND_LINK_POLL ? KIND_LINK : k;
 	}
 	return 0;
 }
@@ -71,6 +75,7 @@ int dump_fds(struct bpf_iter__task_file *ctx)
 	struct task_struct *task = ctx->task;
 	struct file *file = ctx->file;
 	struct task_struct *self = (struct task_struct *)bpf_get_current_task();
+	struct task_struct *leader;
 	struct fd_rec rec = {};
 	__u32 key = KIND_PROG, level;
 	__u64 *learned, fop;
@@ -117,13 +122,22 @@ int dump_fds(struct bpf_iter__task_file *ctx)
 		break;
 	case KIND_SOCKET:
 		rec.ino = BPF_CORE_READ(file, f_inode, i_ino);
+		if (priv) {
+			rec.stype = BPF_CORE_READ((struct socket *)priv, type);
+			rec.sfamily = BPF_CORE_READ((struct socket *)priv, sk, __sk_common.skc_family);
+		}
 		break;
 	}
 
 	level = BPF_CORE_READ(self, thread_pid, level);
-	rec.tgid = pid_nr(BPF_CORE_READ(task, group_leader, thread_pid), level);
+	leader = BPF_CORE_READ(task, group_leader);
+	rec.tgid = pid_nr(BPF_CORE_READ(leader, thread_pid), level);
+	rec.tid = pid_nr(BPF_CORE_READ(task, thread_pid), level);
 	rec.fd = ctx->fd;
-	BPF_CORE_READ_STR_INTO(&rec.comm, task, comm);
+	if (leader)
+		BPF_CORE_READ_STR_INTO(&rec.comm, leader, comm);
+	else
+		BPF_CORE_READ_STR_INTO(&rec.comm, task, comm);
 	bpf_seq_write(ctx->meta->seq, &rec, sizeof(rec));
 	return 0;
 }

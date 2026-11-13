@@ -8,22 +8,31 @@ import (
 	_ "embed"
 	"fmt"
 	"io"
+	"structs"
 
 	"github.com/cilium/ebpf"
 )
+
+type syscalltableTableEntry struct {
+	_     structs.HostLayout
+	Addr  uint64
+	Err   int32
+	Fired uint32
+}
 
 // Names of all BPF objects in the ELF.
 //
 // Used for safe lookups in a Collection or CollectionSpec.
 const (
-	syscalltableMapEntries    = "entries"
-	syscalltableProgReadTable = "read_table"
-	syscalltableVarNrCount    = "nr_count"
-	syscalltableVarNrs        = "nrs"
-	syscalltableVarPidnsDev   = "pidns_dev"
-	syscalltableVarPidnsIno   = "pidns_ino"
-	syscalltableVarTableAddr  = "table_addr"
-	syscalltableVarTargetTgid = "target_tgid"
+	syscalltableMapEntries          = "entries"
+	syscalltableProgReadTable       = "read_table"
+	syscalltableVarNrCount          = "nr_count"
+	syscalltableVarNrs              = "nrs"
+	syscalltableVarPidnsDev         = "pidns_dev"
+	syscalltableVarPidnsIno         = "pidns_ino"
+	syscalltableVarTableAddr        = "table_addr"
+	syscalltableVarTargetTgid       = "target_tgid"
+	syscalltableVarUnusedTableEntry = "unused_table_entry"
 )
 
 // loadSyscalltable returns the embedded CollectionSpec for syscalltable.
@@ -82,12 +91,13 @@ type syscalltableMapSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type syscalltableVariableSpecs struct {
-	NrCount    *ebpf.VariableSpec `ebpf:"nr_count"`
-	Nrs        *ebpf.VariableSpec `ebpf:"nrs"`
-	PidnsDev   *ebpf.VariableSpec `ebpf:"pidns_dev"`
-	PidnsIno   *ebpf.VariableSpec `ebpf:"pidns_ino"`
-	TableAddr  *ebpf.VariableSpec `ebpf:"table_addr"`
-	TargetTgid *ebpf.VariableSpec `ebpf:"target_tgid"`
+	NrCount          *ebpf.VariableSpec `ebpf:"nr_count"`
+	Nrs              *ebpf.VariableSpec `ebpf:"nrs"`
+	PidnsDev         *ebpf.VariableSpec `ebpf:"pidns_dev"`
+	PidnsIno         *ebpf.VariableSpec `ebpf:"pidns_ino"`
+	TableAddr        *ebpf.VariableSpec `ebpf:"table_addr"`
+	TargetTgid       *ebpf.VariableSpec `ebpf:"target_tgid"`
+	UnusedTableEntry *ebpf.VariableSpec `ebpf:"unused_table_entry"`
 }
 
 // syscalltableObjects contains all objects after they have been loaded into the kernel.
@@ -123,12 +133,13 @@ func (m *syscalltableMaps) Close() error {
 //
 // It can be passed to loadSyscalltableObjects or ebpf.CollectionSpec.LoadAndAssign.
 type syscalltableVariables struct {
-	NrCount    *ebpf.Variable `ebpf:"nr_count"`
-	Nrs        *ebpf.Variable `ebpf:"nrs"`
-	PidnsDev   *ebpf.Variable `ebpf:"pidns_dev"`
-	PidnsIno   *ebpf.Variable `ebpf:"pidns_ino"`
-	TableAddr  *ebpf.Variable `ebpf:"table_addr"`
-	TargetTgid *ebpf.Variable `ebpf:"target_tgid"`
+	NrCount          *ebpf.Variable `ebpf:"nr_count"`
+	Nrs              *ebpf.Variable `ebpf:"nrs"`
+	PidnsDev         *ebpf.Variable `ebpf:"pidns_dev"`
+	PidnsIno         *ebpf.Variable `ebpf:"pidns_ino"`
+	TableAddr        *ebpf.Variable `ebpf:"table_addr"`
+	TargetTgid       *ebpf.Variable `ebpf:"target_tgid"`
+	UnusedTableEntry *ebpf.Variable `ebpf:"unused_table_entry"`
 }
 
 // syscalltablePrograms contains all programs after they have been loaded into the kernel.

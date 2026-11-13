@@ -1,12 +1,15 @@
-// Package socket detects TCP and UDP sockets hidden from one of the two
-// interfaces userspace tools list them with.
+// Package socket detects TCP, UDP, RAW and AF_PACKET sockets hidden from
+// userspace tools or held by hidden processes.
 package socket
+
+//go:generate go tool bpf2go -target amd64,arm64 -cflags "-Wall -Werror -Wno-missing-declarations" -type bpf_sock_rec socket socket.bpf.c -- -I../../bpf/include
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"sort"
 	"strconv"
@@ -14,24 +17,20 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cilium/ebpf"
 	"golang.org/x/sys/unix"
 
+	"github.com/waldh4ri/zygarde/internal/bpfutil"
 	"github.com/waldh4ri/zygarde/internal/core"
 	"github.com/waldh4ri/zygarde/internal/fdowner"
+	"github.com/waldh4ri/zygarde/internal/fsutil"
 	"github.com/waldh4ri/zygarde/internal/netlink"
 )
 
-// Cell compares the sockets listed in /proc/net/{tcp,udp}{,6}, which netstat
-// reads, with those reported over netlink sock_diag, which ss uses. The two
-// are separate code paths in the kernel, and rootkits usually filter only
-// one: hooking the seq_file show functions (tcp4_seq_show...) or the netlink
-// reply.
-//
-// It also attributes each socket to the processes holding it, read from the
-// kernel's file tables: a socket held only by a process hidden from /proc
-// belongs to a hidden backdoor.
-//
-// Only zygarde's own network namespace is checked.
+// Cell compares TCP/UDP sockets across up to three views (BPF socket
+// iterators, /proc/net and netlink sock_diag), inventories AF_PACKET and
+// SOCK_RAW sockets, and checks every socket FD in kernel task tables for
+// hidden process holders.
 type Cell struct {
 	procNet string
 }
@@ -44,46 +43,54 @@ func (*Cell) Name() string                  { return "Hidden Socket Detection" }
 func (*Cell) Timeout() time.Duration        { return 30 * time.Second }
 func (*Cell) Supported(env *core.Env) error { return nil }
 func (*Cell) Description() string {
-	return "Compares TCP/UDP sockets in /proc/net (netstat) with netlink sock_diag (ss), and flags sockets held only by hidden processes"
+	return "Compares TCP/UDP sockets across BPF iterators, /proc/net (netstat) and netlink sock_diag (ss), audits AF_PACKET/RAW sockets, and flags sockets held by hidden processes"
 }
 
 // view is one source's sockets, by key.
 type view map[key]sock
 
 type sources struct {
-	proc, diag view
+	proc, diag, bpf view
+	haveBPF         bool
 	// compared lists the families netlink reported ("tcp4", "udp6"...).
-	// Only those are compared; /proc/net is read for all of them.
 	compared map[string]bool
 }
 
 func family(s sock) string { return s.Proto + strconv.Itoa(s.Family) }
 
 func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
-	if self, init, err := netns(); err == nil && self != init {
-		rec.Limit("zygarde runs in its own network namespace, so only that namespace's sockets were checked")
+	selfNetNS, initNetNS, netnsErr := netns()
+	if netnsErr == nil && selfNetNS != initNetNS {
+		rec.Limit("zygarde runs in its own network namespace, so only that namespace's /proc/net and netlink tables were checked")
 	}
 
-	cs, err := openCanaries()
+	cs, err := openCanaries(rec)
 	if err != nil {
 		return fmt.Errorf("opening canary sockets: %w", err)
 	}
 	defer cs.Close()
 
-	first, err := c.snapshot(rec)
+	bpfObjs := loadSocketIterators(env, rec)
+	if bpfObjs != nil {
+		defer bpfObjs.Close()
+	}
+
+	first, err := c.snapshot(rec, bpfObjs)
 	if err != nil {
 		return err
 	}
-	onlyProc, onlyDiag := compare(first)
+	onlyProc, onlyDiag, onlyBPF := compare(first)
 	// Sockets open and close all the time: keep only differences seen in
 	// two snapshots, for sockets that still exist.
-	if len(onlyProc)+len(onlyDiag) > 0 {
-		second, err := c.snapshot(nil)
+	if len(onlyProc)+len(onlyDiag)+len(onlyBPF) > 0 {
+		second, err := c.snapshot(nil, bpfObjs)
 		if err != nil {
 			return err
 		}
-		p2, d2 := compare(second)
-		onlyProc, onlyDiag = intersect(onlyProc, p2), intersect(onlyDiag, d2)
+		p2, d2, b2 := compare(second)
+		onlyProc = intersect(onlyProc, p2)
+		onlyDiag = intersect(onlyDiag, d2)
+		onlyBPF = intersect(onlyBPF, b2)
 	}
 
 	for _, cn := range cs.socks {
@@ -94,14 +101,18 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 		if first.compared[cn.proto+"4"] {
 			rec.Canary(cn.label, "netlink sock_diag (ss)", inDiag)
 		}
+		if first.haveBPF {
+			_, inBPF := first.bpf[k]
+			rec.Canary(cn.label, "BPF socket iterator", inBPF)
+		}
 	}
 
 	table, listed := owners(env, rec)
-	heldBy := func(s sock) []fdowner.Holder {
+	heldBy := func(ino uint64) []fdowner.Holder {
 		if table == nil {
 			return nil
 		}
-		return table.Holders(fdowner.Socket, s.Inode)
+		return table.Holders(fdowner.Socket, ino)
 	}
 	if table != nil {
 		self := uint32(os.Getpid())
@@ -117,7 +128,7 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 	for _, s := range onlyProc {
 		rec.Suspicious(core.Finding{
 			Description: fmt.Sprintf("Socket %s is listed in /proc/net but hidden from netlink sock_diag (ss)", s),
-			Details:     details(s, heldBy(s)),
+			Details:     details(s, heldBy(s.Inode)),
 			Why: "ss lists sockets over netlink and netstat reads /proc/net; both report the same kernel tables. " +
 				"A socket missing from one of them is being filtered, typically to hide a backdoor's listener or connection.",
 			Benign: "None expected: the difference was seen in two snapshots.",
@@ -126,36 +137,52 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 	for _, s := range onlyDiag {
 		rec.Suspicious(core.Finding{
 			Description: fmt.Sprintf("Socket %s is visible to ss (netlink) but hidden from /proc/net (netstat)", s),
-			Details:     details(s, heldBy(s)),
+			Details:     details(s, heldBy(s.Inode)),
 			Why: "netstat reads /proc/net and ss uses netlink; both report the same kernel tables. Rootkits commonly " +
 				"hook the /proc/net show functions (tcp4_seq_show...) to hide their listener from netstat.",
 			Benign: "None expected: the difference was seen in two snapshots.",
 		})
 	}
-
-	// Ownership of every socket either view reports.
-	all := map[key]sock{}
-	for k, s := range first.proc {
-		all[k] = s
+	for _, s := range onlyBPF {
+		rec.Suspicious(core.Finding{
+			Description: fmt.Sprintf("Socket %s exists in kernel hash tables (BPF iterator) but is hidden from both /proc/net and ss", s),
+			Details:     details(s, heldBy(s.Inode)),
+			Why: "The BPF socket iterator walked the kernel's TCP/UDP tables directly and found this socket, while " +
+				"both /proc/net and netlink sock_diag omitted it across two snapshots.",
+			Benign: "None expected: the socket persisted across two snapshots.",
+		})
 	}
-	for k, s := range first.diag {
-		all[k] = s
+
+	// Audit AF_PACKET and SOCK_RAW sockets (e.g. BPFDoor passive packet sniffers).
+	rawHidden := c.checkPacketAndRaw(rec, table, selfNetNS, netnsErr == nil)
+
+	// Ownership of every socket across all views AND every socket FD in the
+	// kernel's task tables (catching AF_PACKET/RAW/UNIX/child-netns sockets
+	// held by hidden processes even if omitted from /proc/net and sock_diag).
+	all := map[key]sock{}
+	for _, v := range []view{first.proc, first.diag, first.bpf} {
+		for k, s := range v {
+			all[k] = s
+		}
 	}
 	keys := make([]key, 0, len(all))
 	for k := range all {
 		keys = append(keys, k)
 	}
 	sort.Slice(keys, func(i, j int) bool { return keys[i].Inode < keys[j].Inode })
+
+	reportedInodes := map[uint64]bool{}
 	hiddenOwner := 0
 	for _, k := range keys {
 		s := all[k]
 		if table == nil || cs.has(k) {
 			continue
 		}
-		holders := heldBy(s)
+		holders := heldBy(s.Inode)
 		switch {
 		case listed != nil && fdowner.HiddenOnly(holders, listed) && fdowner.StillHidden(holders):
 			hiddenOwner++
+			reportedInodes[s.Inode] = true
 			rec.Suspicious(core.Finding{
 				Description: fmt.Sprintf("Socket %s is held only by process(es) hidden from /proc: %s", s, fdowner.Describe(holders)),
 				Details:     details(s, holders),
@@ -169,15 +196,274 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 		}
 	}
 
-	switch n := len(onlyProc) + len(onlyDiag) + hiddenOwner; {
-	case n > 0:
-		rec.Message("%d hidden socket(s) (/proc/net: %d, netlink: %d)", n, len(first.proc), len(first.diag))
+	// Direct task_file sweep for any remaining socket inode (e.g. AF_PACKET,
+	// SOCK_RAW, AF_UNIX, or separate netns) held exclusively by hidden processes.
+	if table != nil && listed != nil {
+		seenIno := map[uint64]fdowner.FD{}
+		for _, f := range table.Of(fdowner.Socket) {
+			if f.Inode != 0 && !reportedInodes[f.Inode] && !cs.hasInode(f.Inode) {
+				seenIno[f.Inode] = f
+			}
+		}
+		var extraInos []uint64
+		for ino := range seenIno {
+			extraInos = append(extraInos, ino)
+		}
+		sort.Slice(extraInos, func(i, j int) bool { return extraInos[i] < extraInos[j] })
+		for _, ino := range extraInos {
+			holders := heldBy(ino)
+			if fdowner.HiddenOnly(holders, listed) && fdowner.StillHidden(holders) {
+				hiddenOwner++
+				fd := seenIno[ino]
+				fam := sockFamilyName(fd.SockFamily)
+				rec.Suspicious(core.Finding{
+					Description: fmt.Sprintf("Socket inode %d (%s) is held only by process(es) hidden from /proc: %s", ino, fam, fdowner.Describe(holders)),
+					Details: map[string]string{
+						"inode":       strconv.FormatUint(ino, 10),
+						"family":      fam,
+						"socket_type": strconv.Itoa(int(fd.SockType)),
+						"held_by":     fdowner.Describe(holders),
+					},
+					Why: "Every process holding this socket descriptor in the kernel's task table is hidden from /proc, " +
+						"even though the socket was not listed in /proc/net TCP/UDP tables (e.g. raw/packet/unix or a separate netns).",
+					Benign: "None expected.",
+				})
+			}
+		}
+	}
+
+	totalSusp := len(onlyProc) + len(onlyDiag) + len(onlyBPF) + hiddenOwner + rawHidden
+	switch {
+	case totalSusp > 0:
+		rec.Message("%d hidden socket(s) (/proc/net: %d, netlink: %d)", totalSusp, len(first.proc), len(first.diag))
 	case len(first.compared) == 0:
 		rec.Message("%d sockets in /proc/net; netlink sock_diag is unavailable, so only their owners were checked", len(first.proc))
 	default:
 		rec.Message("/proc/net and netlink agree on %d sockets", len(first.proc))
 	}
 	return nil
+}
+
+// checkPacketAndRaw inventories AF_PACKET (/proc/net/packet) and SOCK_RAW
+// (/proc/net/raw, raw6) sockets and flags any present in kernel task file
+// tables (in the same netns) that are filtered out of /proc/net.
+func (c *Cell) checkPacketAndRaw(rec *core.Recorder, table *fdowner.Table, selfNetNS uint64, haveNetNS bool) int {
+	pktSocks := c.readPacketSocks()
+	rawSocks := c.readRawSocks()
+
+	heldBy := func(ino uint64) string {
+		if table == nil {
+			return ""
+		}
+		return fdowner.Describe(table.Holders(fdowner.Socket, ino))
+	}
+
+	pktInodes := map[uint64]bool{}
+	for _, p := range pktSocks {
+		pktInodes[p.Inode] = true
+		d := map[string]string{
+			"protocol": fmt.Sprintf("0x%04x", p.Proto),
+			"ifindex":  strconv.Itoa(p.Ifindex),
+			"uid":      strconv.FormatUint(uint64(p.UID), 10),
+			"inode":    strconv.FormatUint(p.Inode, 10),
+		}
+		if h := heldBy(p.Inode); h != "" {
+			d["held_by"] = h
+		}
+		rec.Observe(fmt.Sprintf("AF_PACKET socket (proto 0x%04x, ifindex %d, inode %d)", p.Proto, p.Ifindex, p.Inode), d)
+	}
+
+	rawInodes := map[uint64]bool{}
+	for _, r := range rawSocks {
+		rawInodes[r.Inode] = true
+		var holders []fdowner.Holder
+		if table != nil {
+			holders = table.Holders(fdowner.Socket, r.Inode)
+		}
+		rec.Observe(fmt.Sprintf("RAW%d socket %s (inode %d)", r.Family, r.Local, r.Inode), details(r, holders))
+	}
+
+	if table == nil || !haveNetNS {
+		return 0
+	}
+	// Check whether any AF_PACKET socket FD in our netns is hidden from /proc/net/packet.
+	if _, err := os.Stat(c.procNet + "/packet"); err != nil {
+		return 0
+	}
+	suspicious := 0
+	seen := map[uint64]bool{}
+	for _, f := range table.Of(fdowner.Socket) {
+		if f.SockFamily != unix.AF_PACKET || f.Inode == 0 || pktInodes[f.Inode] || seen[f.Inode] {
+			continue
+		}
+		if procNetNS, err := pidNetNS(f.TGID); err != nil || procNetNS != selfNetNS {
+			continue
+		}
+		seen[f.Inode] = true
+		// Re-read /proc/net/packet once to rule out sockets opened after the first read.
+		fresh := c.readPacketSocks()
+		found := false
+		for _, p := range fresh {
+			if p.Inode == f.Inode {
+				found = true
+				break
+			}
+		}
+		if found || errors.Is(unix.Kill(int(f.TGID), 0), unix.ESRCH) {
+			continue
+		}
+		suspicious++
+		holders := table.Holders(fdowner.Socket, f.Inode)
+		rec.Suspicious(core.Finding{
+			Description: fmt.Sprintf("AF_PACKET socket (inode %d) held by %s is hidden from /proc/net/packet", f.Inode, fdowner.Describe(holders)),
+			Details: map[string]string{
+				"inode":   strconv.FormatUint(f.Inode, 10),
+				"family":  "AF_PACKET",
+				"held_by": fdowner.Describe(holders),
+			},
+			Why: "AF_PACKET raw sockets receive raw frames before firewall rules, how passive backdoors (e.g. BPFDoor) " +
+				"listen for magic packets without opening a port. Hiding the socket from /proc/net/packet conceals the sniffer.",
+			Benign: "None expected: the socket descriptor is open in the same network namespace across two checks.",
+		})
+	}
+	return suspicious
+}
+
+func (c *Cell) readPacketSocks() []packetSock {
+	var out []packetSock
+	_ = fsutil.WithComm("netstat", func() error {
+		f, err := fsutil.OpenNoAtime(c.procNet + "/packet")
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		out, _ = parseProcPacket(f)
+		return nil
+	})
+	return out
+}
+
+func (c *Cell) readRawSocks() []sock {
+	var out []sock
+	_ = fsutil.WithComm("netstat", func() error {
+		for _, item := range []struct {
+			file  string
+			ipver int
+		}{{"raw", 4}, {"raw6", 6}} {
+			f, err := fsutil.OpenNoAtime(c.procNet + "/" + item.file)
+			if err != nil {
+				continue
+			}
+			socks, err := parseProcNet(f, "raw", item.ipver)
+			f.Close()
+			if err == nil {
+				for _, s := range socks {
+					if s.Inode != 0 {
+						out = append(out, s)
+					}
+				}
+			}
+		}
+		return nil
+	})
+	return out
+}
+
+func sockFamilyName(fam uint16) string {
+	switch fam {
+	case unix.AF_UNIX:
+		return "AF_UNIX"
+	case unix.AF_INET:
+		return "AF_INET"
+	case unix.AF_INET6:
+		return "AF_INET6"
+	case unix.AF_NETLINK:
+		return "AF_NETLINK"
+	case unix.AF_PACKET:
+		return "AF_PACKET"
+	case unix.AF_VSOCK:
+		return "AF_VSOCK"
+	default:
+		return fmt.Sprintf("AF_%d", fam)
+	}
+}
+
+func pidNetNS(pid uint32) (uint64, error) {
+	var st unix.Stat_t
+	if err := unix.Stat(fmt.Sprintf("/proc/%d/ns/net", pid), &st); err != nil {
+		return 0, err
+	}
+	return st.Ino, nil
+}
+
+func loadSocketIterators(env *core.Env, rec *core.Recorder) *socketObjects {
+	if env == nil || env.BTF == nil || env.Lockdown == "confidentiality" {
+		return nil
+	}
+	if _, err := env.BTF.AnyTypeByName("bpf_iter__tcp"); err != nil {
+		return nil
+	}
+	if _, err := env.BTF.AnyTypeByName("bpf_iter__udp"); err != nil {
+		return nil
+	}
+	spec, err := loadSocket()
+	if err != nil {
+		return nil
+	}
+	var objs socketObjects
+	if err := bpfutil.Load(env, spec, &objs); err != nil {
+		rec.Log().Debug("BPF socket iterators unavailable", "err", err)
+		return nil
+	}
+	for _, p := range []*ebpf.Program{objs.DumpTcp, objs.DumpUdp} {
+		if id, err := bpfutil.ProgramID(p); err == nil {
+			rec.Footprint("bpf_prog_id", strconv.FormatUint(uint64(id), 10))
+		}
+	}
+	return &objs
+}
+
+func readBPFSockets(objs *socketObjects) (view, bool) {
+	out := view{}
+	if objs == nil {
+		return out, false
+	}
+	for _, prog := range []*ebpf.Program{objs.DumpTcp, objs.DumpUdp} {
+		data, err := bpfutil.ReadIter(prog)
+		if err != nil {
+			return view{}, false
+		}
+		recs, err := bpfutil.Decode[socketBpfSockRec](data)
+		if err != nil {
+			return view{}, false
+		}
+		for _, r := range recs {
+			if r.Ino == 0 {
+				continue
+			}
+			proto := "tcp"
+			if r.Proto == 2 {
+				proto = "udp"
+			}
+			alen := 4
+			if r.Family == 6 {
+				alen = 16
+			}
+			src, _ := netip.AddrFromSlice(r.Src[:alen])
+			dst, _ := netip.AddrFromSlice(r.Dst[:alen])
+			s := sock{
+				Proto:  proto,
+				Family: int(r.Family),
+				Local:  netip.AddrPortFrom(src, r.Sport),
+				Remote: netip.AddrPortFrom(dst, r.Dport),
+				State:  r.State,
+				UID:    r.Uid,
+				Inode:  r.Ino,
+			}
+			out[s.key()] = s
+		}
+	}
+	return out, true
 }
 
 func details(s sock, holders []fdowner.Holder) map[string]string {
@@ -195,16 +481,19 @@ func details(s sock, holders []fdowner.Holder) map[string]string {
 	return d
 }
 
-// snapshot reads both views back to back. Families or protocols the kernel
-// lacks are recorded as limitations (rec may be nil on re-checks).
-func (c *Cell) snapshot(rec *core.Recorder) (sources, error) {
-	s := sources{proc: view{}, diag: view{}, compared: map[string]bool{}}
+// snapshot reads all socket views back to back (under comm "netstat" and "ss"
+// to trigger comm-selective filters).
+func (c *Cell) snapshot(rec *core.Recorder, bpfObjs *socketObjects) (sources, error) {
+	s := sources{proc: view{}, diag: view{}, bpf: view{}, compared: map[string]bool{}}
 	var unsupported []string
 	defer func() {
 		if rec != nil && len(unsupported) > 0 {
 			rec.Limit("%s sockets not compared with netlink: the kernel has no sock_diag support for them (CONFIG_INET_DIAG)", strings.Join(unsupported, ", "))
 		}
 	}()
+	if bpfObjs != nil {
+		s.bpf, s.haveBPF = readBPFSockets(bpfObjs)
+	}
 	for _, src := range []struct {
 		file          string
 		proto         string
@@ -216,26 +505,41 @@ func (c *Cell) snapshot(rec *core.Recorder) (sources, error) {
 		{"udp", "udp", unix.AF_INET, 4, unix.IPPROTO_UDP},
 		{"udp6", "udp", unix.AF_INET6, 6, unix.IPPROTO_UDP},
 	} {
-		f, err := os.Open(c.procNet + "/" + src.file)
-		if errors.Is(err, os.ErrNotExist) {
-			continue // e.g. IPv6 disabled
-		}
+		missing := false
+		var pSocks []sock
+		err := fsutil.WithComm("netstat", func() error {
+			f, oerr := fsutil.OpenNoAtime(c.procNet + "/" + src.file)
+			if errors.Is(oerr, os.ErrNotExist) {
+				missing = true
+				return nil
+			}
+			if oerr != nil {
+				return oerr
+			}
+			defer f.Close()
+			var perr error
+			pSocks, perr = parseProcNet(f, src.proto, src.ipver)
+			if perr != nil {
+				return fmt.Errorf("parsing %s/%s: %w", c.procNet, src.file, perr)
+			}
+			return nil
+		})
 		if err != nil {
 			return s, err
 		}
-		procSocks, err := parseProcNet(f, src.proto, src.ipver)
-		f.Close()
-		if err != nil {
-			return s, fmt.Errorf("parsing %s/%s: %w", c.procNet, src.file, err)
+		if missing {
+			continue // e.g. IPv6 disabled
 		}
 
-		for _, p := range procSocks {
+		for _, p := range pSocks {
 			if p.Inode != 0 {
 				s.proc[p.key()] = p
 			}
 		}
 
-		msgs, err := netlink.Dump(unix.NETLINK_SOCK_DIAG, unix.SOCK_DIAG_BY_FAMILY, diagRequest(uint8(src.family), src.protocol))
+		msgs, err := fsutil.WithCommVal("ss", func() ([]netlink.Message, error) {
+			return netlink.Dump(unix.NETLINK_SOCK_DIAG, unix.SOCK_DIAG_BY_FAMILY, diagRequest(uint8(src.family), src.protocol))
+		})
 		if err != nil {
 			if netlink.ErrUnsupported(err) {
 				unsupported = append(unsupported, src.file)
@@ -253,8 +557,9 @@ func (c *Cell) snapshot(rec *core.Recorder) (sources, error) {
 	return s, nil
 }
 
-// compare returns sockets present in only one view.
-func compare(s sources) (onlyProc, onlyDiag []sock) {
+// compare returns sockets present in only /proc/net, only sock_diag, or only
+// the kernel BPF iterator (when hidden from both /proc/net and sock_diag).
+func compare(s sources) (onlyProc, onlyDiag, onlyBPF []sock) {
 	for k, p := range s.proc {
 		if _, ok := s.diag[k]; !ok && s.compared[family(p)] {
 			onlyProc = append(onlyProc, p)
@@ -265,9 +570,19 @@ func compare(s sources) (onlyProc, onlyDiag []sock) {
 			onlyDiag = append(onlyDiag, d)
 		}
 	}
+	if s.haveBPF {
+		for k, b := range s.bpf {
+			_, inProc := s.proc[k]
+			_, inDiag := s.diag[k]
+			if !inProc && (!s.compared[family(b)] || !inDiag) {
+				onlyBPF = append(onlyBPF, b)
+			}
+		}
+	}
 	sort.Slice(onlyProc, func(i, j int) bool { return onlyProc[i].Inode < onlyProc[j].Inode })
 	sort.Slice(onlyDiag, func(i, j int) bool { return onlyDiag[i].Inode < onlyDiag[j].Inode })
-	return onlyProc, onlyDiag
+	sort.Slice(onlyBPF, func(i, j int) bool { return onlyBPF[i].Inode < onlyBPF[j].Inode })
+	return onlyProc, onlyDiag, onlyBPF
 }
 
 func intersect(a, b []sock) []sock {
@@ -324,7 +639,7 @@ func netns() (self, init uint64, err error) {
 	return a.Ino, b.Ino, nil
 }
 
-// canaries are sockets zygarde opens itself, which both views must list.
+// canaries are sockets zygarde opens itself, which all views must list.
 type canaries struct {
 	closers []interface{ Close() error }
 	socks   []canarySock
@@ -336,7 +651,7 @@ type canarySock struct {
 	inode uint64
 }
 
-func openCanaries() (*canaries, error) {
+func openCanaries(rec *core.Recorder) (*canaries, error) {
 	cs := &canaries{}
 	ln, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
@@ -360,7 +675,11 @@ func openCanaries() (*canaries, error) {
 			cs.Close()
 			return nil, err
 		}
-		cs.socks = append(cs.socks, canarySock{label: fmt.Sprintf("%s socket %s", c.proto, c.addr), proto: c.proto, inode: ino})
+		label := fmt.Sprintf("%s socket %s", c.proto, c.addr)
+		cs.socks = append(cs.socks, canarySock{label: label, proto: c.proto, inode: ino})
+		if rec != nil {
+			rec.Footprint("canary_socket", fmt.Sprintf("%s (inode %d)", label, ino))
+		}
 	}
 	return cs, nil
 }
@@ -368,6 +687,15 @@ func openCanaries() (*canaries, error) {
 func (cs *canaries) has(k key) bool {
 	for _, s := range cs.socks {
 		if s.proto == k.Proto && s.inode == k.Inode {
+			return true
+		}
+	}
+	return false
+}
+
+func (cs *canaries) hasInode(ino uint64) bool {
+	for _, s := range cs.socks {
+		if s.inode == ino {
 			return true
 		}
 	}

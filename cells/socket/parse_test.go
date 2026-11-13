@@ -42,6 +42,16 @@ func TestParseProcNet(t *testing.T) {
 	}
 }
 
+func TestParseProcPacket(t *testing.T) {
+	pkt := `sk               RefCnt Type Proto  Iface R Rmem   User   Inode
+0000000000000000 3      3    88cc   2     1 0      998    16539
+`
+	got, err := parseProcPacket(strings.NewReader(pkt))
+	if err != nil || len(got) != 1 || got[0].Proto != 0x88cc || got[0].Ifindex != 2 || got[0].UID != 998 || got[0].Inode != 16539 {
+		t.Fatalf("parseProcPacket = %+v, %v", got, err)
+	}
+}
+
 func TestParseDiagMsg(t *testing.T) {
 	b := make([]byte, diagMsgLen)
 	b[0] = 2  // AF_INET
@@ -66,17 +76,23 @@ func TestCompare(t *testing.T) {
 	a := sock{Proto: "tcp", Inode: 1}
 	b := sock{Proto: "tcp", Inode: 2}
 	c := sock{Proto: "udp", Inode: 2}
+	d := sock{Proto: "tcp", Inode: 9}
 	src := sources{
 		proc:     view{a.key(): a, b.key(): b},
 		diag:     view{a.key(): a, c.key(): c},
+		bpf:      view{a.key(): a, b.key(): b, c.key(): c, d.key(): d},
+		haveBPF:  true,
 		compared: map[string]bool{"tcp0": true, "udp0": true},
 	}
-	onlyProc, onlyDiag := compare(src)
+	onlyProc, onlyDiag, onlyBPF := compare(src)
 	if len(onlyProc) != 1 || onlyProc[0] != b {
 		t.Errorf("onlyProc = %+v", onlyProc)
 	}
 	if len(onlyDiag) != 1 || onlyDiag[0] != c {
 		t.Errorf("onlyDiag = %+v", onlyDiag)
+	}
+	if len(onlyBPF) != 1 || onlyBPF[0] != d {
+		t.Errorf("onlyBPF = %+v", onlyBPF)
 	}
 	if got := intersect(onlyProc, []sock{b, c}); len(got) != 1 {
 		t.Errorf("intersect = %+v", got)
