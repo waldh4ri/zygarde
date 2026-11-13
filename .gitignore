@@ -18,7 +18,6 @@
 .DS_Store
 
 # Local notes
-docs/
 examples/
 /test/vm/out/
 
