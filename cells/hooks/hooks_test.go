@@ -20,6 +20,10 @@ __x64_sys_kill (1) R I        	tramp: ftrace_trampoline+0x0/0xf0 [__builtin__ftr
 __x64_sys_getdents64 (1) R I        	tramp: 0xffffffffc0004000 (0xffffffffc0a01230) ->0xffffffffc0a01230
 __x64_sys_openat (1) R I        	tramp: ftrace_regs_caller+0x0/0x70 (kprobe_ftrace_handler+0x0/0x1d0) ->kprobe_ftrace_handler+0x0/0x1d0
 tcp4_seq_show (2) R I        ->ftrace_ops_list_func+0x0/0x200
+__do_sys_getppid (1) R I D   	tramp: ftrace_regs_caller+0x0/0x65 (call_direct_funcs+0x0/0x20) ->call_direct_funcs+0x0/0x20
+	direct-->bpf_trampoline_30874_0+0x0/0x1000
+__x64_sys_read (1) R I D   	tramp: ftrace_regs_caller+0x0/0x65 (call_direct_funcs+0x0/0x20) ->call_direct_funcs+0x0/0x20
+	direct-->evil_read+0x0/0x40 [rootkit]
 `
 
 func TestParse(t *testing.T) {
@@ -27,8 +31,8 @@ func TestParse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(hooks) != 7 {
-		t.Fatalf("parsed %d hooks, want 7: %+v", len(hooks), hooks)
+	if len(hooks) != 9 {
+		t.Fatalf("parsed %d hooks, want 9: %+v", len(hooks), hooks)
 	}
 	h := hooks[0]
 	if h.Function != "__x64_sys_getppid" || h.RefCount != 1 || !h.Flags['D'] || len(h.Direct) != 1 {
@@ -55,6 +59,8 @@ func TestClassify(t *testing.T) {
 		"__x64_sys_getdents64": true,  // handler in unnamed memory
 		"__x64_sys_openat":     false, // kprobe with a post handler: not attributable
 		"tcp4_seq_show":        true,  // unattributed IPMODIFY, no livepatch
+		"__do_sys_getppid":     false, // BPF trampoline on <6.0: direct_ops had IPMODIFY
+		"__x64_sys_read":       true,  // direct call into a module, not a BPF trampoline
 	}
 	for _, h := range hooks {
 		rec := core.NewRecorder(slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -78,6 +84,12 @@ func TestClassify(t *testing.T) {
 	}
 	if isSoleCanary(hooks[6]) {
 		t.Error("co-hooked function with refcnt=2 and IPMODIFY treated as sole canary")
+	}
+	if !isSoleCanary(hooks[7]) {
+		t.Error("pre-6.0 BPF trampoline canary (RID via direct_ops) should be sole canary")
+	}
+	if isSoleCanary(hooks[8]) {
+		t.Error("IPMODIFY direct call into a module treated as sole canary")
 	}
 }
 

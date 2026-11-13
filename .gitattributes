@@ -3,5 +3,5 @@
 
 # Generated/vendored files: exclude from GitHub Linguist language stats.
 bpf/include/** linguist-vendored
-cells/**/*_bpfel.go linguist-generated
-cells/**/*_bpfel.o binary linguist-generated
+**/*_bpfel.go linguist-generated
+**/*_bpfel.o binary linguist-generated

@@ -31,6 +31,7 @@ type Host struct {
 	KernelVersion string `json:"kernel_version,omitempty"`
 	Arch          string `json:"arch"`
 	Lockdown      string `json:"lockdown"`
+	KptrRestrict  *int   `json:"kptr_restrict,omitempty"` // kernel.kptr_restrict, when readable
 	BTF           bool   `json:"btf"`
 	BootID        string `json:"boot_id,omitempty"`
 	BootTime      string `json:"boot_time,omitempty"`
@@ -117,6 +118,9 @@ func probeHost() Host {
 		Distro:        distro(),
 	}
 	h.Hostname, _ = os.Hostname()
+	if v := kernel.KptrRestrict(); v >= 0 {
+		h.KptrRestrict = &v
+	}
 	if h.Lockdown == "" {
 		h.Lockdown = "unavailable"
 	}

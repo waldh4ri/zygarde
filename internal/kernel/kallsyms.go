@@ -83,9 +83,28 @@ func (k *Kallsyms) LookupModule(addr uint64) (name, module string, offset uint64
 	return ms.name, ms.module, addr - ms.addr, true
 }
 
-// ErrAddressesHidden means /proc/kallsyms reports zero addresses,
-// usually because of kernel.kptr_restrict or missing privileges.
-var ErrAddressesHidden = errors.New("/proc/kallsyms addresses are hidden (kptr_restrict or insufficient privileges)")
+// ErrAddressesHidden means /proc/kallsyms reports zero addresses, usually
+// because of kernel.kptr_restrict or missing privileges. Errors from
+// LoadKallsyms wrap it with the reason (see HiddenAddressesError).
+var ErrAddressesHidden = errors.New("/proc/kallsyms addresses are hidden")
+
+// HiddenAddressesError wraps ErrAddressesHidden with why this system hides
+// kernel addresses, so the user can tell a hardening setting from a
+// privilege problem.
+func HiddenAddressesError() error {
+	return fmt.Errorf("%w: %s", ErrAddressesHidden, hiddenReason(KptrRestrict()))
+}
+
+func hiddenReason(kptrRestrict int) string {
+	switch kptrRestrict {
+	case 2:
+		return "kernel.kptr_restrict=2 hides kernel addresses from every process, root included"
+	case 1:
+		return "kernel.kptr_restrict=1 hides kernel addresses from processes without CAP_SYSLOG"
+	default:
+		return "insufficient privileges"
+	}
+}
 
 // LoadKallsyms parses /proc/kallsyms.
 func LoadKallsyms() (*Kallsyms, error) {
@@ -94,7 +113,11 @@ func LoadKallsyms() (*Kallsyms, error) {
 		return nil, err
 	}
 	defer f.Close()
-	return ParseKallsyms(f)
+	ks, err := ParseKallsyms(f)
+	if errors.Is(err, ErrAddressesHidden) {
+		return nil, HiddenAddressesError()
+	}
+	return ks, err
 }
 
 // ParseKallsyms parses kallsyms-formatted text: "address type name [module]".

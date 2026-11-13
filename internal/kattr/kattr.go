@@ -24,6 +24,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/waldh4ri/zygarde/internal/kernel"
 )
 
 // Kind is what owns an address.
@@ -126,8 +128,8 @@ type Resolver struct {
 }
 
 // ErrAddressesHidden means /proc/kallsyms reports zero addresses
-// (kernel.kptr_restrict or missing privileges).
-var ErrAddressesHidden = errors.New("/proc/kallsyms addresses are hidden (kptr_restrict or insufficient privileges)")
+// (kernel.kptr_restrict or missing privileges). Load wraps it with the reason.
+var ErrAddressesHidden = kernel.ErrAddressesHidden
 
 // Load reads the running kernel's symbol, module and allocation lists.
 // Only /proc/kallsyms is required; the others refine attribution.
@@ -148,7 +150,11 @@ func Load() (*Resolver, error) {
 		defer f.Close()
 		vm = f
 	}
-	return New(ks, mods, ReadSections("/sys/module"), vm)
+	r, err := New(ks, mods, ReadSections("/sys/module"), vm)
+	if errors.Is(err, ErrAddressesHidden) {
+		return nil, kernel.HiddenAddressesError()
+	}
+	return r, err
 }
 
 // ReadSections returns, per module, the start address of each ELF section

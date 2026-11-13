@@ -54,6 +54,8 @@ const struct bpf_sock_rec *unused_bpf_sock_rec __attribute__((unused));
 static __always_inline int emit_sock(struct seq_file *seq, struct sock *sk, __u8 proto, __u32 uid)
 {
 	struct bpf_sock_rec rec = {};
+	struct socket_alloc *sa;
+	struct socket *sock;
 	__u16 fam;
 	__u64 ino;
 
@@ -64,7 +66,14 @@ static __always_inline int emit_sock(struct seq_file *seq, struct sock *sk, __u8
 	if (proto == PROTO_TCP && (rec.state == TCP_TIME_WAIT_K || rec.state == TCP_NEW_SYN_RECV_K))
 		return 0;
 
-	ino = BPF_CORE_READ(sk, sk_socket, file, f_inode, i_ino);
+	// Same inode as sock_i_ino(), which /proc/net and sock_diag report:
+	// SOCK_INODE(sk->sk_socket). Going through socket->file instead misses
+	// sockets whose file pointer reads as NULL (TCP listeners on 5.10).
+	sock = BPF_CORE_READ(sk, sk_socket);
+	if (!sock)
+		return 0;
+	sa = (void *)sock - bpf_core_field_offset(struct socket_alloc, socket);
+	ino = BPF_CORE_READ(sa, vfs_inode.i_ino);
 	if (!ino)
 		return 0;
 

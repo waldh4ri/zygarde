@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/waldh4ri/zygarde/internal/kernel"
 )
 
 // Cell is one detection module.
@@ -38,6 +40,16 @@ func (e *SkipError) Error() string { return e.Reason }
 // Skip returns a SkipError with a formatted reason.
 func Skip(format string, args ...any) error {
 	return &SkipError{Reason: fmt.Sprintf(format, args...)}
+}
+
+// SymbolsUnavailable turns a /proc/kallsyms error into a Skip when the kernel
+// hides its addresses: that is a configuration choice (kernel.kptr_restrict),
+// not a failure of the check. Other errors are returned unchanged.
+func SymbolsUnavailable(err error) error {
+	if errors.Is(err, kernel.ErrAddressesHidden) {
+		return Skip("kernel symbols unavailable: %v", err)
+	}
+	return err
 }
 
 // BPFError wraps a failed bpf() operation (load, attach, enumerate...).
