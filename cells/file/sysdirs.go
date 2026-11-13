@@ -152,7 +152,8 @@ func isExecutable(path string, st fs.FileInfo) bool {
 	if st.Mode().Perm()&0o111 != 0 {
 		return true
 	}
-	f, err := fsutil.OpenNoAtime(path)
+	// fsutil.Open refuses symlinks, FIFOs and devices and uses O_NOATIME.
+	f, err := fsutil.Open(path)
 	if err != nil {
 		return false
 	}

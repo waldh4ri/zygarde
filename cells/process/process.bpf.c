@@ -34,6 +34,8 @@ struct task_info {
 	__u32 pad;
 	__u64 start_boottime; // nanoseconds since boot
 	char comm[16];
+	__u64 start_time;  // the process's start (its leader's start_boottime, ns):
+	                   // tells a reused PID apart; /proc/<pid>/stat shows it in ticks
 };
 
 // Emit task_info into BTF so bpf2go generates a Go type for it.
@@ -53,12 +55,38 @@ struct sched_seen {
 
 const struct sched_seen *unused_sched_seen __attribute__((unused));
 
+// A plain (preallocated) hash, not an LRU: LRU maps updated from scheduler
+// tracepoints can deadlock inside their own list locks. When it is full,
+// new threads are counted in ran_dropped and reported as a limitation.
 struct {
-	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 65536);
 	__type(key, __u32); // init-namespace thread ID
 	__type(value, struct sched_seen);
 } ran SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, __u64);
+} ran_dropped SEC(".maps");
+
+#ifndef E2BIG
+#define E2BIG 7
+#endif
+
+static __always_inline void record(__u32 tid, struct sched_seen *seen, __u64 flags)
+{
+	__u32 key = 0;
+	__u64 *n;
+
+	if (bpf_map_update_elem(&ran, &tid, seen, flags) != -E2BIG)
+		return;
+	n = bpf_map_lookup_elem(&ran_dropped, &key);
+	if (n)
+		__sync_fetch_and_add(n, 1);
+}
 
 // Arguments: (bool preempt, struct task_struct *prev, struct task_struct *next
 // [, unsigned int prev_state since 5.18]); only next is used.
@@ -77,7 +105,7 @@ int BPF_PROG(on_sched_switch, bool preempt, struct task_struct *prev, struct tas
 	seen.tgid = next->tgid;
 	for (int i = 0; i < sizeof(seen.comm); i++)
 		seen.comm[i] = next->comm[i];
-	bpf_map_update_elem(&ran, &tid, &seen, BPF_NOEXIST);
+	record(tid, &seen, BPF_NOEXIST);
 	return 0;
 }
 
@@ -94,7 +122,7 @@ int BPF_PROG(on_sched_exit, struct task_struct *p)
 	}
 	// Not seen running yet: record the exit so later switches are ignored.
 	exited.tgid = p->tgid;
-	bpf_map_update_elem(&ran, &tid, &exited, BPF_ANY);
+	record(tid, &exited, BPF_ANY);
 	return 0;
 }
 
@@ -186,10 +214,13 @@ int dump_task(struct bpf_iter__task *ctx)
 		info.euid = BPF_CORE_READ(cred, euid.val);
 		info.gid = BPF_CORE_READ(cred, gid.val);
 	}
-	if (bpf_core_field_exists(task->start_boottime))
+	if (bpf_core_field_exists(task->start_boottime)) {
 		info.start_boottime = BPF_CORE_READ(task, start_boottime);
-	else
+		info.start_time = BPF_CORE_READ(task, group_leader, start_boottime);
+	} else {
 		info.start_boottime = BPF_CORE_READ(task, start_time);
+		info.start_time = BPF_CORE_READ(task, group_leader, start_time);
+	}
 	BPF_CORE_READ_STR_INTO(&info.comm, task, comm);
 
 	bpf_seq_write(ctx->meta->seq, &info, sizeof(info));

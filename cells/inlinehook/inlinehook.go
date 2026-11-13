@@ -98,11 +98,17 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	if err != nil {
 		return err
 	}
-	stext, _ := ks.Addr("_stext")
-	etext, _ := ks.Addr("_etext")
-	inText := func(a uint64) bool { return a >= stext && a < etext }
+	// BPF only reads addresses inside the kernel's text: kallsyms can be
+	// filtered, and a bogus address such as the vsyscall page oopses
+	// kernels that let bpf_probe_read_kernel() fault on it.
+	img, err := ks.Image()
+	if err != nil {
+		return core.Skip("kernel image range unavailable: %v", err)
+	}
+	inText := func(a uint64) bool { return img.InText(a, 1) }
 
 	var funcs []function
+	outside := 0
 	for _, name := range hotPaths {
 		sym := name
 		if !ks.Has(sym) {
@@ -112,18 +118,32 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 			}
 		}
 		addr, _ := ks.Addr(sym)
+		if !img.InText(addr, codeBytes) {
+			outside++
+			outsideImage(rec, sym, addr, img)
+			continue
+		}
 		funcs = append(funcs, function{name, sym, addr})
 	}
 	if len(funcs) > maxFuncs-1 {
 		funcs = funcs[:maxFuncs-1]
 	}
 	if len(funcs) == 0 {
+		if outside > 0 {
+			rec.Message("kallsyms places %d checked function(s) outside the kernel's text", outside)
+			return nil
+		}
 		return core.Skip("none of the checked functions is in /proc/kallsyms")
 	}
 	// Canary: the reader runs from a kprobe on getuid's handler, so that
 	// function's entry must show the patch the kprobe made (an ftrace call,
 	// or an int3 without ftrace) at the moment it is read.
 	canaryAddr, haveCanary := ks.Addr(canarySymbol)
+	if haveCanary && !img.InText(canaryAddr, codeBytes) {
+		outside++
+		outsideImage(rec, canarySymbol, canaryAddr, img)
+		haveCanary = false
+	}
 	if haveCanary {
 		funcs = append(funcs, function{canarySymbol, canarySymbol, canaryAddr})
 	}
@@ -207,8 +227,6 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 		case observe != "":
 			rec.Observe(fmt.Sprintf("%s starts with %s", f.sym, observe), details)
 		case e.Kind == entryUnknown:
-			// Functions marked noinstr/notrace (e.g. x64_sys_call) legitimately
-			// have no ftrace NOP; only report when we couldn't check filterable.
 			if filterable == nil {
 				unknown = append(unknown, f.sym)
 			}
@@ -218,17 +236,33 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 		rec.Limit("Entry of %d function(s) not recognised (no ftrace site): %s", len(unknown), strings.Join(unknown, ", "))
 	}
 
-	if hooked > 0 {
+	switch {
+	case hooked > 0:
 		rec.Message("%d of %d checked functions are inline-hooked", hooked, checked)
-	} else {
+	case outside > 0:
+		rec.Message("No inline hooks in %d checked functions; kallsyms places %d outside the kernel's text", checked, outside)
+	default:
 		rec.Message("No inline hooks in %d checked functions", checked)
 	}
 	return nil
 }
 
-// judge decides what an entry means. hasFtraceSite is true when tracefs's
-// available_filter_functions confirms the compiler placed a 5-byte ftrace slot
-// at this function's entry.
+// outsideImage reports a checked function that kallsyms places outside the
+// kernel's text. It is not read.
+func outsideImage(rec *core.Recorder, sym string, addr uint64, img kernel.Image) {
+	rec.Suspicious(core.Finding{
+		Description: fmt.Sprintf("/proc/kallsyms reports %s at %#x, outside the kernel's text", sym, addr),
+		Details: map[string]string{
+			"function":    sym,
+			"address":     fmt.Sprintf("%#x", addr),
+			"kernel_text": fmt.Sprintf("%#x-%#x", img.TextStart, img.TextEnd),
+		},
+		Why: "This function is part of the core kernel, so its address must fall between _stext and _etext. A " +
+			"different address means /proc/kallsyms is being rewritten, which rootkits do to mislead scanners that rely on it.",
+		Benign: "None expected.",
+	})
+}
+
 func judge(e entry, f function, ks *kernel.Kallsyms, inText func(uint64) bool, traced map[string]bool, haveTraced, hasFtraceSite bool) (bool, string, string) {
 	target := fmt.Sprintf("%#x", e.Target)
 	if name, off, ok := ks.Lookup(e.Target); ok && inText(e.Target) {
@@ -238,9 +272,6 @@ func judge(e entry, f function, ks *kernel.Kallsyms, inText func(uint64) bool, t
 	}
 
 	if e.PostNop {
-		// Immediately after an unused 5-byte ftrace NOP: normal kernel code may
-		// contain intra-text static_branch or tail-call jumps, but never jumps
-		// out of _stext.._etext, indirect jumps or push+ret/movabs gadgets.
 		switch e.Kind {
 		case entryIndirect:
 			return true, "", "an indirect jump immediately after its ftrace NOP"
@@ -256,13 +287,11 @@ func judge(e entry, f function, ks *kernel.Kallsyms, inText func(uint64) bool, t
 	case entryJump:
 		if !inText(e.Target) {
 			if haveTraced && (traced[f.sym] || traced[f.name]) {
-				// CONFIG_DYNAMIC_FTRACE_WITH_JMP direct(jmp) trampoline; hook_inventory attributes it.
 				return false, "", ""
 			}
 			return true, "", "a jump out of the kernel's text, to " + target
 		}
 		if hasFtraceSite || e.Gadget {
-			// Ftrace never writes a jump to another core-kernel symbol over a traceable __fentry__ slot.
 			return true, "", "a jump overwriting its ftrace site, to " + target
 		}
 		return false, "a jump to " + target + " inside the kernel's text", ""
@@ -271,13 +300,13 @@ func judge(e entry, f function, ks *kernel.Kallsyms, inText func(uint64) bool, t
 	case entryCall:
 		name, off, ok := ks.Lookup(e.Target)
 		if ok && off == 0 && ftraceTargets[name] && inText(e.Target) {
-			return false, "", "" // ftrace's own handler; hook_inventory lists the hook
+			return false, "", ""
 		}
 		if !haveTraced {
 			return false, "a call to " + target + " (not verified against ftrace)", ""
 		}
 		if traced[f.sym] || traced[f.name] {
-			return false, "", "" // an ftrace or BPF trampoline, listed by ftrace
+			return false, "", ""
 		}
 		return true, "", "a call to " + target + " that ftrace did not place there"
 	case entryInt3:
@@ -290,8 +319,6 @@ func judge(e entry, f function, ks *kernel.Kallsyms, inText func(uint64) bool, t
 	return false, "", ""
 }
 
-// readCode triggers the BPF reader and returns the first bytes and per-entry
-// kernel-read errno for each function.
 func readCode(env *core.Env, rec *core.Recorder, funcs []function) ([][]byte, []int32, error) {
 	spec, err := loadInlinehook()
 	if err != nil {
@@ -321,7 +348,6 @@ func readCode(env *core.Env, rec *core.Recorder, funcs []function) ([][]byte, []
 		}
 	}
 
-	// cilium/ebpf adds the architecture prefix (__x64_sys_getuid).
 	kp, err := link.Kprobe("sys_getuid", objs.ReadCode, nil)
 	if err != nil {
 		return nil, nil, core.WrapBPF("attach kprobe sys_getuid", err)
@@ -330,7 +356,7 @@ func readCode(env *core.Env, rec *core.Recorder, funcs []function) ([][]byte, []
 
 	var first inlinehookFuncCode
 	for attempt := 0; attempt < 3; attempt++ {
-		unix.Getuid() // a real syscall: Go doesn't cache getuid
+		unix.Getuid()
 		if err := objs.Prologues.Lookup(uint32(0), &first); err != nil {
 			return nil, nil, core.WrapBPF("read prologues map", err)
 		}
@@ -355,9 +381,6 @@ func readCode(env *core.Env, rec *core.Recorder, funcs []function) ([][]byte, []
 	return out, errs, nil
 }
 
-// tracefsState returns the functions ftrace has currently patched
-// (enabled_functions) and all functions that carry a compile-time ftrace site
-// (available_filter_functions).
 func tracefsState() (traced, filterable map[string]bool, err error) {
 	dir, cleanup, err := kernel.Tracefs()
 	if err != nil {
@@ -379,7 +402,9 @@ func tracefsState() (traced, filterable map[string]bool, err error) {
 			if line == "" || line[0] == ' ' || line[0] == '\t' {
 				continue
 			}
-			out[strings.Fields(line)[0]] = true
+			if f := strings.Fields(line); len(f) > 0 {
+				out[f[0]] = true
+			}
 		}
 		return out, sc.Err()
 	}

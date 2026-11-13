@@ -5,7 +5,6 @@
 package userhooks
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -17,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/waldh4ri/zygarde/internal/core"
 	"github.com/waldh4ri/zygarde/internal/fsutil"
@@ -64,16 +65,33 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 	return nil
 }
 
-// checkPreloadFile reports /etc/ld.so.preload. ld.so loads every library
-// listed there into every dynamically linked program.
+func unparsed(rec *core.Recorder, path string, err error) {
+	rec.Suspicious(core.Finding{
+		Description: fmt.Sprintf("%s could not be parsed completely: %v", path, err),
+		Details:     map[string]string{"path": path, "error": err.Error()},
+		Why: "Dynamic linker configuration files are a few lines long. One padded past the size a parser " +
+			"accepts stops scanners at that point, so entries after it go unseen.",
+		Benign: "None expected; open the file and check what follows the padding.",
+	})
+}
+
 func (c *Cell) checkPreloadFile(rec *core.Recorder) int {
 	const name = "/etc/ld.so.preload"
-	data, err := fsutil.ReadFileNoAtime(c.path(name))
-	if err != nil {
+	data, err := fsutil.ReadSystemFile(c.path(name), fsutil.MaxConfig)
+	if errors.Is(err, fs.ErrNotExist) {
 		return 0
 	}
 	n := 0
-	if c.hiddenFromListing(name) {
+	if errors.Is(err, fsutil.ErrTooLarge) {
+		n++
+		unparsed(rec, name, err)
+	} else if err != nil {
+		rec.Observe(fmt.Sprintf("%s was not read: %v", name, err), map[string]string{"path": name, "error": err.Error()})
+		return 0
+	}
+	if hidden, err := c.hiddenFromListing(name); err != nil {
+		rec.Limit("Could not check whether %s is hidden from its directory listing: %v", name, err)
+	} else if hidden {
 		n++
 		rec.Suspicious(core.Finding{
 			Description: name + " exists but is hidden from directory listings",
@@ -105,25 +123,28 @@ func (c *Cell) checkPreloadFile(rec *core.Recorder) int {
 	return n
 }
 
-// ParsePreload splits ld.so.preload content into library names: entries are
-// separated by whitespace or ':', and '#' starts a comment (elf/rtld.c).
 func ParsePreload(data []byte) []string {
 	var libs []string
-	sc := bufio.NewScanner(bytes.NewReader(data))
-	for sc.Scan() {
-		line, _, _ := strings.Cut(sc.Text(), "#")
-		for _, f := range strings.FieldsFunc(line, func(r rune) bool { return r == ':' || r == ' ' || r == '\t' }) {
+	for _, raw := range bytes.Split(data, []byte{'\n'}) {
+		line, _, _ := strings.Cut(string(raw), "#")
+		for _, f := range strings.FieldsFunc(line, func(r rune) bool { return r == ':' || r == ' ' || r == '\t' || r == '\r' }) {
 			libs = append(libs, f)
 		}
 	}
 	return libs
 }
 
-// checkLdSoConf reports library directories configured for the dynamic
-// linker that are places attackers can write to or hide in.
 func (c *Cell) checkLdSoConf(rec *core.Recorder) int {
-	dirs := c.ldSoConfDirs("/etc/ld.so.conf", 0)
+	w := &confWalk{visited: map[string]bool{}}
+	dirs := c.ldSoConfDirs("/etc/ld.so.conf", 0, w)
 	n := 0
+	for _, p := range w.unparsed {
+		n++
+		unparsed(rec, p.path, p.err)
+	}
+	if w.truncated {
+		rec.Limit("ld.so.conf includes more than %d files; the rest were not read", maxConfFiles)
+	}
 	for _, d := range dirs {
 		why := c.unusualDir(d.dir, "")
 		if why == "" {
@@ -146,20 +167,39 @@ type confDir struct {
 	dir, source string
 }
 
-// ldSoConfDirs parses an ld.so.conf file and its includes (ldconfig(8)).
-func (c *Cell) ldSoConfDirs(file string, depth int) []confDir {
-	if depth > 8 {
+const maxConfFiles = 512
+
+type confWalk struct {
+	visited   map[string]bool
+	files     int
+	truncated bool
+	unparsed  []struct {
+		path string
+		err  error
+	}
+}
+
+func (c *Cell) ldSoConfDirs(file string, depth int, w *confWalk) []confDir {
+	if depth > 8 || w.visited[file] {
 		return nil
 	}
-	f, err := fsutil.OpenNoAtime(c.path(file))
-	if err != nil {
+	w.visited[file] = true
+	if w.files++; w.files > maxConfFiles {
+		w.truncated = true
 		return nil
 	}
-	defer f.Close()
+	data, err := fsutil.ReadSystemFile(c.path(file), fsutil.MaxConfig)
+	if errors.Is(err, fsutil.ErrTooLarge) {
+		w.unparsed = append(w.unparsed, struct {
+			path string
+			err  error
+		}{file, err})
+	} else if err != nil {
+		return nil
+	}
 	var out []confDir
-	sc := bufio.NewScanner(f)
-	for n := 1; sc.Scan(); n++ {
-		line, _, _ := strings.Cut(sc.Text(), "#")
+	for i, raw := range bytes.Split(data, []byte{'\n'}) {
+		line, _, _ := strings.Cut(string(raw), "#")
 		fields := strings.Fields(line)
 		if len(fields) == 0 {
 			continue
@@ -167,35 +207,32 @@ func (c *Cell) ldSoConfDirs(file string, depth int) []confDir {
 		switch fields[0] {
 		case "include":
 			for _, pattern := range fields[1:] {
-				if !strings.HasPrefix(pattern, "/") && !filepath.IsAbs(pattern) {
-					pattern = filepath.ToSlash(filepath.Join(filepath.Dir(file), pattern))
+				if !filepath.IsAbs(pattern) {
+					pattern = filepath.Join(filepath.Dir(file), pattern)
 				}
 				matches, _ := filepath.Glob(c.path(pattern))
 				sort.Strings(matches)
 				for _, m := range matches {
-					rel := m
+					rel := strings.TrimPrefix(m, c.root)
 					if c.root != "" {
 						if r, err := filepath.Rel(c.root, m); err == nil {
 							rel = "/" + strings.TrimPrefix(filepath.ToSlash(r), "/")
 						}
 					}
-					out = append(out, c.ldSoConfDirs(rel, depth+1)...)
+					out = append(out, c.ldSoConfDirs(rel, depth+1, w)...)
 				}
 			}
 		case "hwcap":
 		default:
-			for _, d := range strings.FieldsFunc(line, func(r rune) bool { return r == ':' || r == ',' || r == ' ' || r == '\t' }) {
+			for _, d := range strings.FieldsFunc(line, func(r rune) bool { return r == ':' || r == ',' || r == ' ' || r == '\t' || r == '\r' }) {
 				d, _, _ = strings.Cut(d, "=")
-				out = append(out, confDir{d, fmt.Sprintf("%s:%d", file, n)})
+				out = append(out, confDir{d, fmt.Sprintf("%s:%d", file, i+1)})
 			}
 		}
 	}
 	return out
 }
 
-// unusualDir explains why a library directory is unusual, or returns "".
-// root prefixes the path when it must be resolved in another mount
-// namespace (/proc/<pid>/root).
 func (c *Cell) unusualDir(dir, root string) string {
 	slash := filepath.ToSlash(dir)
 	if !strings.HasPrefix(slash, "/") {
@@ -213,59 +250,125 @@ func (c *Cell) unusualDir(dir, root string) string {
 	case hiddenComponent(slash):
 		return "a hidden directory"
 	}
-	full := c.path(slash)
-	if root != "" {
-		full = filepath.Join(root, slash)
+	var st unix.Stat_t
+	if root == "" {
+		if unix.Stat(c.path(slash), &st) != nil {
+			return ""
+		}
+	} else {
+		f, err := fsutil.OpenInRoot(root, slash, unix.O_PATH|unix.O_DIRECTORY)
+		if err != nil {
+			return ""
+		}
+		err = unix.Fstat(int(f.Fd()), &st)
+		f.Close()
+		if err != nil {
+			return ""
+		}
 	}
-	if st, err := os.Stat(full); err == nil && st.IsDir() && st.Mode().Perm()&0o002 != 0 {
+	if st.Mode&unix.S_IFMT == unix.S_IFDIR && st.Mode&0o002 != 0 {
 		return "a world-writable directory"
 	}
 	return ""
 }
 
-// resolveLiveRoot picks the first /proc/<pid>/root from candidateRoots that
-// still exists on disk, so a single short-lived process exiting mid-scan does
-// not skip inspection for other processes in the same mount namespace.
-func resolveLiveRoot(candidateRoots []string) (string, bool) {
-	if len(candidateRoots) == 0 {
-		return "", true
-	}
-	for _, r := range candidateRoots {
-		if _, err := os.Stat(r); err == nil {
-			return r, true
+type presence int
+
+const (
+	unknown presence = iota
+	missing
+	listed
+	hidden
+)
+
+func (c *Cell) lookup(lib, root string) (presence, error) {
+	if root == "" || fsutil.SameAsHostRoot(root) && c.root == "" {
+		full := c.path(lib)
+		if _, err := os.Lstat(full); errors.Is(err, fs.ErrNotExist) {
+			return missing, nil
+		} else if err != nil {
+			return unknown, nil
 		}
+		found, err := fsutil.InListing(filepath.Dir(full), filepath.Base(full))
+		if err != nil {
+			return unknown, err
+		}
+		if found {
+			return listed, nil
+		}
+		return hidden, nil
 	}
-	return "", false
+	f, err := fsutil.OpenInRoot(root, lib, unix.O_PATH|unix.O_NOFOLLOW)
+	if errors.Is(err, fs.ErrNotExist) {
+		if _, serr := os.Stat(root); serr != nil {
+			return unknown, nil // the process exited
+		}
+		return missing, nil
+	}
+	if err != nil {
+		return unknown, err
+	}
+	f.Close()
+	d, err := fsutil.OpenInRoot(root, filepath.Dir(lib), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NONBLOCK)
+	if err != nil {
+		return unknown, err
+	}
+	defer d.Close()
+	found, err := fsutil.InListingFile(d, filepath.Base(lib))
+	if err != nil {
+		return unknown, err
+	}
+	if found {
+		return listed, nil
+	}
+	return hidden, nil
 }
 
-// checkLibrary reports a preloaded library that is missing, lives in an
-// unusual directory or is hidden from its directory's listing.
-func (c *Cell) checkLibrary(rec *core.Recorder, lib string, candidateRoots []string, source string) int {
-	slash := filepath.ToSlash(lib)
-	if !strings.HasPrefix(slash, "/") || strings.Contains(slash, "$") {
-		return 0 // searched in the library path, or a dynamic string token
+const maxRoots = 20
+
+func (c *Cell) checkLibrary(rec *core.Recorder, lib string, roots []string, source string) int {
+	if !filepath.IsAbs(lib) || strings.Contains(lib, "$") {
+		return 0
 	}
-	root, ok := resolveLiveRoot(candidateRoots)
-	if !ok {
-		return 0 // every candidate process in this namespace exited
+	if roots == nil {
+		roots = []string{""}
 	}
-	full := c.path(slash)
-	if root != "" {
-		full = filepath.Join(root, slash)
+	if len(roots) > maxRoots {
+		roots = roots[:maxRoots]
 	}
 	var why string
-	if w := c.unusualDir(filepath.ToSlash(filepath.Dir(slash)), root); w != "" {
+	if w := c.unusualDir(filepath.Dir(lib), roots[0]); w != "" {
 		why = "it lives in " + w
-	} else if _, err := os.Lstat(full); errors.Is(err, fs.ErrNotExist) {
-		why = "it is missing from disk"
-	} else if err == nil && hiddenFromListing(full) {
-		why = "it is hidden from directory listings"
+	} else {
+		counts := map[presence]int{}
+		noOpenat2 := false
+		for _, root := range roots {
+			p, err := c.lookup(lib, root)
+			if errors.Is(err, fsutil.ErrNoOpenat2) {
+				noOpenat2 = true
+			} else if err != nil {
+				rec.Log().Debug("library lookup failed", "library", lib, "root", root, "err", err)
+			}
+			counts[p]++
+		}
+		if noOpenat2 {
+			rec.Limit("Library %s not looked up inside other mount namespaces: %v", lib, fsutil.ErrNoOpenat2)
+		}
+		switch {
+		case counts[listed] > 0:
+		case counts[hidden] > 0:
+			why = "it is hidden from directory listings"
+		case counts[missing] > 0:
+			why = "it is missing from disk"
+		}
 	}
 	if why == "" {
 		return 0
 	}
 	details := map[string]string{"library": lib, "preloaded_by": source, "reason": why}
-	fsutil.MergeMetadata(details, "file_", fsutil.FileMetadata(full))
+	if roots[0] == "" {
+		fsutil.MergeMetadata(details, "file_", fsutil.FileMetadata(c.path(lib)))
+	}
 	rec.Suspicious(core.Finding{
 		Description: fmt.Sprintf("Preloaded library %s (%s): %s", lib, source, why),
 		Details:     details,
@@ -276,12 +379,8 @@ func (c *Cell) checkLibrary(rec *core.Recorder, lib string, candidateRoots []str
 	return 1
 }
 
-// injectionVars are environment variables that make ld.so load extra code.
 var injectionVars = []string{"LD_PRELOAD", "LD_AUDIT"}
 
-// checkEnvironments reports processes started with LD_PRELOAD, LD_AUDIT or
-// an LD_LIBRARY_PATH pointing at an unusual directory, grouping by mount
-// namespace so container filesystems never shadow host processes.
 func (c *Cell) checkEnvironments(ctx context.Context, rec *core.Recorder) (int, error) {
 	entries, err := fsutil.ReadDirNoAtime(c.proc)
 	if err != nil {
@@ -291,7 +390,6 @@ func (c *Cell) checkEnvironments(ctx context.Context, rec *core.Recorder) (int, 
 		mntNS, variable, value string
 	}
 	pids := map[use][]string{}
-	roots := map[use][]string{}
 	unreadable := 0
 	for _, e := range entries {
 		if ctx.Err() != nil {
@@ -310,7 +408,6 @@ func (c *Cell) checkEnvironments(ctx context.Context, rec *core.Recorder) (int, 
 			continue
 		}
 		mntNS, _ := os.Readlink(filepath.Join(c.proc, pid, "ns", "mnt"))
-		procRoot := filepath.Join(c.proc, pid, "root")
 		for k, v := range ParseEnviron(data) {
 			isInjection := false
 			for _, iv := range injectionVars {
@@ -319,7 +416,6 @@ func (c *Cell) checkEnvironments(ctx context.Context, rec *core.Recorder) (int, 
 			if (isInjection && strings.TrimSpace(v) != "") || k == "LD_LIBRARY_PATH" {
 				u := use{mntNS, k, v}
 				pids[u] = append(pids[u], pid)
-				roots[u] = append(roots[u], procRoot)
 			}
 		}
 	}
@@ -337,8 +433,15 @@ func (c *Cell) checkEnvironments(ctx context.Context, rec *core.Recorder) (int, 
 
 	n := 0
 	for _, u := range keys {
+		if ctx.Err() != nil {
+			return n, ctx.Err()
+		}
 		list := pids[u]
 		sort.Slice(list, func(i, j int) bool { a, _ := strconv.Atoi(list[i]); b, _ := strconv.Atoi(list[j]); return a < b })
+		roots := make([]string, len(list))
+		for i, pid := range list {
+			roots[i] = filepath.Join(c.proc, pid, "root")
+		}
 		shown := list
 		if len(shown) > 20 {
 			shown = append(shown[:20:20], fmt.Sprintf("… (%d more)", len(list)-20))
@@ -350,10 +453,9 @@ func (c *Cell) checkEnvironments(ctx context.Context, rec *core.Recorder) (int, 
 		source := fmt.Sprintf("%s of process %s", u.variable, list[0])
 
 		if u.variable == "LD_LIBRARY_PATH" {
-			liveRoot, _ := resolveLiveRoot(roots[u])
 			var odd []string
-			for _, d := range strings.Split(u.value, ":") {
-				if why := c.unusualDir(d, liveRoot); why != "" {
+			for _, d := range filepath.SplitList(u.value) {
+				if why := c.unusualDir(d, roots[0]); why != "" {
 					odd = append(odd, d+" ("+why+")")
 				}
 			}
@@ -366,13 +468,12 @@ func (c *Cell) checkEnvironments(ctx context.Context, rec *core.Recorder) (int, 
 
 		rec.Observe(fmt.Sprintf("%d process(es) run with %s=%s", len(list), u.variable, u.value), details)
 		for _, lib := range strings.FieldsFunc(u.value, func(r rune) bool { return r == ':' || r == ' ' }) {
-			n += c.checkLibrary(rec, lib, roots[u], source)
+			n += c.checkLibrary(rec, lib, roots, source)
 		}
 	}
 	return n, nil
 }
 
-// ParseEnviron parses /proc/<pid>/environ (NUL-separated KEY=value).
 func ParseEnviron(data []byte) map[string]string {
 	env := map[string]string{}
 	for _, kv := range bytes.Split(data, []byte{0}) {
@@ -385,25 +486,13 @@ func ParseEnviron(data []byte) map[string]string {
 
 func (c *Cell) path(p string) string { return filepath.Join(c.root, p) }
 
-// hiddenFromListing reports whether a system path is missing from its
-// directory's listing although it exists.
-func (c *Cell) hiddenFromListing(p string) bool { return hiddenFromListing(c.path(p)) }
-
-func hiddenFromListing(full string) bool {
+func (c *Cell) hiddenFromListing(p string) (bool, error) {
+	full := c.path(p)
 	if _, err := os.Lstat(full); err != nil {
-		return false
+		return false, nil
 	}
-	entries, err := fsutil.ReadDirNoAtime(filepath.Dir(full))
-	if err != nil {
-		return false
-	}
-	base := filepath.Base(full)
-	for _, e := range entries {
-		if e.Name() == base {
-			return false
-		}
-	}
-	return true
+	found, err := fsutil.InListing(filepath.Dir(full), filepath.Base(full))
+	return err == nil && !found, err
 }
 
 func under(p, dir string) bool { return p == dir || strings.HasPrefix(p, dir+"/") }

@@ -1,15 +1,19 @@
 package kmodule
 
 import (
-	"bufio"
+	"bytes"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/waldh4ri/zygarde/internal/core"
 	"github.com/waldh4ri/zygarde/internal/fsutil"
@@ -20,9 +24,7 @@ import (
 var (
 	modulesLoadDirs = []string{"/etc/modules-load.d", "/run/modules-load.d", "/usr/local/lib/modules-load.d", "/usr/lib/modules-load.d", "/lib/modules-load.d"}
 	modprobeDirs    = []string{"/etc/modprobe.d", "/run/modprobe.d", "/usr/local/lib/modprobe.d", "/usr/lib/modprobe.d", "/lib/modprobe.d"}
-	// Scripts run at boot or login that may insmod/modprobe a module
-	// directly (Mélofée uses /etc/rc.modules and rc.local).
-	bootScripts = []string{"/etc/rc.modules", "/etc/rc.local", "/etc/rc.d/rc.local", "/etc/rc.d/rc.modules",
+	bootScripts     = []string{"/etc/rc.modules", "/etc/rc.local", "/etc/rc.d/rc.local", "/etc/rc.d/rc.modules",
 		"/etc/profile", "/etc/bash.bashrc", "/etc/bashrc", "/root/.bashrc", "/root/.profile", "/root/.bash_profile"}
 )
 
@@ -36,8 +38,7 @@ type configured struct {
 	How    string // "modules-load.d", "/etc/modules", "insmod", "modprobe"
 }
 
-// install is a modprobe.d "install" or "remove" directive: a command run
-// instead of loading or unloading the module.
+// install is a modprobe.d "install" or "remove" directive.
 type install struct {
 	Directive string // "install" or "remove"
 	Module    string
@@ -45,11 +46,9 @@ type install struct {
 	Source    string
 }
 
-// parseModuleList parses modules-load.d files and /etc/modules: one module
-// per line, optionally followed by parameters; # and ; start comments.
-func parseModuleList(r io.Reader, file, how string) []configured {
+func parseModuleList(r io.Reader, file, how string) ([]configured, error) {
 	var out []configured
-	sc := bufio.NewScanner(r)
+	sc := fsutil.NewScanner(r)
 	for n := 1; sc.Scan(); n++ {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" || line[0] == '#' || line[0] == ';' {
@@ -57,14 +56,12 @@ func parseModuleList(r io.Reader, file, how string) []configured {
 		}
 		out = append(out, configured{Module: strings.Fields(line)[0], Source: fmt.Sprintf("%s:%d", file, n), How: how})
 	}
-	return out
+	return out, sc.Err()
 }
 
-// parseModprobeConf returns the install and remove directives of a modprobe.d
-// file. Lines ending in a backslash continue on the next line.
-func parseModprobeConf(r io.Reader, file string) []install {
+func parseModprobeConf(r io.Reader, file string) ([]install, error) {
 	var out []install
-	sc := bufio.NewScanner(r)
+	sc := fsutil.NewScanner(r)
 	var cont strings.Builder
 	start := 0
 	for n := 1; sc.Scan(); n++ {
@@ -89,11 +86,9 @@ func parseModprobeConf(r io.Reader, file string) []install {
 		cmd := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(strings.TrimPrefix(line, f[0])), f[1]))
 		out = append(out, install{Directive: f[0], Module: f[1], Command: cmd, Source: fmt.Sprintf("%s:%d", file, start)})
 	}
-	return out
+	return out, sc.Err()
 }
 
-// commands splits a shell line into simple commands (on ; && || | and
-// newlines) and returns each one's words, without comments.
 func commands(line string) [][]string {
 	if i := strings.Index(line, "#"); i >= 0 && (i == 0 || line[i-1] == ' ' || line[i-1] == '\t') {
 		line = line[:i]
@@ -102,7 +97,6 @@ func commands(line string) [][]string {
 	var out [][]string
 	for _, part := range strings.Split(r.Replace(line), ";") {
 		words := strings.Fields(part)
-		// Skip grouping, env assignments and wrappers to reach the program.
 		for len(words) > 0 {
 			w := words[0]
 			if w == "{" || w == "(" || w == "}" || w == ")" || w == "then" || w == "do" || w == "else" ||
@@ -119,14 +113,13 @@ func commands(line string) [][]string {
 	return out
 }
 
-// parseScript finds insmod and modprobe commands in a shell script.
-func parseScript(r io.Reader, file string) []configured {
+func parseScript(r io.Reader, file string) ([]configured, error) {
 	var out []configured
-	sc := bufio.NewScanner(r)
+	sc := fsutil.NewScanner(r)
 	for n := 1; sc.Scan(); n++ {
 		out = append(out, extractModCmds(sc.Text(), file, n)...)
 	}
-	return out
+	return out, sc.Err()
 }
 
 func extractModCmds(text, file string, lineNo int) []configured {
@@ -155,10 +148,9 @@ func extractModCmds(text, file string, lineNo int) []configured {
 	return out
 }
 
-// parseSystemdUnit finds ExecStart/ExecStartPre/ExecStartPost lines loading modules.
-func parseSystemdUnit(r io.Reader, file string) []configured {
+func parseSystemdUnit(r io.Reader, file string) ([]configured, error) {
 	var out []configured
-	sc := bufio.NewScanner(r)
+	sc := fsutil.NewScanner(r)
 	for n := 1; sc.Scan(); n++ {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" || line[0] == '#' || line[0] == ';' {
@@ -171,13 +163,12 @@ func parseSystemdUnit(r io.Reader, file string) []configured {
 		v = strings.TrimLeft(strings.TrimSpace(v), "-+@!:")
 		out = append(out, extractModCmds(v, file, n)...)
 	}
-	return out
+	return out, sc.Err()
 }
 
-// parseUdevRules finds RUN+="..." actions that invoke insmod or modprobe.
-func parseUdevRules(r io.Reader, file string) []configured {
+func parseUdevRules(r io.Reader, file string) ([]configured, error) {
 	var out []configured
-	sc := bufio.NewScanner(r)
+	sc := fsutil.NewScanner(r)
 	for n := 1; sc.Scan(); n++ {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" || line[0] == '#' {
@@ -187,17 +178,10 @@ func parseUdevRules(r io.Reader, file string) []configured {
 			out = append(out, extractModCmds(m[1], file, n)...)
 		}
 	}
-	return out
+	return out, sc.Err()
 }
 
-// benignInstall reports whether an install/remove command only runs programs
-// used to disable a module or to load it with extra steps: true/false (the
-// usual blacklisting idiom), modprobe itself, sysctl, logger, echo, and SUSE's
-// unblacklist helper, without shell command substitution or redirection.
 func benignInstall(cmd string) bool {
-	// Command substitution or redirection inside arguments (e.g.
-	// `/bin/true $(insmod /etc/rk.ko)` or ``/bin/echo `...` ``) executes
-	// arbitrary commands even when argv[0] is on the allowlist.
 	for _, sub := range []string{"$(", "`", "<(", ">(", "\n", "\r"} {
 		if strings.Contains(cmd, sub) {
 			return false
@@ -225,7 +209,6 @@ func benignInstall(cmd string) bool {
 				return false
 			}
 		}
-		// Reject modprobe loading an explicit file path via insmod-like wrappers.
 		for _, w := range words[1:] {
 			if strings.Contains(w, ">") && w != ">/dev/null" && w != "2>/dev/null" && w != "&>/dev/null" {
 				return false
@@ -235,17 +218,15 @@ func benignInstall(cmd string) bool {
 	return true
 }
 
-// moduleTree indexes the modules shipped with the running kernel.
 type moduleTree struct {
-	dirs  []string            // /lib/modules/<release> and /usr/lib/modules/<release>
-	names map[string]bool     // normalised names, loadable and built-in
-	alias map[string][]string // alias pattern -> module
-	ok    bool                // modules.dep was found
+	dirs  []string
+	names map[string]bool
+	alias map[string][]string
+	ok    bool
 }
 
 func normalize(name string) string { return strings.ReplaceAll(name, "-", "_") }
 
-// loadModuleTree reads modules.dep, modules.builtin and modules.alias.
 func loadModuleTree(root, release string) moduleTree {
 	t := moduleTree{names: map[string]bool{}, alias: map[string][]string{}}
 	for _, base := range []string{"/lib/modules/", "/usr/lib/modules/"} {
@@ -253,14 +234,14 @@ func loadModuleTree(root, release string) moduleTree {
 	}
 	for _, dir := range t.dirs {
 		for _, idx := range []string{"modules.dep", "modules.builtin"} {
-			f, err := fsutil.OpenNoAtime(filepath.Join(root, dir, idx))
+			f, err := fsutil.OpenSystem(filepath.Join(root, dir, idx))
 			if err != nil {
 				continue
 			}
 			if idx == "modules.dep" {
 				t.ok = true
 			}
-			sc := bufio.NewScanner(f)
+			sc := fsutil.NewScanner(f)
 			for sc.Scan() {
 				p, _, _ := strings.Cut(sc.Text(), ":")
 				name := path.Base(strings.TrimSpace(p))
@@ -270,8 +251,8 @@ func loadModuleTree(root, release string) moduleTree {
 			}
 			f.Close()
 		}
-		if f, err := fsutil.OpenNoAtime(filepath.Join(root, dir, "modules.alias")); err == nil {
-			sc := bufio.NewScanner(f)
+		if f, err := fsutil.OpenSystem(filepath.Join(root, dir, "modules.alias")); err == nil {
+			sc := fsutil.NewScanner(f)
 			for sc.Scan() {
 				if f := strings.Fields(sc.Text()); len(f) == 3 && f[0] == "alias" {
 					t.alias[f[1]] = append(t.alias[f[1]], f[2])
@@ -283,7 +264,6 @@ func loadModuleTree(root, release string) moduleTree {
 	return t
 }
 
-// shipped reports whether a configured module comes with the running kernel.
 func (t moduleTree) shipped(c configured) bool {
 	if c.Path {
 		p := path.Clean(filepath.ToSlash(c.Module))
@@ -305,9 +285,6 @@ func (t moduleTree) shipped(c configured) bool {
 	return false
 }
 
-// confFiles lists the files with suffix of the given directories. As in systemd
-// and kmod, a file overrides same-named files in later directories (which
-// also skips /lib/... when it is a symlink to /usr/lib/...).
 func confFiles(root string, dirs []string, suffix string) []string {
 	var out []string
 	seen := map[string]bool{}
@@ -326,23 +303,38 @@ func confFiles(root string, dirs []string, suffix string) []string {
 	return out
 }
 
-// hiddenFromListing reports whether path exists but is missing from its
-// parent directory's listing: hidden by a getdents hook.
-func hiddenFromListing(root, p string) bool {
+func hiddenFromListing(root, p string) (bool, error) {
 	full := filepath.Join(root, p)
 	if _, err := os.Lstat(full); err != nil {
-		return false
+		return false, nil
 	}
-	entries, err := fsutil.ReadDirNoAtime(filepath.Dir(full))
+	found, err := fsutil.InListing(filepath.Dir(full), filepath.Base(full))
+	if err != nil {
+		return false, err
+	}
+	return !found, nil
+}
+
+func under(p, dir string) bool { return p == dir || strings.HasPrefix(p, dir+"/") }
+
+func homeOf(p string) string {
+	parts := strings.SplitN(strings.TrimPrefix(p, "/"), "/", 3)
+	if len(parts) < 2 {
+		return p
+	}
+	return "/" + parts[0] + "/" + parts[1]
+}
+
+func ownedByHomeOwner(f *os.File, home string) bool {
+	uid, err := fsutil.Owner(f)
 	if err != nil {
 		return false
 	}
-	for _, e := range entries {
-		if e.Name() == filepath.Base(full) {
-			return false
-		}
+	if uid == 0 {
+		return true
 	}
-	return true
+	var st unix.Stat_t
+	return unix.Stat(home, &st) == nil && st.Uid == uid
 }
 
 func relSlash(root, match string) string {
@@ -355,27 +347,81 @@ func relSlash(root, match string) string {
 	return filepath.ToSlash(strings.TrimPrefix(match, root))
 }
 
-// checkAutoload reports modules configured to load at boot.
 func (c *Cell) checkAutoload(rec *core.Recorder) int {
 	var mods []configured
 	var installs []install
-	read := func(p string, parse func(io.Reader)) {
-		f, err := fsutil.OpenNoAtime(filepath.Join(c.root, p))
+	suspicious, userSkipped := 0, 0
+
+	read := func(p string, parse func(io.Reader) error) {
+		full := filepath.Join(c.root, p)
+		user := under(p, "/home")
+		var f *os.File
+		var err error
+		if user {
+			f, err = fsutil.Open(full)
+		} else {
+			f, err = fsutil.OpenSystem(full)
+		}
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, unix.ENOTDIR) {
+			return
+		}
 		if err != nil {
+			if user {
+				userSkipped++
+			} else {
+				rec.Observe(fmt.Sprintf("%s was not read: %v", p, err), map[string]string{"path": p, "error": err.Error()})
+			}
 			return
 		}
 		defer f.Close()
-		parse(f)
+		if user && !ownedByHomeOwner(f, filepath.Join(c.root, homeOf(p))) {
+			userSkipped++
+			return
+		}
+		data, err := fsutil.ReadAll(f, fsutil.MaxConfig)
+		if err == nil {
+			err = parse(bytes.NewReader(data))
+		}
+		switch {
+		case err == nil:
+		case user:
+			rec.Limit("%s was not parsed completely: %v", p, err)
+		default:
+			suspicious++
+			rec.Suspicious(core.Finding{
+				Description: fmt.Sprintf("%s could not be parsed completely: %v", p, err),
+				Details:     map[string]string{"path": p, "error": err.Error()},
+				Why: "Boot scripts and module configuration are small text files. One padded past the size or line " +
+					"length a parser accepts stops scanners at that point, so whatever follows (an insmod line) goes unseen.",
+				Benign: "A generated file or a script with an embedded payload. Open it and check what follows the long line.",
+			})
+		}
 	}
 
 	for _, p := range confFiles(c.root, modulesLoadDirs, ".conf") {
-		read(p, func(r io.Reader) { mods = append(mods, parseModuleList(r, p, "modules-load.d")...) })
+		read(p, func(r io.Reader) error {
+			m, err := parseModuleList(r, p, "modules-load.d")
+			mods = append(mods, m...)
+			return err
+		})
 	}
-	read("/etc/modules", func(r io.Reader) { mods = append(mods, parseModuleList(r, "/etc/modules", "/etc/modules")...) })
+	read("/etc/modules", func(r io.Reader) error {
+		m, err := parseModuleList(r, "/etc/modules", "/etc/modules")
+		mods = append(mods, m...)
+		return err
+	})
 	for _, p := range confFiles(c.root, modprobeDirs, ".conf") {
-		read(p, func(r io.Reader) { installs = append(installs, parseModprobeConf(r, p)...) })
+		read(p, func(r io.Reader) error {
+			in, err := parseModprobeConf(r, p)
+			installs = append(installs, in...)
+			return err
+		})
 	}
-	read("/etc/modprobe.conf", func(r io.Reader) { installs = append(installs, parseModprobeConf(r, "/etc/modprobe.conf")...) })
+	read("/etc/modprobe.conf", func(r io.Reader) error {
+		in, err := parseModprobeConf(r, "/etc/modprobe.conf")
+		installs = append(installs, in...)
+		return err
+	})
 
 	scripts := append([]string{}, bootScripts...)
 	if matches, err := filepath.Glob(filepath.Join(c.root, "etc/profile.d/*.sh")); err == nil {
@@ -391,16 +437,30 @@ func (c *Cell) checkAutoload(rec *core.Recorder) int {
 		}
 	}
 	for _, p := range scripts {
-		read(p, func(r io.Reader) { mods = append(mods, parseScript(r, p)...) })
+		read(p, func(r io.Reader) error {
+			m, err := parseScript(r, p)
+			mods = append(mods, m...)
+			return err
+		})
 	}
 	for _, p := range confFiles(c.root, []string{"/etc/systemd/system", "/run/systemd/system"}, ".service") {
-		read(p, func(r io.Reader) { mods = append(mods, parseSystemdUnit(r, p)...) })
+		read(p, func(r io.Reader) error {
+			m, err := parseSystemdUnit(r, p)
+			mods = append(mods, m...)
+			return err
+		})
 	}
 	for _, p := range confFiles(c.root, []string{"/etc/udev/rules.d", "/run/udev/rules.d"}, ".rules") {
-		read(p, func(r io.Reader) { mods = append(mods, parseUdevRules(r, p)...) })
+		read(p, func(r io.Reader) error {
+			m, err := parseUdevRules(r, p)
+			mods = append(mods, m...)
+			return err
+		})
+	}
+	if userSkipped > 0 {
+		rec.Limit("%d shell profile(s) under /home not read: symlinks, non-regular files, or files owned by neither root nor the home's owner", userSkipped)
 	}
 
-	suspicious := 0
 	tree := loadModuleTree(c.root, c.release)
 	for _, m := range mods {
 		details := map[string]string{"module": m.Module, "configured_in": m.Source, "loaded_by": m.How}
@@ -454,13 +514,17 @@ func (c *Cell) checkAutoload(rec *core.Recorder) int {
 		})
 	}
 
-	// Configuration files hidden from directory listings.
 	fixed := append([]string{"/etc/modules", "/etc/modprobe.conf"}, bootScripts...)
 	fixed = append(fixed, modulesLoadDirs...)
 	fixed = append(fixed, modprobeDirs...)
 	sort.Strings(fixed)
 	for _, p := range fixed {
-		if hiddenFromListing(c.root, p) {
+		hidden, err := hiddenFromListing(c.root, p)
+		if err != nil {
+			rec.Limit("Could not check whether %s is hidden from its directory listing: %v", p, err)
+			continue
+		}
+		if hidden {
 			suspicious++
 			rec.Suspicious(core.Finding{
 				Description: fmt.Sprintf("%s exists but is hidden from directory listings", p),

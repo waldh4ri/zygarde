@@ -42,3 +42,22 @@ func TestScanDirs(t *testing.T) {
 		seen[d] = true
 	}
 }
+
+func TestRemoteMounts(t *testing.T) {
+	mounts := map[string]string{"/home": "nfs4", "/mnt/my share": "cifs"}
+	if got := under("/home/alice/.ssh", mounts); got != "nfs4" {
+		t.Errorf("under(/home/alice/.ssh) = %q", got)
+	}
+	if got := under("/homework", mounts); got != "" {
+		t.Errorf("under(/homework) = %q", got)
+	}
+	if got := under("/mnt/my share/x", mounts); got != "cifs" {
+		t.Errorf("under(space) = %q", got)
+	}
+	if unescapeMount(`/mnt/my\040share`) != "/mnt/my share" || unescapeMount(`/a\04`) != `/a\04` {
+		t.Error("unescapeMount")
+	}
+	if !remoteMountType("fuse.sshfs") || !remoteMountType("nfs") || remoteMountType("ext4") || remoteMountType("overlay") {
+		t.Error("remoteMountType")
+	}
+}

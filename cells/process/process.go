@@ -43,10 +43,8 @@ func (*Cell) Supported(env *core.Env) error {
 		return err
 	}
 	if env.Lockdown == "confidentiality" {
-		// Translating PIDs into our namespace needs bpf_probe_read_kernel().
 		return core.Skip("kernel lockdown (confidentiality) forbids reading kernel memory from BPF")
 	}
-	// Both views must use the same PID namespace or the numbers won't match.
 	self, err := os.Readlink("/proc/self")
 	if err != nil {
 		return fmt.Errorf("reading /proc/self: %w", err)
@@ -137,7 +135,8 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 
 	for _, tgid := range tgidList {
 		t := before.procs[tgid]
-		if _, stillThere := after.procs[tgid]; !stillThere || listed[tgid] || tgid == 0 {
+		// Same process (matching start_time) in both snapshots rules out PID reuse.
+		if a, stillThere := after.procs[tgid]; !stillThere || a.StartTime != t.StartTime || listed[tgid] || tgid == 0 {
 			continue
 		}
 		comm := bpfutil.Int8String(t.Comm[:])
@@ -150,7 +149,7 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 			"gid":   strconv.Itoa(int(t.Gid)),
 			"state": strconv.Itoa(int(t.State)),
 		}
-		if ts := env.FormatBootOffset(t.StartBoottime); ts != "" {
+		if ts := env.FormatBootOffset(t.StartTime); ts != "" {
 			d["started_at"] = ts
 		}
 		enrichProcFiles(env, int(tgid), comm, d)
@@ -168,19 +167,18 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 		if tid == t.Tgid || tid == 0 || !listed[t.Tgid] {
 			continue
 		}
-		if _, stillThere := after.nsThreads[tid]; !stillThere {
+		if a, stillThere := after.nsThreads[tid]; !stillThere || a.StartBoottime != t.StartBoottime {
 			continue
 		}
 		procTaskSet, ok := listedThreads[t.Tgid]
 		if !ok || procTaskSet[tid] {
 			continue
 		}
-		// Re-read /proc/<tgid>/task once to rule out thread churn.
 		freshSet, err := readTaskDir(t.Tgid)
 		if err != nil || freshSet[tid] {
 			continue
 		}
-		if _, stillAfter := readSingleThreadCheck(iter.DumpTask, tid); !stillAfter {
+		if a2, stillAfter := readSingleThreadCheck(iter.DumpTask, tid); !stillAfter || a2.StartBoottime != t.StartBoottime {
 			continue
 		}
 		comm := bpfutil.Int8String(t.Comm[:])
@@ -235,14 +233,28 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 
 	hidden := len(rec.Findings())
 
-	// Disguised processes, checked on the kernel's view of every process.
+	// Disguised processes, checked on the kernel's view of every process and
+	// re-confirmed against a fresh kernel snapshot after reading /proc/<pid>/*.
 	stable := make(map[uint32]processTaskInfo, len(before.procs))
 	for tgid, t := range before.procs {
-		if _, ok := after.procs[tgid]; ok && tgid != 0 {
+		if a, ok := after.procs[tgid]; ok && a.StartTime == t.StartTime && tgid != 0 {
 			stable[tgid] = t
 		}
 	}
-	checkMasquerade(env, rec, stable, map[uint32]bool{uint32(os.Getpid()): true, canaryPID: true})
+	alive := func() (map[uint32]uint64, error) {
+		now, err := kernelTasks(iter.DumpTask)
+		if err != nil {
+			return nil, err
+		}
+		starts := make(map[uint32]uint64, len(now.procs))
+		for tgid, t := range now.procs {
+			starts[tgid] = t.StartTime
+		}
+		return starts, nil
+	}
+	if err := checkMasquerade(env, rec, stable, map[uint32]bool{uint32(os.Getpid()): true, canaryPID: true}, alive); err != nil {
+		return err
+	}
 	disguised := len(rec.Findings()) - hidden
 
 	switch {
@@ -287,7 +299,7 @@ func kernelTasks(prog *ebpf.Program) (snapshot, error) {
 			s.nsThreads[t.Pid] = t
 		}
 		if t.Tgid == 0 {
-			continue // not representable in our PID namespace
+			continue
 		}
 		if _, seen := s.procs[t.Tgid]; !seen || t.Pid == t.Tgid {
 			s.procs[t.Tgid] = t
@@ -305,9 +317,6 @@ func readSingleThreadCheck(prog *ebpf.Program, tid uint32) (processTaskInfo, boo
 	return t, ok
 }
 
-// snapshotInitTaskList walks init_task.tasks on Linux 6.7+ using open-coded
-// task iterators. Returns (nil, false) on older kernels or inside child PID
-// namespaces.
 func snapshotInitTaskList(env *core.Env, rec *core.Recorder) (map[uint32]processSchedSeen, bool) {
 	if env.BTF == nil {
 		return nil, false
@@ -350,7 +359,7 @@ func snapshotInitTaskList(env *core.Env, rec *core.Recorder) (map[uint32]process
 		}
 		return nil, false
 	}
-	unix.Getuid() // trigger sys_enter once in our TGID
+	unix.Getuid()
 	l.Close()
 
 	out := map[uint32]processSchedSeen{}
@@ -373,12 +382,10 @@ type scheduler struct {
 		OnSchedSwitch *ebpf.Program `ebpf:"on_sched_switch"`
 		OnSchedExit   *ebpf.Program `ebpf:"on_sched_exit"`
 		Ran           *ebpf.Map     `ebpf:"ran"`
+		RanDropped    *ebpf.Map     `ebpf:"ran_dropped"`
 	}
 }
 
-// startScheduler attaches the scheduler view, or returns nil if it doesn't
-// apply here: it needs BTF-typed tracepoints and the initial PID namespace
-// (the task iterator only sees zygarde's own namespace).
 func startScheduler(env *core.Env, spec *ebpf.CollectionSpec, rec *core.Recorder) (*scheduler, error) {
 	if env.BTF == nil {
 		return nil, nil
@@ -427,15 +434,18 @@ func (s *scheduler) Close() {
 	if s.exitLink != nil {
 		s.exitLink.Close()
 	}
-	for _, c := range []interface{ Close() error }{s.progs.OnSchedSwitch, s.progs.OnSchedExit, s.progs.Ran} {
+	for _, c := range []*ebpf.Program{s.progs.OnSchedSwitch, s.progs.OnSchedExit} {
 		if c != nil {
 			c.Close()
 		}
 	}
+	for _, m := range []*ebpf.Map{s.progs.Ran, s.progs.RanDropped} {
+		if m != nil {
+			m.Close()
+		}
+	}
 }
 
-// check reports threads that ran during the window but are in neither task
-// iterator snapshot and did not exit. It returns how many threads ran.
 func (s *scheduler) check(rec *core.Recorder, before, after snapshot, selfTgid uint32, alreadyReported map[uint32]bool) (int, error) {
 	type entry struct {
 		tid  uint32
@@ -451,8 +461,13 @@ func (s *scheduler) check(rec *core.Recorder, before, after snapshot, selfTgid u
 	if err := it.Err(); err != nil {
 		return 0, core.WrapBPF("iterate scheduler map", err)
 	}
+	var dropped uint64
+	if err := s.progs.RanDropped.Lookup(uint32(0), &dropped); err == nil && dropped > 0 {
+		rec.Limit("Scheduler view: %d thread(s) ran after its table was full and were not checked", dropped)
+	}
 
 	sawSelf := false
+	var candidates []entry
 	for _, e := range all {
 		if e.seen.Tgid == selfTgid {
 			sawSelf = true
@@ -460,10 +475,13 @@ func (s *scheduler) check(rec *core.Recorder, before, after snapshot, selfTgid u
 		if e.seen.Exited != 0 || before.threads[e.tid] || after.threads[e.tid] || alreadyReported[e.tid] {
 			continue
 		}
-		// The exit probe is still attached: give a thread exiting right now
-		// a moment to be marked before calling it hidden.
-		var again processSchedSeen
+		candidates = append(candidates, e)
+	}
+	if len(candidates) > 0 {
 		time.Sleep(100 * time.Millisecond)
+	}
+	for _, e := range candidates {
+		var again processSchedSeen
 		if err := s.progs.Ran.Lookup(e.tid, &again); err == nil && again.Exited != 0 {
 			continue
 		}
@@ -484,7 +502,6 @@ func (s *scheduler) check(rec *core.Recorder, before, after snapshot, selfTgid u
 	return len(all), nil
 }
 
-// procPIDs lists the numeric entries of /proc under comm "ps".
 func procPIDs() (map[uint32]bool, error) {
 	return fsutil.WithCommVal("ps", func() (map[uint32]bool, error) {
 		entries, err := fsutil.ReadDirNoAtime("/proc")
@@ -534,9 +551,6 @@ func readTaskDirRaw(tgid uint32) (map[uint32]bool, error) {
 	return tids, nil
 }
 
-// enrichProcFiles adds cgroup, cwd and executable hash metadata when accessible
-// (hidden processes often remain accessible by direct /proc/<pid> open even
-// when filtered out of getdents64).
 func enrichProcFiles(env *core.Env, pid int, comm string, d map[string]string) {
 	dir := "/proc/" + strconv.Itoa(pid)
 	if cwd, err := os.Readlink(dir + "/cwd"); err == nil && cwd != "" {

@@ -62,6 +62,11 @@ func WrapBPF(op string, err error) error {
 	return &BPFError{Op: op, Err: err}
 }
 
+// MaxObservations caps the observations kept per Cell. A host with tens of
+// thousands of ftrace hooks would otherwise produce a report too large to
+// read, and a worker message too large to pass to the supervisor.
+const MaxObservations = 2000
+
 // Recorder collects a Cell's observations while it runs.
 type Recorder struct {
 	log       *slog.Logger
@@ -71,6 +76,7 @@ type Recorder struct {
 	canaries  []CanaryCheck
 	limits    []string
 	footprint []FootprintItem
+	dropped   int // observations over MaxObservations
 }
 
 // NewRecorder returns an empty Recorder; the runner creates one per Cell.
@@ -94,7 +100,19 @@ func (r *Recorder) Suspicious(f Finding) {
 // Observe records context that is worth reporting but not suspicious by
 // itself, such as an inventory of legitimate hooks.
 func (r *Recorder) Observe(description string, details map[string]string) {
+	if len(r.observed) >= MaxObservations {
+		r.dropped++
+		return
+	}
 	r.observed = append(r.observed, Finding{Description: description, Details: details})
+}
+
+// limitations returns the recorded limits, plus one for dropped observations.
+func (r *Recorder) limitations() []string {
+	if r.dropped == 0 {
+		return r.limits
+	}
+	return append(r.limits, fmt.Sprintf("%d further observation(s) not reported (at most %d per check)", r.dropped, MaxObservations))
 }
 
 // Limit records part of the check that could not run here, so the report
@@ -109,9 +127,8 @@ func (r *Recorder) Canary(canary, view string, observed bool) {
 	r.canaries = append(r.canaries, CanaryCheck{Canary: canary, View: view, Observed: observed})
 }
 
-// Footprint records a transient artifact Zygarde created while scanning (e.g.
-// canary PID, file path, socket or BPF object ID) so DFIR analysts can
-// deconflict scanner activity from host audit/EDR logs.
+// Footprint records a transient artifact Zygarde created while scanning so
+// DFIR analysts can deconflict scanner activity from host audit/EDR logs.
 func (r *Recorder) Footprint(kind, value string) {
 	if value != "" {
 		r.footprint = append(r.footprint, FootprintItem{Kind: kind, Value: value})

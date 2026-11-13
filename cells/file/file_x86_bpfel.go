@@ -23,11 +23,9 @@ type fileDirentEvent struct {
 //
 // Used for safe lookups in a Collection or CollectionSpec.
 const (
-	fileMapDirFops           = "dir_fops"
-	fileMapDropCnt           = "drop_cnt"
+	fileMapDrops             = "drops"
 	fileMapEvents            = "events"
 	fileProgOnFilldir64      = "on_filldir64"
-	fileProgOnIterateDir     = "on_iterate_dir"
 	fileVarPidnsDev          = "pidns_dev"
 	fileVarPidnsIno          = "pidns_ino"
 	fileVarTargetTgid        = "target_tgid"
@@ -76,17 +74,15 @@ type fileSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type fileProgramSpecs struct {
-	OnFilldir64  *ebpf.ProgramSpec `ebpf:"on_filldir64"`
-	OnIterateDir *ebpf.ProgramSpec `ebpf:"on_iterate_dir"`
+	OnFilldir64 *ebpf.ProgramSpec `ebpf:"on_filldir64"`
 }
 
 // fileMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type fileMapSpecs struct {
-	DirFops *ebpf.MapSpec `ebpf:"dir_fops"`
-	DropCnt *ebpf.MapSpec `ebpf:"drop_cnt"`
-	Events  *ebpf.MapSpec `ebpf:"events"`
+	Drops  *ebpf.MapSpec `ebpf:"drops"`
+	Events *ebpf.MapSpec `ebpf:"events"`
 }
 
 // fileVariableSpecs contains global variables before they are loaded into the kernel.
@@ -119,15 +115,13 @@ func (o *fileObjects) Close() error {
 //
 // It can be passed to loadFileObjects or ebpf.CollectionSpec.LoadAndAssign.
 type fileMaps struct {
-	DirFops *ebpf.Map `ebpf:"dir_fops"`
-	DropCnt *ebpf.Map `ebpf:"drop_cnt"`
-	Events  *ebpf.Map `ebpf:"events"`
+	Drops  *ebpf.Map `ebpf:"drops"`
+	Events *ebpf.Map `ebpf:"events"`
 }
 
 func (m *fileMaps) Close() error {
 	return _FileClose(
-		m.DirFops,
-		m.DropCnt,
+		m.Drops,
 		m.Events,
 	)
 }
@@ -146,14 +140,12 @@ type fileVariables struct {
 //
 // It can be passed to loadFileObjects or ebpf.CollectionSpec.LoadAndAssign.
 type filePrograms struct {
-	OnFilldir64  *ebpf.Program `ebpf:"on_filldir64"`
-	OnIterateDir *ebpf.Program `ebpf:"on_iterate_dir"`
+	OnFilldir64 *ebpf.Program `ebpf:"on_filldir64"`
 }
 
 func (p *filePrograms) Close() error {
 	return _FileClose(
 		p.OnFilldir64,
-		p.OnIterateDir,
 	)
 }
 
