@@ -678,12 +678,13 @@ type canarySock struct {
 
 func openCanaries(rec *core.Recorder) (*canaries, error) {
 	cs := &canaries{}
-	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	loopback := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)}
+	ln, err := net.ListenTCP("tcp4", loopback)
 	if err != nil {
 		return nil, err
 	}
 	cs.closers = append(cs.closers, ln)
-	pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	pc, err := net.ListenUDP("udp4", &net.UDPAddr{IP: loopback.IP})
 	if err != nil {
 		cs.Close()
 		return nil, err
@@ -694,7 +695,7 @@ func openCanaries(rec *core.Recorder) (*canaries, error) {
 		conn  syscall.Conn
 		proto string
 		addr  net.Addr
-	}{{ln.(*net.TCPListener), "tcp", ln.Addr()}, {pc.(*net.UDPConn), "udp", pc.LocalAddr()}} {
+	}{{ln, "tcp", ln.Addr()}, {pc, "udp", pc.LocalAddr()}} {
 		ino, err := inode(c.conn)
 		if err != nil {
 			cs.Close()

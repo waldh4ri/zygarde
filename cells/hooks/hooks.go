@@ -388,15 +388,15 @@ func plantCanary(env *core.Env, rec *core.Recorder, target string) (string, stri
 			Prog *ebpf.Program `ebpf:"canary_fentry"`
 		}
 		if err := bpfutil.Load(env, spec, &p); err == nil {
-			if l, err := link.AttachTracing(link.TracingOptions{Program: p.Prog}); err == nil {
+			l, err := link.AttachTracing(link.TracingOptions{Program: p.Prog})
+			if err == nil {
 				if id, err := bpfutil.ProgramID(p.Prog); err == nil {
 					rec.Footprint("canary_bpf_prog_id", strconv.FormatUint(uint64(id), 10))
 				}
 				rec.Footprint("canary_fentry", target)
 				return target, "fentry", func() { l.Close(); p.Prog.Close() }
-			} else {
-				rec.Log().Debug("fentry canary attach failed, trying kprobe", "err", err)
 			}
+			rec.Log().Debug("fentry canary attach failed, trying kprobe", "err", err)
 			p.Prog.Close()
 		} else {
 			rec.Log().Debug("fentry canary unavailable, trying kprobe", "err", err)

@@ -31,6 +31,8 @@ type inventory struct {
 // limitations; none of them is fatal.
 func collect(env *core.Env, rec *core.Recorder, progs map[uint32]bpfprogProgInfo) *inventory {
 	inv := &inventory{attach: map[uint32][]attachment{}, mapUsers: map[uint32][]uint32{}}
+	// kallsyms only names attachment targets: when unavailable ks is nil and
+	// every user of it falls back to the raw address.
 	ks, _ := env.Kallsyms()
 
 	names, xdp, err := interfaces()

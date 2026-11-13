@@ -37,6 +37,7 @@ import (
 // Kind is what owns an address.
 type Kind int
 
+// The kinds of owner an address can have.
 const (
 	Unknown    Kind = iota // no visible owner
 	Kernel                 // core kernel text

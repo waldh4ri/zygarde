@@ -1,0 +1,72 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - errcheck     # unchecked errors (also explicit `_ =` assignments, see settings)
+    - errorlint    # errors.Is/As instead of == and type assertions; %w when wrapping
+    - govet
+    - ineffassign
+    - staticcheck  # includes the stylecheck and gosimple families
+    - unused
+    - revive       # Effective Go naming and doc comment conventions
+    - gochecknoinits
+    - misspell
+    - bodyclose
+    - copyloopvar
+  settings:
+    errcheck:
+      check-type-assertions: true
+      # Best-effort cleanup calls whose failure cannot be acted upon.
+      exclude-functions:
+        - (*os.File).Close
+        - (io.Closer).Close
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment # struct layout is chosen for readability
+        - shadow         # `err` is shadowed idiomatically throughout
+    staticcheck:
+      checks:
+        - all
+        - -QF1001 # De Morgan rewrites rarely read better
+        - -QF1008 # explicit embedded selectors document intent
+    revive:
+      rules:
+        - name: package-comments
+        - name: exported
+        - name: var-naming
+        - name: error-strings
+        - name: error-naming
+        - name: error-return
+        - name: receiver-naming
+        - name: indent-error-flow
+        - name: increment-decrement
+        - name: unreachable-code
+        - name: context-as-argument
+  exclusions:
+    generated: strict
+    presets:
+      - std-error-handling
+    rules:
+      # The fixture and tooling under test/ are not shipped code.
+      - path: ^test/
+        linters: [gochecknoinits, revive, errcheck]
+      # Test setup failures surface in the assertions that follow.
+      - path: _test\.go$
+        linters: [errcheck]
+      # Methods that implement core.Cell are documented on the interface.
+      - linters: [revive]
+        text: "exported: exported method .* should have comment"
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/waldh4ri/zygarde

@@ -114,7 +114,7 @@ func main() {
 		} else {
 			exec.Command("tc", "qdisc", "add", "dev", "lo", "clsact").Run()
 			if out, err := exec.Command("tc", "filter", "add", "dev", "lo", "egress", "bpf", "da", "pinned", pinPath).CombinedOutput(); err != nil {
-				warn("tc filter add", fmt.Errorf("%v: %s", err, out))
+				warn("tc filter add", fmt.Errorf("%w: %s", err, out))
 			}
 		}
 	}

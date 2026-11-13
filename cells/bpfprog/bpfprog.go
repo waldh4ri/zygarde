@@ -272,7 +272,7 @@ func (t *tracer) drain() ([]bpfprogEnumEvent, error) {
 		}
 		ev, err := bpfutil.Decode[bpfprogEnumEvent](record.RawSample)
 		if err != nil || len(ev) != 1 {
-			return events, fmt.Errorf("decoding enumeration event: %v", err)
+			return events, fmt.Errorf("decoding enumeration event: %w", err)
 		}
 		events = append(events, ev[0])
 	}

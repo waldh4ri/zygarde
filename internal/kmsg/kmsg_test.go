@@ -1,7 +1,8 @@
 package kmsg
 
 import (
-	"os"
+	"errors"
+	"io/fs"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -93,16 +94,9 @@ func TestParseRecord(t *testing.T) {
 }
 
 func TestReadFromMissingDevice(t *testing.T) {
-	if _, err := readFrom(filepath.Join(t.TempDir(), "kmsg")); !os.IsNotExist(unwrap(err)) {
+	if _, err := readFrom(filepath.Join(t.TempDir(), "kmsg")); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("err = %v", err)
 	}
-}
-
-func unwrap(err error) error {
-	if pe, ok := err.(*os.PathError); ok {
-		return pe.Err
-	}
-	return err
 }
 
 func TestSummary(t *testing.T) {

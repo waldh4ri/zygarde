@@ -1,6 +1,7 @@
 package kattr
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -125,7 +126,7 @@ func TestHelpers(t *testing.T) {
 
 func TestHiddenAddresses(t *testing.T) {
 	_, err := New(strings.NewReader("0000000000000000 T _stext\n0000000000000000 T _etext\n"), nil, nil, nil)
-	if err != ErrAddressesHidden {
+	if !errors.Is(err, ErrAddressesHidden) {
 		t.Errorf("got %v, want ErrAddressesHidden", err)
 	}
 	if _, err := ParseVmallocinfo(strings.NewReader("0x0000000000000000-0x0000000000000000 4096 foo\n")); err == nil {

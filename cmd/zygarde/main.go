@@ -33,7 +33,9 @@ import (
 	"github.com/waldh4ri/zygarde/internal/supervisor"
 )
 
-const version = "0.3.0"
+// version is the release number; builds from git override it with
+// -ldflags "-X main.version=..." (see the Makefile).
+var version = "0.3.0"
 
 type options struct {
 	debug      bool

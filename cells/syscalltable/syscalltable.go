@@ -5,6 +5,7 @@ package syscalltable
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -57,7 +58,7 @@ func (*Cell) Supported(env *core.Env) error {
 	}
 	ks, err := env.Kallsyms()
 	if err != nil {
-		if skip := core.SymbolsUnavailable(err); skip != err {
+		if skip := core.SymbolsUnavailable(err); !errors.Is(skip, err) {
 			return skip
 		}
 		return fmt.Errorf("reading /proc/kallsyms: %w", err)

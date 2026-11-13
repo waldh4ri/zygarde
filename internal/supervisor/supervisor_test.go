@@ -54,7 +54,7 @@ func (fakeCell) Timeout() time.Duration                               { return t
 func (fakeCell) Supported(*core.Env) error                            { return nil }
 func (fakeCell) Run(context.Context, *core.Env, *core.Recorder) error { return nil }
 
-func run(t *testing.T, ctx context.Context, mode string) (*core.Result, []core.Result, time.Duration) {
+func run(ctx context.Context, t *testing.T, mode string) (*core.Result, []core.Result, time.Duration) {
 	t.Helper()
 	t.Setenv(testModeEnv, mode)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -66,7 +66,7 @@ func run(t *testing.T, ctx context.Context, mode string) (*core.Result, []core.R
 }
 
 func TestRunWorkerOK(t *testing.T) {
-	r, got, _ := run(t, context.Background(), "ok")
+	r, got, _ := run(context.Background(), t, "ok")
 	if r != nil || len(got) != 1 || got[0].Cell != "fake" {
 		t.Fatalf("runWorker = %+v, recorded %+v", r, got)
 	}
@@ -74,7 +74,7 @@ func TestRunWorkerOK(t *testing.T) {
 
 // A line over the protocol limit must not deadlock parent and worker.
 func TestRunWorkerLongLine(t *testing.T) {
-	r, _, took := run(t, context.Background(), "longline")
+	r, _, took := run(context.Background(), t, "longline")
 	if r == nil || r.Status != core.StatusError || !strings.Contains(r.Error, "unreadable result") {
 		t.Fatalf("runWorker = %+v", r)
 	}
@@ -87,7 +87,7 @@ func TestRunWorkerLongLine(t *testing.T) {
 func TestRunWorkerInterrupt(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	time.AfterFunc(500*time.Millisecond, cancel)
-	r, _, took := run(t, ctx, "ignoreterm")
+	r, _, took := run(ctx, t, "ignoreterm")
 	if r == nil || r.Error != "interrupted" {
 		t.Fatalf("runWorker = %+v", r)
 	}

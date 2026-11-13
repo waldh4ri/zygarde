@@ -128,13 +128,13 @@ func (c *Cell) checkPreloadFile(rec *core.Recorder) int {
 	return n
 }
 
+// ParsePreload returns the libraries named by an ld.so.preload file: entries
+// are separated by whitespace or colons, and # starts a comment.
 func ParsePreload(data []byte) []string {
 	var libs []string
 	for _, raw := range bytes.Split(data, []byte{'\n'}) {
 		line, _, _ := strings.Cut(string(raw), "#")
-		for _, f := range strings.FieldsFunc(line, func(r rune) bool { return r == ':' || r == ' ' || r == '\t' || r == '\r' }) {
-			libs = append(libs, f)
-		}
+		libs = append(libs, strings.FieldsFunc(line, func(r rune) bool { return r == ':' || r == ' ' || r == '\t' || r == '\r' })...)
 	}
 	return libs
 }
@@ -479,6 +479,7 @@ func (c *Cell) checkEnvironments(ctx context.Context, rec *core.Recorder) (int, 
 	return n, nil
 }
 
+// ParseEnviron parses the NUL-separated KEY=VALUE records of /proc/PID/environ.
 func ParseEnviron(data []byte) map[string]string {
 	env := map[string]string{}
 	for _, kv := range bytes.Split(data, []byte{0}) {

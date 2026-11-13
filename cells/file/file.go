@@ -70,7 +70,7 @@ func (o *objects) Close() {
 func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	ks, err := env.Kallsyms()
 	if err != nil {
-		if skip := core.SymbolsUnavailable(err); skip != err {
+		if skip := core.SymbolsUnavailable(err); !errors.Is(skip, err) {
 			return skip
 		}
 		return fmt.Errorf("reading /proc/kallsyms: %w", err)
@@ -275,6 +275,7 @@ func (l lister) list(dir string) (produced, returned map[string]bool, lost uint6
 func (l lister) dropped() uint64 {
 	var n uint64
 	if l.drops != nil {
+		// Best effort: on failure n stays 0, which reads as "no drops".
 		_ = l.drops.Lookup(uint32(0), &n)
 	}
 	return n
@@ -350,7 +351,7 @@ func drain(rd *ringbuf.Reader) ([]string, error) {
 		}
 		evs, err := bpfutil.Decode[fileDirentEvent](record.RawSample)
 		if err != nil || len(evs) != 1 {
-			return names, fmt.Errorf("decoding dirent event: %v", err)
+			return names, fmt.Errorf("decoding dirent event: %w", err)
 		}
 		n := int(evs[0].Namlen)
 		if n <= 0 || n > len(evs[0].Name) {

@@ -16,6 +16,7 @@ import (
 // Verdict summarizes a scan.
 type Verdict string
 
+// The possible overall verdicts of a run.
 const (
 	VerdictClean      Verdict = "clean"
 	VerdictSuspicious Verdict = "suspicious"

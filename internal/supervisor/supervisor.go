@@ -338,7 +338,7 @@ loop:
 	case interrupted:
 		return workerFailure(current, errors.New("interrupted"), elapsed)
 	case protoErr != nil:
-		return workerFailure(current, fmt.Errorf("unreadable result from the worker (%v); the worker was stopped", protoErr), elapsed)
+		return workerFailure(current, fmt.Errorf("unreadable result from the worker (%w); the worker was stopped", protoErr), elapsed)
 	default:
 		return attachOops(deathResult(current, waitErr, elapsed, oomKills() > oomBefore), oopsBase, oopsOK, suspects)
 	}
@@ -371,7 +371,7 @@ func deathResult(c core.Cell, waitErr error, elapsed time.Duration, oom bool) *c
 			return r
 		}
 	}
-	return workerFailure(c, fmt.Errorf("worker exited unexpectedly: %v", waitErr), elapsed)
+	return workerFailure(c, fmt.Errorf("worker exited unexpectedly: %w", waitErr), elapsed)
 }
 
 // oomKills returns how many processes the kernel's OOM killer has killed.
