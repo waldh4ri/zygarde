@@ -1,3 +1,6 @@
+// Package core defines the Cell abstraction (a detection module), the
+// per-run Env that Cells share, the Recorder they report through, and the
+// runner that executes them.
 package core
 
 import (

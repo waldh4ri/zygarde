@@ -113,6 +113,8 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	}
 	var initAfter map[uint32]processSchedSeen
 	if haveInitWalk {
+		// The bool only says whether the walk ran; on failure initAfter is nil
+		// and the init-task-list comparison below is skipped.
 		initAfter, _ = snapshotInitTaskList(env, nil)
 	}
 

@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+# The workflow only reads the repository.
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -13,14 +17,16 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache: true
       # Regenerate with the pinned toolchain image: other clang versions
       # produce different (equally valid) bytecode.
       - name: Check generated BPF bindings are up to date
         run: |
           make docker-generate
           git diff --exit-code -- cells/ internal/
-      - run: go vet ./...
-      - run: go test ./...
+      # fmt, go mod tidy, vet on amd64 and arm64, golangci-lint, govulncheck and
+      # go test -race; the same `make check` runs locally.
+      - run: make check
       - run: make dist
       - name: Smoke test on the runner's kernel
         # Exit 1 means a Cell failed to run; 0 and 2 are valid outcomes.
@@ -51,7 +57,7 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y qemu-system-x86
           sudo chmod 0666 /dev/kvm
-          CGO_ENABLED=0 go install lmb.io/vimto@v0.4.0
+          make install-vimto
       - run: bash test/vm/upstream.sh
       # Also in the log: the step summary is hard to reach when a run fails.
       - run: go run ./test/vm/report test/vm/out | tee -a "$GITHUB_STEP_SUMMARY"; exit ${PIPESTATUS[0]}

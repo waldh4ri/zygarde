@@ -413,6 +413,8 @@ func tracefsState() (traced, filterable map[string]bool, err error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	// Optional: when the list is unreadable filterable stays nil, and
+	// unrecognised function entries are reported as a limitation.
 	filterable, _ = readFirstCol("available_filter_functions")
 	return traced, filterable, nil
 }
