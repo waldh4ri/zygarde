@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"context"
 	"crypto/md5"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"hash"
 	"io"
 	"os"
 	"path/filepath"
@@ -17,6 +19,7 @@ import (
 
 	"github.com/waldh4ri/zygarde/internal/core"
 	"github.com/waldh4ri/zygarde/internal/fsutil"
+	"github.com/waldh4ri/zygarde/internal/rpmdb"
 )
 
 // dpkgInfoDir holds one <package>.md5sums file per installed Debian package.
@@ -90,19 +93,6 @@ func packagedChecksums(infoDir string, wanted map[string]bool) (sums map[string]
 	return sums, len(files), nil
 }
 
-func fileMD5(path string) (string, error) {
-	f, err := fsutil.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	h := md5.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
 // mappedSystemLibs lists the system shared libraries mapped executable into
 // running processes of this mount namespace, with the processes holding them.
 func (c *Cell) mappedSystemLibs(ctx context.Context) (map[string][]string, error) {
@@ -161,17 +151,104 @@ func (c *Cell) mappedSystemLibs(ctx context.Context) (map[string][]string, error
 	return out, nil
 }
 
-// checkPackagedLibraries compares system libraries mapped into running
-// processes with the checksums of the package that installed them (Debian and
-// derivatives). A library that differs was modified in place after
-// installation: the way Ebury and similar implants trojanise libkeyutils,
-// libcrypto or libpam so that sshd loads them from their normal path.
-func (c *Cell) checkPackagedLibraries(ctx context.Context, rec *core.Recorder) (int, error) {
-	infoDir := c.path(dpkgInfoDir)
-	if _, err := os.Stat(infoDir); err != nil {
-		rec.Limit("Mapped system libraries were not verified against package checksums: only dpkg systems are supported (no %s)", dpkgInfoDir)
-		return 0, nil
+// pkgDigest is a checksum a package database declares for a file.
+type pkgDigest struct{ algo, hex, pkg string }
+
+// rpmDBPaths are where rpm keeps its SQLite database ("/var/lib/rpm" is
+// usually a symlink to the first).
+var rpmDBPaths = []string{"/usr/lib/sysimage/rpm/rpmdb.sqlite", "/var/lib/rpm/rpmdb.sqlite"}
+
+// pathVariants returns the names a packaged file can be recorded under: the
+// path as mapped and with the usr-merge prefix added or removed.
+func pathVariants(p string) []string {
+	if strings.HasPrefix(p, "/usr/") {
+		return []string{p, strings.TrimPrefix(p, "/usr")}
 	}
+	return []string{p, "/usr" + p}
+}
+
+// declaredDigests returns the checksums installed packages declare for the
+// wanted paths, and which database they came from ("dpkg" or "rpm"). It
+// records a limit and returns nil when the system's package database cannot be read.
+func (c *Cell) declaredDigests(rec *core.Recorder, wanted map[string]bool) (map[string][]pkgDigest, string) {
+	if infoDir := c.path(dpkgInfoDir); dirExists(infoDir) {
+		sums, packages, err := packagedChecksums(infoDir, wanted)
+		if err != nil || packages == 0 {
+			rec.Limit("Mapped system libraries were not verified against package checksums: no *.md5sums files in %s", dpkgInfoDir)
+			return nil, ""
+		}
+		out := map[string][]pkgDigest{}
+		for p, bySum := range sums {
+			for sum, pkg := range bySum {
+				out[p] = append(out[p], pkgDigest{"md5", sum, pkg})
+			}
+		}
+		return out, "dpkg"
+	}
+	for _, dbPath := range rpmDBPaths {
+		real := c.path(dbPath)
+		if _, err := os.Stat(real); err != nil {
+			continue
+		}
+		byVariant := map[string]string{}
+		variants := map[string]bool{}
+		for p := range wanted {
+			for _, v := range pathVariants(p) {
+				byVariant[v] = p
+				variants[v] = true
+			}
+		}
+		got, err := rpmdb.Digests(real, variants)
+		if err != nil {
+			rec.Limit("Mapped system libraries were not verified against package checksums: %v", err)
+			return nil, ""
+		}
+		out := map[string][]pkgDigest{}
+		for v, ds := range got {
+			for _, d := range ds {
+				out[byVariant[v]] = append(out[byVariant[v]], pkgDigest{d.Algo, d.Hex, d.Package})
+			}
+		}
+		return out, "rpm"
+	}
+	rec.Limit("Mapped system libraries were not verified against package checksums: no dpkg or SQLite rpm database found (Berkeley DB rpm databases are not supported)")
+	return nil, ""
+}
+
+func dirExists(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && st.IsDir()
+}
+
+// fileDigest hashes a file with the given algorithm ("md5" or "sha256").
+func fileDigest(path, algo string) (string, error) {
+	f, err := fsutil.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	var h hash.Hash
+	switch algo {
+	case "md5":
+		h = md5.New()
+	case "sha256":
+		h = sha256.New()
+	default:
+		return "", fmt.Errorf("unsupported digest algorithm %q", algo)
+	}
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// checkPackagedLibraries compares system libraries mapped into running
+// processes with the checksums of the package that installed them (dpkg
+// md5sums, or the SQLite rpm database). A library that differs was modified
+// in place after installation: the way Ebury and similar implants trojanise
+// libkeyutils, libcrypto or libpam so that sshd loads them from their normal
+// path.
+func (c *Cell) checkPackagedLibraries(ctx context.Context, rec *core.Recorder) (int, error) {
 	mapped, err := c.mappedSystemLibs(ctx)
 	if err != nil {
 		return 0, err
@@ -180,50 +257,73 @@ func (c *Cell) checkPackagedLibraries(ctx context.Context, rec *core.Recorder) (
 		return 0, nil
 	}
 	wanted := make(map[string]bool, len(mapped))
-	for p := range mapped {
-		wanted[p] = true
-	}
-	sums, packages, err := packagedChecksums(infoDir, wanted)
-	if err != nil || packages == 0 {
-		rec.Limit("Mapped system libraries were not verified against package checksums: no %s files found", "*.md5sums")
-		return 0, nil
-	}
-
 	paths := make([]string, 0, len(mapped))
 	for p := range mapped {
+		wanted[p] = true
 		paths = append(paths, p)
 	}
 	sort.Strings(paths)
+	declared, source := c.declaredDigests(rec, wanted)
+	if declared == nil {
+		return 0, nil
+	}
+
 	suspicious, verified := 0, 0
 	for _, p := range paths {
-		want := sums[p]
-		if len(want) == 0 {
+		var usable []pkgDigest
+		for _, d := range declared[p] {
+			if d.algo == "md5" || d.algo == "sha256" {
+				usable = append(usable, d)
+			}
+		}
+		if len(usable) == 0 {
 			continue // not shipped with a checksum (generated at install time or unowned)
 		}
-		got, err := fileMD5(c.path(p))
-		if err != nil {
+		computed := map[string]string{}
+		match, failed := false, false
+		for _, d := range usable {
+			got, ok := computed[d.algo]
+			if !ok {
+				if got, err = fileDigest(c.path(p), d.algo); err != nil {
+					failed = true
+					break
+				}
+				computed[d.algo] = got
+			}
+			if got == d.hex {
+				match = true
+				break
+			}
+		}
+		if failed {
 			continue
 		}
 		verified++
-		if _, ok := want[got]; ok {
+		if match {
 			continue
 		}
-		pkg, expected := "", make([]string, 0, len(want))
-		for sum, name := range want {
-			expected = append(expected, sum)
-			pkg = name
+		pkg := usable[0].pkg
+		expected := make([]string, 0, len(usable))
+		for _, d := range usable {
+			expected = append(expected, d.algo+":"+d.hex)
 		}
 		sort.Strings(expected)
+		actual := make([]string, 0, len(computed))
+		for algo, sum := range computed {
+			actual = append(actual, algo+":"+sum)
+		}
+		sort.Strings(actual)
 		pids := mapped[p]
 		if len(pids) > 10 {
 			pids = append(pids[:10:10], fmt.Sprintf("… (%d more)", len(mapped[p])-10))
 		}
 		d := map[string]string{
-			"library":        p,
-			"package":        pkg,
-			"md5":            got,
-			"expected_md5":   strings.Join(expected, ", "),
-			"mapped_by_pids": strings.Join(pids, ", "),
+			"library":         p,
+			"package":         pkg,
+			"package_manager": source,
+			"checksum":        strings.Join(actual, ", "),
+			"expected":        strings.Join(expected, ", "),
+			"mapped_by_pids":  strings.Join(pids, ", "),
 		}
 		var st unix.Stat_t
 		if unix.Stat(c.path(p), &st) == nil {
@@ -240,14 +340,14 @@ func (c *Cell) checkPackagedLibraries(ctx context.Context, rec *core.Recorder) (
 				"declares. Implants such as Ebury replace a library that sshd loads (libkeyutils, libcrypto, libpam) " +
 				"with a trojanised build at its normal path, which no preload or unusual-directory check can see.",
 			Benign: "A library rebuilt or patched locally, or a package whose files were modified by an installer script. " +
-				"Compare with the package's copy (apt-get download <package>, dpkg-deb -x) or reinstall it (apt-get install --reinstall).",
+				"Compare with the package's copy (rpm -V " + pkg + " or debsums " + pkg + ") or reinstall the package.",
 		})
 	}
-	rec.Log().Debug("package checksums", "mapped_libraries", len(paths), "with_checksum", len(sums), "verified", verified, "packages", packages)
+	rec.Log().Debug("package checksums", "source", source, "mapped_libraries", len(paths), "with_checksum", len(declared), "verified", verified)
 	if verified > 0 {
-		rec.Observe(fmt.Sprintf("%d of %d mapped system libraries verified against package checksums", verified, len(paths)), nil)
+		rec.Observe(fmt.Sprintf("%d of %d mapped system libraries verified against %s package checksums", verified, len(paths), source), nil)
 	}
-	if verified == 0 && len(paths) > 0 {
+	if verified == 0 {
 		rec.Limit("No mapped system library had a package checksum to verify (%d libraries mapped)", len(paths))
 	}
 	return suspicious, nil
