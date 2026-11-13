@@ -98,8 +98,6 @@ Besides the clean-kernel matrix and planted fixtures, Zygarde has been run again
 | Winnti (process named `[scsi_eh]`), XMRig (`.kworker_sys`), Mirai/JoyBot-style bot (memfd, `kworker`) | `hidden_process` |
 | Diamorphine (module failed to load) | `kernel_taint` |
 
-Not detected: persistence-only implants that hide nothing until a later stage arrives (a Go agent posing as `systemd-netd`), and dormant or silent samples (Skidmap, Kaiji, XorDDoS, a dormant Prism variant). Prebuilt kernel-module and libbpf 0.x eBPF rootkits (Boopkit, TripleCross, ebpfkit, most LKMs) do not load on current kernels, so the kernel-side Cells were exercised through the fixtures instead.
-
 ## Documentation
 
 | | |
@@ -123,7 +121,7 @@ Not detected: persistence-only implants that hide nothing until a later stage ar
   - **Kernel modules and function hooking:** Reptile, Mélofée (khook), Diamorphine, adore-ng, Snapekit, VoidLink, Singularity, Syslogk, FontOnLake
   - **Backdoors waiting for a trigger packet:** BPFDoor (Red Menshen), Prism
   - **`LD_PRELOAD` and library trojans:** Azazel, Jynx, OrBit, Symbiote, Facefish, HiddenWasp, Auto-color, perfctl, Ebury, libprocesshider
-  - **Disguised processes and loaders:** Winnti, XMRig miners, Mirai/JoyBot-style bots, Skidmap, Kaiji, XorDDoS
+  - **Disguised processes and loaders:** Winnti, XMRig miners, Mirai/JoyBot-style bots
 
 ## License
 
