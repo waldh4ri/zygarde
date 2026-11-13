@@ -92,6 +92,7 @@ Two parts.
 - **Userspace view**: per-module taint, `/sys/module/*/taint`.
 - Loading a module taints the kernel (out-of-tree `O`, unsigned `E`, ...) until reboot. Module-attributable flags are `P F C O E K N`.
 - **SUSPICIOUS when**: a module taint is set that no visible module carries: a module hid itself, or was loaded and later unloaded.
+- **Kernel oopses**: the kernel log (`/dev/kmsg`) is searched for oopses, BUGs and panics, and the `D` taint with no oops left in the log is reported too. A healthy kernel does not oops because a process reads sysfs or procfs files, so one that did points to a rootkit that left kernel objects dangling (Diamorphine frees its module's section attributes). Oopses that happen *while Zygarde runs* are attributed in the failed Cell's result, with the faulting function, the call trace and the files the worker was reading.
 
 ## hidden_process
 

@@ -158,6 +158,7 @@ func runWorker(ctx context.Context, todo []core.Cell, args []string, log *slog.L
 	// Keep this thread alive for the worker's lifetime (see startWorker).
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+	oopsBase, oopsOK := oopsMark()
 	cmd, err := startWorker(args, canary.ChildEnv(RoleWorker, CellsEnv+"="+strings.Join(ids, ",")), pw, log)
 	pw.Close()
 	if err != nil {
@@ -213,6 +214,7 @@ func runWorker(ctx context.Context, todo []core.Cell, args []string, log *slog.L
 		timedOut    bool
 		interrupted bool
 		protoErr    error
+		suspects    []string
 		done        bool
 		killed      bool
 		reaped      bool
@@ -277,6 +279,7 @@ loop:
 			if current != nil {
 				log.Debug("cell exceeded its timeout, killing worker", "cell", current.ID())
 			}
+			suspects = suspectFiles("/proc", pid)
 			kill()
 		case <-ctxDone:
 			// Let the worker's deferred cleanup run, then insist.
@@ -308,9 +311,9 @@ loop:
 		if current == nil {
 			return nil
 		}
-		return workerFailure(current, fmt.Errorf("worker pid %d did not exit %v after SIGKILL "+
+		return attachOops(workerFailure(current, fmt.Errorf("worker pid %d did not exit %v after SIGKILL "+
 			"(likely blocked in uninterruptible I/O, e.g. an unreachable network filesystem); it was abandoned",
-			pid, reapTimeout), time.Since(started))
+			pid, reapTimeout), time.Since(started)), oopsBase, oopsOK, suspects)
 	}
 	canary.RemoveFiles(canary.FileDir, pid)
 	if done && waitErr == nil {
@@ -331,13 +334,13 @@ loop:
 	case timedOut:
 		r := workerFailure(current, fmt.Errorf("did not finish within %v; the worker was stopped", current.Timeout()+grace), elapsed)
 		r.Message = "the cell hung; something may be stalling the scanner"
-		return r
+		return attachOops(r, oopsBase, oopsOK, suspects)
 	case interrupted:
 		return workerFailure(current, errors.New("interrupted"), elapsed)
 	case protoErr != nil:
 		return workerFailure(current, fmt.Errorf("unreadable result from the worker (%v); the worker was stopped", protoErr), elapsed)
 	default:
-		return deathResult(current, waitErr, elapsed, oomKills() > oomBefore)
+		return attachOops(deathResult(current, waitErr, elapsed, oomKills() > oomBefore), oopsBase, oopsOK, suspects)
 	}
 }
 

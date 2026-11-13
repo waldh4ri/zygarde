@@ -44,6 +44,7 @@ type options struct {
 	noIsolate  bool
 	list       bool
 	cells      string
+	allowPanic bool
 	settings   core.Settings
 	versionOut bool
 }
@@ -63,6 +64,7 @@ func parseFlags(args []string) (options, error) {
 	fs.BoolVar(&o.list, "list", false, "list available Cells and exit")
 	fs.StringVar(&o.cells, "cells", "", "comma-separated Cell IDs to run (default: all)")
 	fs.StringVar(&o.settings.BTFPath, "btf", "", "external BTF file for kernels without /sys/kernel/btf/vmlinux")
+	fs.BoolVar(&o.allowPanic, "allow-panic-on-oops", false, "run even though kernel.panic_on_oops=1 (a kernel oops while scanning would then panic and reboot the machine)")
 	fs.BoolVar(&o.versionOut, "version", false, "print the version and exit")
 	return o, fs.Parse(args)
 }
@@ -160,6 +162,9 @@ func run() int {
 	if !hasPrivileges() {
 		return out.fatal("zygarde needs CAP_BPF/CAP_SYS_ADMIN in the initial user namespace (try: sudo zygarde)")
 	}
+	if msg := panicOnOopsGuard(kernel.PanicOnOops(), o.allowPanic); msg != "" {
+		return out.fatal(msg)
+	}
 	if o.output != "" {
 		if err := checkOutputWritable(o.output); err != nil {
 			return out.fatal(fmt.Sprintf("cannot write output file %s: %v", o.output, err))
@@ -221,4 +226,21 @@ func run() int {
 		return 1
 	}
 	return code
+}
+
+// panicOnOopsGuard is the kill-switch: with kernel.panic_on_oops=1 any kernel
+// oops panics and reboots the machine. Zygarde reads kernel-backed files
+// (sysfs, procfs) that a rootkit may have left dangling, and one such read can
+// oops (Diamorphine frees the section attributes of its module and leaves the
+// sysfs files pointing at them), so on such a host a scan could take the
+// machine down and destroy the memory evidence. It returns the reason to
+// refuse to run, or "" when it is fine to proceed.
+func panicOnOopsGuard(panicOnOops int, allow bool) string {
+	if panicOnOops <= 0 || allow {
+		return ""
+	}
+	return "refusing to run: kernel.panic_on_oops is set (1). Zygarde reads kernel-backed files that a rootkit may have " +
+		"left dangling, and a kernel oops while reading one would panic and reboot this machine, losing the volatile " +
+		"evidence. Run `sysctl -w kernel.panic_on_oops=0` for the scan and restore it afterwards, or pass " +
+		"--allow-panic-on-oops to accept that risk"
 }

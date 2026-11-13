@@ -177,3 +177,21 @@ func KptrRestrict() int {
 	}
 	return n
 }
+
+// PanicOnOops returns kernel.panic_on_oops (0 or 1; 1 also when the kernel
+// was booted with oops=panic), or -1 if it can't be read.
+func PanicOnOops() int {
+	return panicOnOops("/proc/sys/kernel/panic_on_oops")
+}
+
+func panicOnOops(path string) int {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return -1
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return -1
+	}
+	return n
+}

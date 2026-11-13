@@ -2,6 +2,8 @@ package kernel
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -138,5 +140,24 @@ func TestHiddenReason(t *testing.T) {
 	}
 	if !errors.Is(HiddenAddressesError(), ErrAddressesHidden) {
 		t.Error("HiddenAddressesError must wrap ErrAddressesHidden")
+	}
+}
+
+func TestPanicOnOops(t *testing.T) {
+	dir := t.TempDir()
+	write := func(s string) string {
+		p := filepath.Join(dir, "panic_on_oops")
+		if err := os.WriteFile(p, []byte(s), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	for in, want := range map[string]int{"0\n": 0, "1\n": 1, " 1 ": 1, "x": -1, "": -1} {
+		if got := panicOnOops(write(in)); got != want {
+			t.Errorf("panicOnOops(%q) = %d, want %d", in, got, want)
+		}
+	}
+	if got := panicOnOops(filepath.Join(dir, "missing")); got != -1 {
+		t.Errorf("missing file = %d, want -1", got)
 	}
 }
