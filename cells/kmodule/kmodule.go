@@ -24,6 +24,7 @@ type Cell struct {
 	procModules string
 	sysModule   string
 	sysBTF      string
+	vmallocInfo string
 	// root prefixes the boot configuration paths (tests use a fixture tree).
 	root    string
 	release string
@@ -31,7 +32,7 @@ type Cell struct {
 
 // New returns the hidden kernel module Cell.
 func New() *Cell {
-	return &Cell{procModules: "/proc/modules", sysModule: "/sys/module", sysBTF: "/sys/kernel/btf", release: kernel.Release()}
+	return &Cell{procModules: "/proc/modules", sysModule: "/sys/module", sysBTF: "/sys/kernel/btf", vmallocInfo: "/proc/vmallocinfo", release: kernel.Release()}
 }
 
 func (*Cell) ID() string                    { return "hidden_kernel_module" }
@@ -112,8 +113,11 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 			Benign:      "A module loading or unloading during the scan; unlikely, since it was seen in two snapshots.",
 		})
 	}
+	loader := c.checkLoaderAllocations(rec)
 	boot := c.checkAutoload(rec)
 	switch {
+	case loader > 0 && len(found) == 0:
+		rec.Message("%d module-loader allocation(s) belong to no listed module (a module hiding from every view)", loader)
 	case len(found) > 0 && boot > 0:
 		rec.Message("%d hidden kernel module(s), %d suspicious boot-time module configuration(s)", len(found), boot)
 	case len(found) > 0:
