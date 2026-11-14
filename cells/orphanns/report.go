@@ -2,6 +2,7 @@ package orphanns
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,13 +10,18 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/waldh4ri/zygarde/internal/core"
 	"github.com/waldh4ri/zygarde/internal/fsutil"
 )
 
 // maxInspected bounds how many orphan namespaces are entered per scan.
-const maxInspected = 24
+const maxInspected = 256
+
+// inspectBudget bounds the time spent entering orphans, well inside the Cell's timeout:
+// a namespace that hangs a read costs up to enterTimeout.
+const inspectBudget = 18 * time.Second
 
 // leftoverPaths are where container runtimes and `ip netns` keep namespace
 // files that outlive their processes: stopped containers, deleted network
@@ -124,6 +130,8 @@ func (c *Cell) report(ctx context.Context, env *core.Env, rec *core.Recorder, v 
 		return
 	}
 
+	start := time.Now()
+	uninspected := 0
 	host := c.hostMounts()
 	hostname := hostHostname()
 	suspicious, leftovers := 0, 0
@@ -134,10 +142,15 @@ func (c *Cell) report(ctx context.Context, env *core.Env, rec *core.Recorder, v 
 		o := cand[k]
 		how, holders := describeHolds(o)
 		var in contents
-		if i < maxInspected {
+		switch {
+		case i >= maxInspected:
+			in.err = fmt.Errorf("more than %d orphan namespaces", maxInspected)
+			uninspected++
+		case time.Since(start) > inspectBudget:
+			in.err = errors.New("time budget for entering namespaces used up")
+			uninspected++
+		default:
 			in = c.inspect(o, host, hostname)
-		} else {
-			in.err = fmt.Errorf("not inspected: more than %d orphan namespaces", maxInspected)
 		}
 
 		d := map[string]string{
@@ -177,7 +190,7 @@ func (c *Cell) report(ctx context.Context, env *core.Env, rec *core.Recorder, v 
 	} else {
 		rec.Message("%d orphan namespace(s) with no process (%d more look like container leftovers)", suspicious, leftovers)
 	}
-	if len(keys) > maxInspected {
-		rec.Limit("Only the first %d of %d orphan namespaces were entered to list their contents", maxInspected, len(keys))
+	if uninspected > 0 {
+		rec.Limit("%d of %d orphan namespaces were not entered to list their contents (at most %d, within %s)", uninspected, len(keys), maxInspected, inspectBudget)
 	}
 }
