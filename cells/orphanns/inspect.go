@@ -104,11 +104,11 @@ func (c *Cell) nsFileFor(o *orphan) (*os.File, error) {
 			last = err
 			continue
 		}
-		if f, err := check(f); err == nil {
-			return f, nil
-		} else {
-			last = err
+		checked, err := check(f)
+		if err == nil {
+			return checked, nil
 		}
+		last = err
 	}
 	if o.key.typ == "net" {
 		for _, s := range o.sockets {
@@ -117,11 +117,11 @@ func (c *Cell) nsFileFor(o *orphan) (*os.File, error) {
 				last = err
 				continue
 			}
-			if f, err := check(f); err == nil {
-				return f, nil
-			} else {
-				last = err
+			checked, err := check(f)
+			if err == nil {
+				return checked, nil
 			}
+			last = err
 		}
 	}
 	if last == nil {

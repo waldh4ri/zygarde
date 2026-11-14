@@ -60,9 +60,6 @@ func (*Cell) Supported(env *core.Env) error {
 	return nil
 }
 
-// nsTypes are the namespace kinds, as named in /proc/<pid>/ns and nsfs.
-var nsTypes = []string{"mnt", "net", "pid", "ipc", "uts", "user", "cgroup", "time"}
-
 // nsKey identifies a namespace: its type and nsfs inode number.
 type nsKey struct {
 	typ  string

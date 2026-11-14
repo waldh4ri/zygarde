@@ -18,13 +18,12 @@ import (
 
 // pin is something that keeps a namespace alive besides a process in it.
 type pin struct {
-	key    nsKey
-	how    string // "bind mount" or "descriptor"
-	where  string // the mount point, or "descriptor N"
-	pid    uint32 // the process whose view showed it (mount) or that holds it (descriptor)
-	comm   string
-	fd     int
-	hidden bool // the holder's /proc entry could not be read
+	key   nsKey
+	how   string // "bind mount" or "descriptor"
+	where string // the mount point, or "descriptor N"
+	pid   uint32 // the process whose view showed it (mount) or that holds it (descriptor)
+	comm  string
+	fd    int
 }
 
 // nsLink matches what readlink returns for a namespace file: "net:[4026531833]".
