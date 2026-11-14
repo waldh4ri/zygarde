@@ -10,6 +10,7 @@ hidden_kernel_module|finding|/etc/intel_audio/intel_audio.ko
 hidden_kernel_module|finding|whenever zyg_fixture_mod is loaded
 hidden_process|finding|poses as a kernel thread
 hidden_process|finding|zyg-deleted-sleep
+hidden_process|finding|A mount covers /proc/
 hidden_ebpf_program|observation|(zyg_fx_tp) is attached to tracepoint sys_enter_getdents64, which controls directory listing|held_by=zyg-fixture
 hidden_ebpf_program|observation|(zyg_fx_kprobe) is attached to kprobe|held_by=zyg-fixture
 hidden_ebpf_program|observation|(zyg_fx_xdp) is attached to XDP|held_by=zyg-fixture

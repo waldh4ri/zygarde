@@ -17,7 +17,7 @@
 | `kernel_pointers` | BTF; `iter/task_file`, Linux 5.8+ |
 | `hidden_kernel_module` | none |
 | `kernel_taint` | none |
-| `hidden_process` | BTF; `iter/task`, Linux 5.8+ (`init_task.tasks` walk needs 6.7+, else skipped as a limitation) |
+| `hidden_process` | BTF; `iter/task`, Linux 5.8+ (`init_task.tasks` walk needs 6.7+, else skipped as a limitation; the mount-tree walk needs global BPF functions, 5.5+, and is a limitation if the verifier rejects it) |
 | `hidden_file` | BTF; Linux 5.8+ |
 | `hidden_ebpf_program` | BTF; `iter/bpf_prog`, Linux 5.9+ |
 | `hidden_socket` | none for the `/proc/net` and `sock_diag` views; BTF and Linux 5.8+ for the iterators and ownership check |
