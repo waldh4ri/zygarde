@@ -21,6 +21,7 @@ import (
 	"github.com/waldh4ri/zygarde/cells/kmodule"
 	"github.com/waldh4ri/zygarde/cells/kptr"
 	"github.com/waldh4ri/zygarde/cells/netfilter"
+	"github.com/waldh4ri/zygarde/cells/orphanns"
 	"github.com/waldh4ri/zygarde/cells/process"
 	"github.com/waldh4ri/zygarde/cells/socket"
 	"github.com/waldh4ri/zygarde/cells/syscalltable"
@@ -86,6 +87,7 @@ func allCells(o options) []core.Cell {
 		socket.New(),
 		netfilter.New(),
 		userhooks.New(),
+		orphanns.New(),
 	}
 }
 

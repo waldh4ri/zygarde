@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strconv"
 	"unsafe"
@@ -32,6 +33,7 @@ const (
 	Link   Kind = 3
 	Perf   Kind = 4 // a perf event (tracepoint, kprobe...) running a BPF program
 	Socket Kind = 5
+	NS     Kind = 7 // a namespace file; Inode is the namespace inode
 
 	kindLinkPoll uint32 = 6 // internal slot for bpf_link_fops_poll
 )
@@ -48,6 +50,8 @@ func (k Kind) String() string {
 		return "perf event"
 	case Socket:
 		return "socket"
+	case NS:
+		return "namespace"
 	}
 	return "unknown"
 }
@@ -63,6 +67,7 @@ type FD struct {
 	Inode      uint64 // socket inode
 	SockFamily uint16 // AF_* (when Kind == Socket)
 	SockType   uint16 // SOCK_* (when Kind == Socket)
+	NetNS      uint32 // network namespace inode of the socket (0: unknown)
 	Comm       string
 }
 
@@ -111,6 +116,10 @@ func Snapshot(env *core.Env) (*Table, error) {
 		defer unix.Close(fd)
 		known[fd] = Socket
 	}
+	if f, err := os.Open("/proc/self/ns/net"); err == nil {
+		defer f.Close()
+		known[int(f.Fd())] = NS
+	}
 	attr := unix.PerfEventAttr{Type: unix.PERF_TYPE_SOFTWARE, Config: unix.PERF_COUNT_SW_DUMMY, Bits: unix.PerfBitDisabled}
 	attr.Size = uint32(unsafe.Sizeof(attr))
 	if fd, err := unix.PerfEventOpen(&attr, 0, -1, -1, unix.PERF_FLAG_FD_CLOEXEC); err == nil {
@@ -151,7 +160,7 @@ func Snapshot(env *core.Env) (*Table, error) {
 		t.FDs = append(t.FDs, FD{
 			TGID: r.Tgid, TID: r.Tid, FD: r.Fd, Kind: Kind(r.Kind),
 			ID: r.Id, ProgID: r.ProgId, Inode: r.Ino,
-			SockFamily: r.Sfamily, SockType: r.Stype,
+			SockFamily: r.Sfamily, SockType: r.Stype, NetNS: r.Netns,
 			Comm: bpfutil.Int8String(r.Comm[:]),
 		})
 	}
@@ -201,6 +210,8 @@ func (t *Table) buildIndex() {
 			continue
 		}
 		switch f.Kind {
+		case NS:
+			add(object{NS, f.Inode}, f)
 		case Socket:
 			add(object{Socket, f.Inode}, f)
 		case Link, Perf:
