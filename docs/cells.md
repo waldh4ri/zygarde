@@ -167,4 +167,5 @@ Kernel backdoors listen for "magic packets" from a netfilter hook, which sees ev
   - preloaded libraries are missing or hidden;
   - an executable shared object is mapped from a temporary, memory-backed or hidden path;
   - a shared library mapped from a system directory does not match the checksums of the package that installed it (dpkg `.md5sums`, or the SQLite rpm database, which Zygarde parses itself including its write-ahead log). A library replaced in place, as Ebury does to `libkeyutils`, is caught this way.
+  - a shared library mapped from a system directory, or a PAM module (`security/*.so`) present in one, belongs to no installed package (dpkg `.list` files, or the rpm database). This catches implants that add a library next to the legitimate ones, such as a backdoor PAM module, instead of replacing one. Software installed outside the package manager (vendor GPU drivers, JDK tarballs) shows up here too.
 - Limitations: processes in other mount namespaces are skipped; Berkeley DB rpm databases (RHEL 8) are not covered.

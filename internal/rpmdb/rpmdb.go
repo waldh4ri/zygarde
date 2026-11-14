@@ -30,15 +30,23 @@ const maxDBSize = 1 << 30
 // packages declare for it. dbPath is the rpmdb.sqlite file; its -wal file is
 // applied if present.
 func Digests(dbPath string, wanted map[string]bool) (map[string][]Digest, error) {
+	d, _, err := Scan(dbPath, wanted)
+	return d, err
+}
+
+// Scan is Digests plus ownership: owners maps each wanted path that some
+// installed package ships (with or without a checksum) to that package.
+func Scan(dbPath string, wanted map[string]bool) (digests map[string][]Digest, owners map[string]string, err error) {
 	db, err := open(dbPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	root, err := db.tableRoot("Packages")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	out := map[string][]Digest{}
+	digests = map[string][]Digest{}
+	owners = map[string]string{}
 	err = db.walkTable(root, func(_ int64, rec []byte) {
 		blob, ok := recordBlob(rec, 1)
 		if !ok {
@@ -49,7 +57,7 @@ func Digests(dbPath string, wanted map[string]bool) (map[string][]Digest, error)
 			return
 		}
 		for i := range h.basenames {
-			if i >= len(h.dirindexes) || i >= len(h.digests) || h.digests[i] == "" {
+			if i >= len(h.dirindexes) {
 				continue
 			}
 			di := int(h.dirindexes[i])
@@ -60,10 +68,13 @@ func Digests(dbPath string, wanted map[string]bool) (map[string][]Digest, error)
 			if !wanted[p] {
 				continue
 			}
-			out[p] = append(out[p], Digest{Algo: h.algo, Hex: strings.ToLower(h.digests[i]), Package: h.name})
+			owners[p] = h.name
+			if i < len(h.digests) && h.digests[i] != "" {
+				digests[p] = append(digests[p], Digest{Algo: h.algo, Hex: strings.ToLower(h.digests[i]), Package: h.name})
+			}
 		}
 	})
-	return out, err
+	return digests, owners, err
 }
 
 // ---- SQLite b-tree reader -------------------------------------------------
