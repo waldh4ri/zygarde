@@ -41,6 +41,16 @@ cp /bin/sleep /tmp/zyg-deleted-sleep
 sleep 1
 rm -f /tmp/zyg-deleted-sleep
 
+# hidden_process: a process hidden by an empty directory mounted over its
+# /proc entry (SELinux denies this mount, so it is switched off for a moment).
+mkdir -p /tmp/zyg-empty
+sleep 3600 > /dev/null 2>&1 &
+mask_pid=$!
+enforcing=$(getenforce 2>/dev/null)
+[ "$enforcing" = Enforcing ] && setenforce 0
+mount --bind /tmp/zyg-empty "/proc/$mask_pid" 2>> "$log"
+[ "$enforcing" = Enforcing ] && setenforce 1
+
 # hidden_ebpf_program, hidden_socket, hidden_process: BPF attachments, a
 # listener and a disguised child, held by the fixture helper. Its stdin
 # stays open as long as the sleep runs. Tracepoints need tracefs.

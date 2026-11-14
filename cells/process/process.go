@@ -3,7 +3,7 @@
 // deleted or memory-backed executables.
 package process
 
-//go:generate go tool bpf2go -target amd64,arm64 -cflags "-Wall -Werror -Wno-missing-declarations" -type task_info -type sched_seen process process.bpf.c -- -I../../bpf/include
+//go:generate go tool bpf2go -target amd64,arm64 -cflags "-Wall -Werror -Wno-missing-declarations" -type task_info -type sched_seen -type mount_rec process process.bpf.c -- -I../../bpf/include
 
 import (
 	"context"
@@ -35,7 +35,7 @@ func (*Cell) ID() string             { return "hidden_process" }
 func (*Cell) Name() string           { return "Hidden Process Detection" }
 func (*Cell) Timeout() time.Duration { return 30 * time.Second }
 func (*Cell) Description() string {
-	return "Compares kernel task views (BPF task iterator, init_task.tasks and scheduler) with /proc processes and threads, and flags disguised or fileless processes"
+	return "Compares kernel task views (BPF task iterator, init_task.tasks and scheduler) with /proc processes and threads, flags processes hidden by a mount over their /proc entry, and disguised or fileless processes"
 }
 
 func (*Cell) Supported(env *core.Env) error {
@@ -70,6 +70,12 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 		return err
 	}
 	defer iter.DumpTask.Close()
+	mounts, mountErr := loadMountView(env, spec)
+	if mountErr != nil {
+		rec.Limit("The kernel's mount tree was not read (the BPF mount iterator did not load): %v", mountErr)
+	} else {
+		defer mounts.Close()
+	}
 	if id, err := bpfutil.ProgramID(iter.DumpTask); err == nil {
 		rec.Footprint("bpf_prog_id", strconv.FormatUint(uint64(id), 10))
 	}
@@ -222,6 +228,16 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 				Benign: "None expected: the task persisted across two snapshots without exiting.",
 			})
 		}
+	}
+
+	taskComm := func(pid uint32) (string, bool) {
+		if t, ok := before.procs[pid]; ok {
+			return bpfutil.Int8String(t.Comm[:]), true
+		}
+		return "", false
+	}
+	if err := checkProcMounts(rec, mounts, "/proc", listed, taskComm); err != nil {
+		return err
 	}
 
 	ran := 0

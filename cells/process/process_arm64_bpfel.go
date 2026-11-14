@@ -13,6 +13,29 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type processMountRec struct {
+	_           structs.HostLayout
+	Kind        uint32
+	NsInum      uint32
+	MntId       uint32
+	ParentId    uint32
+	Magic       uint32
+	ParentMagic uint32
+	Flags       uint32
+	PathDepth   uint32
+	PathRoot    uint32
+	Claimed     uint32
+	Visited     uint32
+	Truncated   uint32
+	Pad         uint32
+	_           [4]byte
+	Mountpoint  uint64
+	RootDentry  uint64
+	Path        [4][16]int8
+	Root        [16]int8
+	Dev         [16]int8
+}
+
 type processSchedSeen struct {
 	_      structs.HostLayout
 	Tgid   uint32
@@ -39,17 +62,38 @@ type processTaskInfo struct {
 	StartTime     uint64
 }
 
+type processWalk struct {
+	_       structs.HostLayout
+	Root    uint64
+	Cur     uint64
+	NsInum  uint32
+	Visited uint32
+	Up      uint32
+	Done    uint32
+	Emit    uint32
+	Active  uint32
+	Steps   uint32
+	Claimed uint32
+	Pad     uint32
+	_       [4]byte
+	Rec     processMountRec
+}
+
 // Names of all BPF objects in the ELF.
 //
 // Used for safe lookups in a Collection or CollectionSpec.
 const (
 	processMapRan             = "ran"
 	processMapRanDropped      = "ran_dropped"
+	processMapSeenMntNs       = "seen_mnt_ns"
 	processMapTasklist        = "tasklist"
+	processMapWalkState       = "walk_state"
+	processProgDumpMounts     = "dump_mounts"
 	processProgDumpTask       = "dump_task"
 	processProgOnSchedExit    = "on_sched_exit"
 	processProgOnSchedSwitch  = "on_sched_switch"
 	processProgWalkInitTasks  = "walk_init_tasks"
+	processVarUnusedMountRec  = "unused_mount_rec"
 	processVarUnusedSchedSeen = "unused_sched_seen"
 	processVarUnusedTaskInfo  = "unused_task_info"
 	processVarWalkTargetTgid  = "walk_target_tgid"
@@ -97,6 +141,7 @@ type processSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type processProgramSpecs struct {
+	DumpMounts    *ebpf.ProgramSpec `ebpf:"dump_mounts"`
 	DumpTask      *ebpf.ProgramSpec `ebpf:"dump_task"`
 	OnSchedExit   *ebpf.ProgramSpec `ebpf:"on_sched_exit"`
 	OnSchedSwitch *ebpf.ProgramSpec `ebpf:"on_sched_switch"`
@@ -109,13 +154,16 @@ type processProgramSpecs struct {
 type processMapSpecs struct {
 	Ran        *ebpf.MapSpec `ebpf:"ran"`
 	RanDropped *ebpf.MapSpec `ebpf:"ran_dropped"`
+	SeenMntNs  *ebpf.MapSpec `ebpf:"seen_mnt_ns"`
 	Tasklist   *ebpf.MapSpec `ebpf:"tasklist"`
+	WalkState  *ebpf.MapSpec `ebpf:"walk_state"`
 }
 
 // processVariableSpecs contains global variables before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type processVariableSpecs struct {
+	UnusedMountRec  *ebpf.VariableSpec `ebpf:"unused_mount_rec"`
 	UnusedSchedSeen *ebpf.VariableSpec `ebpf:"unused_sched_seen"`
 	UnusedTaskInfo  *ebpf.VariableSpec `ebpf:"unused_task_info"`
 	WalkTargetTgid  *ebpf.VariableSpec `ebpf:"walk_target_tgid"`
@@ -143,14 +191,18 @@ func (o *processObjects) Close() error {
 type processMaps struct {
 	Ran        *ebpf.Map `ebpf:"ran"`
 	RanDropped *ebpf.Map `ebpf:"ran_dropped"`
+	SeenMntNs  *ebpf.Map `ebpf:"seen_mnt_ns"`
 	Tasklist   *ebpf.Map `ebpf:"tasklist"`
+	WalkState  *ebpf.Map `ebpf:"walk_state"`
 }
 
 func (m *processMaps) Close() error {
 	return _ProcessClose(
 		m.Ran,
 		m.RanDropped,
+		m.SeenMntNs,
 		m.Tasklist,
+		m.WalkState,
 	)
 }
 
@@ -158,6 +210,7 @@ func (m *processMaps) Close() error {
 //
 // It can be passed to loadProcessObjects or ebpf.CollectionSpec.LoadAndAssign.
 type processVariables struct {
+	UnusedMountRec  *ebpf.Variable `ebpf:"unused_mount_rec"`
 	UnusedSchedSeen *ebpf.Variable `ebpf:"unused_sched_seen"`
 	UnusedTaskInfo  *ebpf.Variable `ebpf:"unused_task_info"`
 	WalkTargetTgid  *ebpf.Variable `ebpf:"walk_target_tgid"`
@@ -167,6 +220,7 @@ type processVariables struct {
 //
 // It can be passed to loadProcessObjects or ebpf.CollectionSpec.LoadAndAssign.
 type processPrograms struct {
+	DumpMounts    *ebpf.Program `ebpf:"dump_mounts"`
 	DumpTask      *ebpf.Program `ebpf:"dump_task"`
 	OnSchedExit   *ebpf.Program `ebpf:"on_sched_exit"`
 	OnSchedSwitch *ebpf.Program `ebpf:"on_sched_switch"`
@@ -175,6 +229,7 @@ type processPrograms struct {
 
 func (p *processPrograms) Close() error {
 	return _ProcessClose(
+		p.DumpMounts,
 		p.DumpTask,
 		p.OnSchedExit,
 		p.OnSchedSwitch,
