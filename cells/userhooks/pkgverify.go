@@ -170,12 +170,12 @@ func pathVariants(p string) []string {
 // declaredDigests returns the checksums installed packages declare for the
 // wanted paths, and which database they came from ("dpkg" or "rpm"). It
 // records a limit and returns nil when the system's package database cannot be read.
-func (c *Cell) declaredDigests(rec *core.Recorder, wanted map[string]bool) (map[string][]pkgDigest, string) {
+func (c *Cell) declaredDigests(rec *core.Recorder, wanted map[string]bool) (digests map[string][]pkgDigest, owners map[string]string, source string) {
 	if infoDir := c.path(dpkgInfoDir); dirExists(infoDir) {
 		sums, packages, err := packagedChecksums(infoDir, wanted)
 		if err != nil || packages == 0 {
 			rec.Limit("Mapped system libraries were not verified against package checksums: no *.md5sums files in %s", dpkgInfoDir)
-			return nil, ""
+			return nil, nil, ""
 		}
 		out := map[string][]pkgDigest{}
 		for p, bySum := range sums {
@@ -183,7 +183,7 @@ func (c *Cell) declaredDigests(rec *core.Recorder, wanted map[string]bool) (map[
 				out[p] = append(out[p], pkgDigest{"md5", sum, pkg})
 			}
 		}
-		return out, "dpkg"
+		return out, dpkgOwners(infoDir, wanted), "dpkg"
 	}
 	for _, dbPath := range rpmDBPaths {
 		real := c.path(dbPath)
@@ -198,10 +198,10 @@ func (c *Cell) declaredDigests(rec *core.Recorder, wanted map[string]bool) (map[
 				variants[v] = true
 			}
 		}
-		got, err := rpmdb.Digests(real, variants)
+		got, own, err := rpmdb.Scan(real, variants)
 		if err != nil {
 			rec.Limit("Mapped system libraries were not verified against package checksums: %v", err)
-			return nil, ""
+			return nil, nil, ""
 		}
 		out := map[string][]pkgDigest{}
 		for v, ds := range got {
@@ -209,10 +209,44 @@ func (c *Cell) declaredDigests(rec *core.Recorder, wanted map[string]bool) (map[
 				out[byVariant[v]] = append(out[byVariant[v]], pkgDigest{d.Algo, d.Hex, d.Package})
 			}
 		}
-		return out, "rpm"
+		owners = map[string]string{}
+		for v, pkg := range own {
+			owners[byVariant[v]] = pkg
+		}
+		return out, owners, "rpm"
 	}
 	rec.Limit("Mapped system libraries were not verified against package checksums: no dpkg or SQLite rpm database found (Berkeley DB rpm databases are not supported)")
-	return nil, ""
+	return nil, nil, ""
+}
+
+// dpkgOwners returns, for each wanted library path, a package whose file list
+// (<infoDir>/*.list) contains it. Unlike the md5sums files, the lists cover
+// every file a package installs, so a path missing from all of them is unowned.
+func dpkgOwners(infoDir string, wanted map[string]bool) map[string]string {
+	byVariant := map[string]string{}
+	for p := range wanted {
+		for _, v := range pathVariants(p) {
+			byVariant[v] = p
+		}
+	}
+	owners := map[string]string{}
+	files, _ := filepath.Glob(filepath.Join(infoDir, "*.list"))
+	for _, f := range files {
+		fh, err := fsutil.Open(f)
+		if err != nil {
+			continue
+		}
+		pkg := strings.TrimSuffix(filepath.Base(f), ".list")
+		sc := bufio.NewScanner(fh)
+		sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+		for sc.Scan() {
+			if p, ok := byVariant[sc.Text()]; ok {
+				owners[p] = pkg
+			}
+		}
+		fh.Close()
+	}
+	return owners
 }
 
 func dirExists(p string) bool {
@@ -242,6 +276,58 @@ func fileDigest(path, algo string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// pamGlobs match the directories PAM loads its modules from. A module is only
+// mapped while a login, sudo or sshd session is being authenticated, so the
+// directories are listed as well as the running processes' maps.
+var pamGlobs = []string{"/lib/security/*.so*", "/lib*/security/*.so*", "/lib/*/security/*.so*", "/usr/lib*/security/*.so*", "/usr/lib/*/security/*.so*"}
+
+// addPAMModules adds the regular files of the PAM module directories to mapped
+// (with no process), so they are checked like mapped libraries.
+func (c *Cell) addPAMModules(mapped map[string][]string) {
+	prefix := strings.TrimSuffix(c.root, "/")
+	for _, g := range pamGlobs {
+		matches, _ := filepath.Glob(c.path(g))
+		for _, m := range matches {
+			if st, err := os.Lstat(m); err != nil || !st.Mode().IsRegular() {
+				continue // symlinks (alternatives, /lib -> /usr/lib duplicates) are covered by their target
+			}
+			r, err := filepath.EvalSymlinks(m) // /lib -> /usr/lib: one name per file, as in /proc/<pid>/maps
+			if err != nil {
+				continue
+			}
+			p := strings.TrimPrefix(r, prefix)
+			if _, ok := mapped[p]; !ok {
+				mapped[p] = nil
+			}
+		}
+	}
+}
+
+// reportUnowned records a mapped library in a system directory that no
+// installed package ships.
+func (c *Cell) reportUnowned(rec *core.Recorder, p, source string, pids []string) {
+	if len(pids) > 10 {
+		pids = append(pids[:10:10], fmt.Sprintf("… (%d more)", len(pids)-10))
+	}
+	d := map[string]string{
+		"library":         p,
+		"package_manager": source,
+		"mapped_by_pids":  strings.Join(pids, ", "),
+	}
+	fsutil.MergeMetadata(d, "file_", fsutil.FileMetadata(c.path(p)))
+	rec.Suspicious(core.Finding{
+		Description: fmt.Sprintf("Library %s in a system directory belongs to no installed package", p),
+		Details:     d,
+		Why: "This library sits among the distribution's own libraries (mapped by a process or in a PAM module directory), but no " +
+			"package's file list contains it. Implants add a module such as a PAM module or NSS library next to the " +
+			"legitimate ones (pam_unix.so lookalikes that accept a backdoor password or log credentials), where it " +
+			"passes for part of the system and is loaded by sshd, login or sudo.",
+		Benign: "Software installed outside the package manager: vendor installers (GPU drivers, Oracle JDK), " +
+			"manually built libraries or files a package's install script generated. Check who installed it " +
+			"(file times, the processes that map it) and compare its checksum with the vendor's.",
+	})
+}
+
 // checkPackagedLibraries compares system libraries mapped into running
 // processes with the checksums of the package that installed them (dpkg
 // md5sums, or the SQLite rpm database). A library that differs was modified
@@ -253,6 +339,7 @@ func (c *Cell) checkPackagedLibraries(ctx context.Context, rec *core.Recorder) (
 	if err != nil {
 		return 0, err
 	}
+	c.addPAMModules(mapped)
 	if len(mapped) == 0 {
 		return 0, nil
 	}
@@ -263,13 +350,19 @@ func (c *Cell) checkPackagedLibraries(ctx context.Context, rec *core.Recorder) (
 		paths = append(paths, p)
 	}
 	sort.Strings(paths)
-	declared, source := c.declaredDigests(rec, wanted)
+	declared, owners, source := c.declaredDigests(rec, wanted)
 	if declared == nil {
 		return 0, nil
 	}
 
-	suspicious, verified := 0, 0
+	suspicious, verified, unowned := 0, 0, 0
 	for _, p := range paths {
+		if owners != nil && owners[p] == "" {
+			unowned++
+			suspicious++
+			c.reportUnowned(rec, p, source, mapped[p])
+			continue
+		}
 		var usable []pkgDigest
 		for _, d := range declared[p] {
 			if d.algo == "md5" || d.algo == "sha256" {
@@ -343,6 +436,7 @@ func (c *Cell) checkPackagedLibraries(ctx context.Context, rec *core.Recorder) (
 				"Compare with the package's copy (rpm -V " + pkg + " or debsums " + pkg + ") or reinstall the package.",
 		})
 	}
+	rec.Log().Debug("package ownership", "source", source, "unowned", unowned)
 	rec.Log().Debug("package checksums", "source", source, "mapped_libraries", len(paths), "with_checksum", len(declared), "verified", verified)
 	if verified > 0 {
 		rec.Observe(fmt.Sprintf("%d of %d mapped system libraries verified against %s package checksums", verified, len(paths), source), nil)
