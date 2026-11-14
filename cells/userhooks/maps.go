@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/waldh4ri/zygarde/internal/core"
 	"github.com/waldh4ri/zygarde/internal/fsutil"
 )
@@ -92,6 +94,7 @@ func (c *Cell) checkProcessMaps(ctx context.Context, rec *core.Recorder) (int, e
 		path, reason string
 	}
 	holders := map[mappedLib][]string{}
+	trusted := map[mappedLib][]string{} // mapped by a verified JVM from files it extracted itself
 
 	for _, e := range entries {
 		if ctx.Err() != nil {
@@ -114,20 +117,44 @@ func (c *Cell) checkProcessMaps(ctx context.Context, rec *core.Recorder) (int, e
 			procRoot = ""
 		}
 
-		seenForPID := map[mappedLib]bool{}
+		type candidate struct {
+			lib  mappedLib
+			file string // the mapping's /proc/<pid>/map_files entry
+		}
+		var lines []string
+		var cands []candidate
 		sc := bufio.NewScanner(f)
 		for sc.Scan() {
-			libPath, reason := classifyExecMapLine(c, sc.Text(), exe, procRoot)
-			if reason == "" {
-				continue
-			}
-			key := mappedLib{libPath, reason}
-			if !seenForPID[key] {
-				seenForPID[key] = true
-				holders[key] = append(holders[key], pid)
+			line := sc.Text()
+			lines = append(lines, line)
+			if libPath, reason := classifyExecMapLine(c, line, exe, procRoot); reason != "" {
+				rng, _, _ := strings.Cut(line, " ")
+				cands = append(cands, candidate{mappedLib{libPath, reason}, filepath.Join(c.proc, pid, "map_files", rng)})
 			}
 		}
 		f.Close()
+
+		uid, gid := c.procOwner(pid)
+		var jvmInfo jvm
+		checked := false
+		seenForPID := map[mappedLib]bool{}
+		for _, cd := range cands {
+			if seenForPID[cd.lib] {
+				continue
+			}
+			seenForPID[cd.lib] = true
+			// A JVM unpacks native libraries to temporary and cache directories, never to a memfd.
+			if !strings.Contains(cd.lib.reason, "memfd") {
+				if !checked {
+					jvmInfo, checked = c.attestJVM(pid, exe, lines, procRoot), true
+				}
+				if jvmInfo.ok && jvmOwnLibrary(cd.lib.path, cd.file, uid, gid) {
+					trusted[cd.lib] = append(trusted[cd.lib], pid)
+					continue
+				}
+			}
+			holders[cd.lib] = append(holders[cd.lib], pid)
+		}
 	}
 
 	keys := make([]mappedLib, 0, len(holders))
@@ -135,6 +162,12 @@ func (c *Cell) checkProcessMaps(ctx context.Context, rec *core.Recorder) (int, e
 		keys = append(keys, k)
 	}
 	sort.Slice(keys, func(i, j int) bool { return keys[i].path < keys[j].path })
+
+	for k, pids := range trusted {
+		rec.Observe(fmt.Sprintf("Library %s (%s) is mapped by %d verified Java process(es), which extract native libraries themselves", k.path, k.reason, len(pids)), map[string]string{
+			"library": k.path, "reason": k.reason, "pids": strings.Join(pids, ", "),
+		})
+	}
 
 	suspicious := 0
 	for _, k := range keys {
@@ -198,4 +231,13 @@ func classifyExecMapLine(c *Cell, line, mainExe, procRoot string) (string, strin
 		return mapped, "mapped from " + why
 	}
 	return "", ""
+}
+
+// procOwner returns the user and group owning /proc/<pid>, the process's effective ones.
+func (c *Cell) procOwner(pid string) (uid, gid uint32) {
+	var st unix.Stat_t
+	if unix.Stat(filepath.Join(c.proc, pid), &st) != nil {
+		return ^uint32(0), ^uint32(0)
+	}
+	return st.Uid, st.Gid
 }
