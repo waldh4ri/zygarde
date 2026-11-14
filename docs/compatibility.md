@@ -23,6 +23,7 @@
 | `hidden_socket` | none for the `/proc/net` and `sock_diag` views; BTF and Linux 5.8+ for the iterators and ownership check |
 | `netfilter_hooks` | BTF; Linux 5.8+; netfilter. The canary BPF netfilter link needs 6.4+ |
 | `userspace_hooks` | none |
+| `orphan_namespace` | BTF; `iter/task` and `iter/task_file`, Linux 5.8+. Entering a network namespace held only by a socket needs `pidfd_getfd` (5.6+), otherwise its contents are not listed |
 
 Kernel facts behind these, verified from source and the VM matrix:
 

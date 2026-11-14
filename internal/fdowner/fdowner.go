@@ -63,6 +63,7 @@ type FD struct {
 	Inode      uint64 // socket inode
 	SockFamily uint16 // AF_* (when Kind == Socket)
 	SockType   uint16 // SOCK_* (when Kind == Socket)
+	NetNS      uint32 // network namespace inode of the socket (0: unknown)
 	Comm       string
 }
 
@@ -151,7 +152,7 @@ func Snapshot(env *core.Env) (*Table, error) {
 		t.FDs = append(t.FDs, FD{
 			TGID: r.Tgid, TID: r.Tid, FD: r.Fd, Kind: Kind(r.Kind),
 			ID: r.Id, ProgID: r.ProgId, Inode: r.Ino,
-			SockFamily: r.Sfamily, SockType: r.Stype,
+			SockFamily: r.Sfamily, SockType: r.Stype, NetNS: r.Netns,
 			Comm: bpfutil.Int8String(r.Comm[:]),
 		})
 	}

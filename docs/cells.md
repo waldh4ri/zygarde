@@ -17,6 +17,7 @@ Cells run in the order below (`allCells` in `cmd/zygarde/main.go`). Select some 
 | 11 | [`hidden_socket`](#hidden_socket) | sockets hidden from `netstat`/`ss`, packet sniffers | 30 s | - (iterators and owners: BTF, Linux 5.8+) |
 | 12 | [`netfilter_hooks`](#netfilter_hooks) | magic-packet netfilter hooks | 30 s | BTF, Linux 5.8+, netfilter |
 | 13 | [`userspace_hooks`](#userspace_hooks) | `LD_PRELOAD`-style hooks, trojaned libraries | 30 s | - |
+| 14 | [`orphan_namespace`](#orphan_namespace) | namespaces without a process that hold listeners, mounts or devices | 30 s | BTF, Linux 5.8+ |
 
 Each Cell either compares two views (kernel vs userspace) or checks an invariant. The tables show both views; "-" means there is no second view.
 
@@ -157,7 +158,7 @@ Kernel backdoors listen for "magic packets" from a netfilter hook, which sees ev
 - **Observations**: the kernel, visible modules (conntrack, iptables, nftables, bridge) and BPF netfilter links.
 - **SUSPICIOUS when**: a hook function is owned by no visible module.
 - **Canaries**: Zygarde's own network namespace is seen; on Linux 6.4+ a do-nothing BPF netfilter link on IPv4 `LOCAL_OUT` is planted and must be read back.
-- Limitation: network namespaces no task lives in (only pinned in `/run/netns`) are not covered.
+- Limitation: network namespaces no task lives in (only pinned in `/run/netns`, or held by a socket) are not covered here; `orphan_namespace` reports them and lists their contents.
 
 ## userspace_hooks
 
@@ -172,3 +173,23 @@ Kernel backdoors listen for "magic packets" from a netfilter hook, which sees ev
   - a shared library mapped from a system directory does not match the checksums of the package that installed it (dpkg `.md5sums`, or the SQLite rpm database, which Zygarde parses itself including its write-ahead log). A library replaced in place, as Ebury does to `libkeyutils`, is caught this way.
   - a shared library mapped from a system directory, or a PAM module (`security/*.so`) present in one, belongs to no installed package (dpkg `.list` files, or the rpm database). This catches implants that add a library next to the legitimate ones, such as a backdoor PAM module, instead of replacing one. Software installed outside the package manager (vendor GPU drivers, JDK tarballs) shows up here too.
 - Limitations: processes in other mount namespaces are skipped; Berkeley DB rpm databases (RHEL 8) are not covered.
+
+## orphan_namespace
+
+Finds namespaces that no process belongs to but that something else keeps alive, and says what is inside.
+
+A namespace outlives its last process when a bind mount of its nsfs file (what `ip netns add` does), an open descriptor of it, or a socket created in it still references it. Every check that starts from a process never reaches it: `ps`, `ss`, `netstat`, `/proc/net`, `mountinfo` and the other Cells' task-based views. A listener, a stash of files, a network device or firewall rules can live there while the process that uses them is elsewhere or gone.
+
+- **Kernel view**: the namespaces of every thread, read from the kernel's task list by a BPF `iter/task` program (mount, network, PID, IPC, UTS, user, cgroup and time namespaces, plus the namespaces a process will give its children), and the network namespace of every socket, read from every task's file table (`iter/task_file`, the same iterator `hidden_socket` uses for ownership).
+- **Userspace view**: namespaces that something pins: `nsfs` entries in the `mountinfo` of each mount namespace, and descriptors of `/proc/<pid>/ns/*` files in every `/proc/<pid>/fd`.
+- A namespace is an **orphan** when it is pinned or holds a socket and has no member, and no namespace with a member needs it. A user namespace that owns a live namespace, and the parents of user and PID namespaces, are alive for that reason and are not reported. An orphan has to be seen twice, 400 ms apart, so a process exiting is not reported.
+- **Contents**: each orphan is entered on a throwaway thread (`setns`, never returned from, so no other thread is affected) that only reads `/proc` files the kernel renders for that namespace.
+  - network: interfaces, listening TCP and UDP sockets (address and port), packet and unix sockets;
+  - mount: the mounts the host's mount namespace does not have;
+  - IPC: SysV shared memory, semaphore and message queue counts;
+  - UTS: the hostname when it differs from the host's;
+  - user, PID, cgroup and time namespaces have no readable contents without a process.
+  A network namespace held only by a socket is entered through that socket (`pidfd_getfd` and `SIOCGSKNS`, Linux 5.6+).
+- **SUSPICIOUS when** an orphan namespace exists, unless it looks like a leftover of a container runtime (then an observation): its only pin is a bind mount in `/run/netns`, `/var/run/netns`, `/run/docker/netns` or `/run/user/<uid>/(docker/|containers/)netns` (or `/run/snapd/ns` for a mount namespace), or a descriptor held by a runtime (`dockerd`, `containerd`, `containerd-shim*`, `runc`, `crun`, `conmon`, `podman`, `crio`, `kubelet`, `systemd`, `snapd`); no process holds a socket in it; and a network namespace has nothing but loopback and no listener. An `ip netns add` namespace with a device or a listener is therefore reported.
+- **Canary**: a network namespace created by a thread that then exits, kept alive only by a socket of Zygarde's own. The kernel socket view has to report it as an orphan.
+- Limitations: Linux 5.8+ (BTF and the BPF iterators). Namespaces held by something else than a mount, a descriptor or a socket (a BPF netns link, for instance) are not found. Processes hidden from `/proc` are not read for their descriptors (the kernel view still counts their namespaces as members). At most 24 orphans are entered per scan. Netfilter rules inside an orphan network namespace are not listed; the interface and listener checks usually give it away first.
