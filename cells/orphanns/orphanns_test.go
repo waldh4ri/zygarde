@@ -172,3 +172,37 @@ func TestInspectUTS(t *testing.T) {
 		t.Error("a hostname different from the host's should be notable")
 	}
 }
+
+func TestNSFlags(t *testing.T) {
+	seen := map[string]bool{}
+	for _, typ := range nsFlags {
+		seen[typ] = true
+	}
+	for _, want := range []string{"mnt", "net", "pid", "ipc", "uts", "user", "cgroup", "time"} {
+		if !seen[want] {
+			t.Errorf("no CLONE_NEW* flag maps to %q", want)
+		}
+	}
+}
+
+func TestDescriptorPinsTyping(t *testing.T) {
+	// A descriptor of a namespace whose type is already known (it has a member, or
+	// another pin names it) is typed without asking the kernel.
+	v := &view{
+		members: map[nsKey][]member{{"net", 10}: {{tgid: 1}}},
+		pins:    map[nsKey][]pin{{"mnt", 20}: {{how: "bind mount", where: "/run/x"}}},
+	}
+	c := &Cell{proc: t.TempDir()}
+	c.descriptorPins(v, []fdowner.FD{
+		{TGID: 7, FD: 3, Inode: 10, Comm: "a"},
+		{TGID: 8, FD: 4, Inode: 20, Comm: "b"},
+		{TGID: 0, FD: 5, Inode: 10, Comm: "untranslatable"},
+		{TGID: 9, FD: 6, Inode: 0, Comm: "no inode"},
+	}, nil)
+	if p := v.pins[nsKey{"net", 10}]; len(p) != 1 || p[0].pid != 7 || p[0].fd != 3 || p[0].comm != "a" || p[0].how != "descriptor" {
+		t.Errorf("net pins = %+v", p)
+	}
+	if p := v.pins[nsKey{"mnt", 20}]; len(p) != 2 || p[1].pid != 8 {
+		t.Errorf("mnt pins = %+v", p)
+	}
+}

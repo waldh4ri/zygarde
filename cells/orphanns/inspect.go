@@ -97,7 +97,18 @@ func (c *Cell) nsFileFor(o *orphan) (*os.File, error) {
 		case "bind mount":
 			path = filepath.Join(c.proc, strconv.Itoa(int(p.pid)), "root", p.where)
 		case "descriptor":
-			path = filepath.Join(c.proc, strconv.Itoa(int(p.pid)), "fd", strconv.Itoa(p.fd))
+			// A copy of the descriptor, which also works when the holder is hidden from /proc.
+			f, err := fileOfDescriptor(c.proc, int(p.pid), p.fd)
+			if err != nil {
+				last = err
+				continue
+			}
+			checked, err := check(f)
+			if err == nil {
+				return checked, nil
+			}
+			last = err
+			continue
 		}
 		f, err := os.Open(path)
 		if err != nil {
@@ -375,4 +386,41 @@ func inspectUTS(host string) (map[string]string, error) {
 		kv["notable"] = "yes"
 	}
 	return kv, nil
+}
+
+// fileOfDescriptor returns a copy of descriptor fd of process pid. It goes
+// through pidfd_getfd (Linux 5.6+), which works for a process hidden from /proc,
+// and falls back to /proc/<pid>/fd/<fd>.
+func fileOfDescriptor(proc string, pid, fd int) (*os.File, error) {
+	if pidfd, err := unix.PidfdOpen(pid, 0); err == nil {
+		defer unix.Close(pidfd)
+		if dup, err := unix.PidfdGetfd(pidfd, fd, 0); err == nil {
+			return os.NewFile(uintptr(dup), "ns"), nil
+		}
+	}
+	return os.Open(filepath.Join(proc, strconv.Itoa(pid), "fd", strconv.Itoa(fd)))
+}
+
+// nsFlags maps the CLONE_NEW* flag NS_GET_NSTYPE returns to the type name.
+var nsFlags = map[int]string{
+	unix.CLONE_NEWNS: "mnt", unix.CLONE_NEWNET: "net", unix.CLONE_NEWPID: "pid", unix.CLONE_NEWIPC: "ipc",
+	unix.CLONE_NEWUTS: "uts", unix.CLONE_NEWUSER: "user", unix.CLONE_NEWCGROUP: "cgroup", unix.CLONE_NEWTIME: "time",
+}
+
+// nsTypeOf asks a descriptor of a namespace file which kind of namespace it is.
+func nsTypeOf(pid, fd int) (string, error) {
+	f, err := fileOfDescriptor("/proc", pid, fd)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	n, err := unix.IoctlRetInt(int(f.Fd()), nsGetType)
+	if err != nil {
+		return "", fmt.Errorf("NS_GET_NSTYPE: %w", err)
+	}
+	typ, ok := nsFlags[n]
+	if !ok {
+		return "", fmt.Errorf("unknown namespace type %#x", n)
+	}
+	return typ, nil
 }

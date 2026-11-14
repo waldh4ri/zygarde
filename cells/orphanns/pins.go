@@ -13,6 +13,8 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/waldh4ri/zygarde/internal/core"
+	"github.com/waldh4ri/zygarde/internal/fdowner"
 	"github.com/waldh4ri/zygarde/internal/fsutil"
 )
 
@@ -115,50 +117,57 @@ func (c *Cell) mountPins(members map[nsKey][]member) []pin {
 	return out
 }
 
-// fdPins lists the descriptors that refer to a namespace file, over every
-// process's file table in /proc.
-func (c *Cell) fdPins() []pin {
-	entries, err := fsutil.ReadDirNoAtime(c.proc)
-	if err != nil {
-		return nil
+// descriptorPins adds the descriptors that refer to a namespace file, as the
+// kernel reports them from every task's file table. Unlike /proc/<pid>/fd, that
+// includes processes hidden from /proc, and descriptors opened through a bind
+// mount of the namespace file, whose link reads "/" instead of "net:[inum]".
+// The descriptor is asked for its namespace type, so a descriptor of a hidden
+// process is typed too.
+func (c *Cell) descriptorPins(v *view, fds []fdowner.FD, rec *core.Recorder) {
+	types := map[uint64]string{} // namespace inode -> type
+	for k := range v.members {
+		types[k.inum] = k.typ
 	}
-	self := strconv.Itoa(os.Getpid())
-	var out []pin
-	for _, e := range entries {
-		pid, err := strconv.Atoi(e.Name())
-		if err != nil || e.Name() == self {
+	for k := range v.pins {
+		types[k.inum] = k.typ
+	}
+	untyped := 0
+	for _, fd := range fds {
+		if fd.TGID == 0 || fd.Inode == 0 {
 			continue
 		}
-		fds, err := os.ReadDir(filepath.Join(c.proc, e.Name(), "fd"))
-		if err != nil {
-			continue
-		}
-		var comm string
-		for _, fd := range fds {
-			target, err := os.Readlink(filepath.Join(c.proc, e.Name(), "fd", fd.Name()))
-			if err != nil {
-				continue
-			}
-			key, ok := parseNSLink(target)
-			if !ok {
-				continue
-			}
-			if comm == "" {
-				if b, err := os.ReadFile(filepath.Join(c.proc, e.Name(), "comm")); err == nil {
-					comm = strings.TrimSpace(string(b))
+		typ, ok := types[fd.Inode]
+		if !ok {
+			var err error
+			if typ, err = nsTypeOf(int(fd.TGID), int(fd.FD)); err != nil {
+				// Older kernels have no pidfd_getfd: fall back to the descriptor's link.
+				if t, ok := parseNSLink(readlinkFD(c.proc, fd.TGID, fd.FD)); ok {
+					typ = t.typ
+				} else {
+					untyped++
+					continue
 				}
 			}
-			n, _ := strconv.Atoi(fd.Name())
-			out = append(out, pin{key: key, how: "descriptor", where: "descriptor " + fd.Name(), pid: uint32(pid), comm: comm, fd: n})
+			types[fd.Inode] = typ
 		}
+		key := nsKey{typ, fd.Inode}
+		v.pins[key] = append(v.pins[key], pin{key: key, how: "descriptor", where: fmt.Sprintf("descriptor %d", fd.FD), pid: fd.TGID, comm: fd.Comm, fd: int(fd.FD)})
 	}
-	return out
+	if untyped > 0 {
+		rec.Limit("%d namespace descriptor(s) could not be typed (no pidfd_getfd, and the link of the descriptor is not readable): they were not checked", untyped)
+	}
+}
+
+func readlinkFD(proc string, pid, fd uint32) string {
+	s, _ := os.Readlink(filepath.Join(proc, strconv.Itoa(int(pid)), "fd", strconv.Itoa(int(fd))))
+	return s
 }
 
 // ioctls on nsfs files (include/uapi/linux/nsfs.h).
 const (
 	nsGetUserNS = 0xb701 // the user namespace that owns this namespace (or the parent of a user namespace)
 	nsGetParent = 0xb702 // the parent of a PID or user namespace
+	nsGetType   = 0xb703 // the CLONE_NEW* flag of the namespace
 )
 
 // ownersOf returns the namespaces kept alive by the namespace file at path:

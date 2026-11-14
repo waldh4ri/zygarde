@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strconv"
 	"unsafe"
@@ -32,6 +33,7 @@ const (
 	Link   Kind = 3
 	Perf   Kind = 4 // a perf event (tracepoint, kprobe...) running a BPF program
 	Socket Kind = 5
+	NS     Kind = 7 // a namespace file; Inode is the namespace inode
 
 	kindLinkPoll uint32 = 6 // internal slot for bpf_link_fops_poll
 )
@@ -48,6 +50,8 @@ func (k Kind) String() string {
 		return "perf event"
 	case Socket:
 		return "socket"
+	case NS:
+		return "namespace"
 	}
 	return "unknown"
 }
@@ -111,6 +115,10 @@ func Snapshot(env *core.Env) (*Table, error) {
 	if fd, err := unix.Socket(unix.AF_UNIX, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0); err == nil {
 		defer unix.Close(fd)
 		known[fd] = Socket
+	}
+	if f, err := os.Open("/proc/self/ns/net"); err == nil {
+		defer f.Close()
+		known[int(f.Fd())] = NS
 	}
 	attr := unix.PerfEventAttr{Type: unix.PERF_TYPE_SOFTWARE, Config: unix.PERF_COUNT_SW_DUMMY, Bits: unix.PerfBitDisabled}
 	attr.Size = uint32(unsafe.Sizeof(attr))
@@ -202,6 +210,8 @@ func (t *Table) buildIndex() {
 			continue
 		}
 		switch f.Kind {
+		case NS:
+			add(object{NS, f.Inode}, f)
 		case Socket:
 			add(object{Socket, f.Inode}, f)
 		case Link, Perf:

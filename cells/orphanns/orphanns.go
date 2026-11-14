@@ -145,9 +145,6 @@ func (c *Cell) read(env *core.Env, prog *ebpf.Program, rec *core.Recorder) (*vie
 	for _, p := range c.mountPins(members) {
 		v.pins[p.key] = append(v.pins[p.key], p)
 	}
-	for _, p := range c.fdPins() {
-		v.pins[p.key] = append(v.pins[p.key], p)
-	}
 	tab, err := fdowner.Snapshot(env)
 	if err != nil {
 		rec.Limit("Sockets were not checked for network namespaces without a process: %v", err)
@@ -157,6 +154,7 @@ func (c *Cell) read(env *core.Env, prog *ebpf.Program, rec *core.Recorder) (*vie
 				v.sockets[uint64(fd.NetNS)] = append(v.sockets[uint64(fd.NetNS)], fd)
 			}
 		}
+		c.descriptorPins(v, tab.Of(fdowner.NS), rec)
 	}
 	return v, nil
 }

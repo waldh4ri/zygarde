@@ -16,8 +16,9 @@ char LICENSE[] SEC("license") = "Dual BSD/GPL";
 #define KIND_LINK      3
 #define KIND_PERF      4
 #define KIND_SOCKET    5
+#define KIND_NS        7 // a namespace file (nsfs); ino is the namespace inode
 #define KIND_LINK_POLL 6 // bpf_link_fops_poll, normalised to KIND_LINK
-#define NR_KINDS       7
+#define NR_KINDS       8
 
 // possible_net_t is an empty struct in kernels built without CONFIG_NET_NS, and
 // in some vmlinux.h dumps: read the field through a flavor that has the member.
@@ -127,6 +128,9 @@ int dump_fds(struct bpf_iter__task_file *ctx)
 		rec.prog_id = BPF_CORE_READ((struct perf_event *)priv, prog, aux, id);
 		if (!rec.prog_id)
 			return 0;
+		break;
+	case KIND_NS:
+		rec.ino = BPF_CORE_READ(file, f_inode, i_ino);
 		break;
 	case KIND_SOCKET:
 		rec.ino = BPF_CORE_READ(file, f_inode, i_ino);

@@ -15,6 +15,8 @@ func TestHolders(t *testing.T) {
 		{TGID: 13, Kind: Socket, Inode: 999, Comm: "sshd"},
 		{TGID: 0, Kind: Socket, Inode: 999, Comm: "untranslatable"},
 		{TGID: 14, Kind: Map, ID: 5, Comm: "mapper"},
+		{TGID: 15, Kind: NS, Inode: 4026532150, Comm: "holder"},
+		{TGID: 16, Kind: NS, Inode: 4026532150, Comm: "holder2"},
 	}}
 	if got := Describe(tab.Holders(Prog, 5)); got != "10 (loader), 11 (agent), 12 (tracer)" {
 		t.Errorf("program holders = %s", got)
@@ -27,6 +29,12 @@ func TestHolders(t *testing.T) {
 	}
 	if got := Describe(tab.Holders(Map, 5)); got != "14 (mapper)" {
 		t.Errorf("map holders = %s", got)
+	}
+	if got := Describe(tab.Holders(NS, 4026532150)); got != "15 (holder), 16 (holder2)" {
+		t.Errorf("namespace holders = %s", got)
+	}
+	if NS.String() != "namespace" {
+		t.Errorf("NS.String() = %q", NS.String())
 	}
 	if len(tab.Holders(Socket, 1)) != 0 {
 		t.Error("unknown socket has holders")
