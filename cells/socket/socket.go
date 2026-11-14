@@ -8,13 +8,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/netip"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/cilium/ebpf"
@@ -666,8 +664,8 @@ func netns() (self, init uint64, err error) {
 }
 
 type canaries struct {
-	closers []interface{ Close() error }
-	socks   []canarySock
+	fds   []int
+	socks []canarySock
 }
 
 type canarySock struct {
@@ -676,38 +674,72 @@ type canarySock struct {
 	inode uint64
 }
 
+// openCanaries opens a listening TCP socket and a bound UDP socket on an
+// ephemeral loopback port. It uses raw syscalls rather than package net,
+// which would add its resolver and poller to the binary for two sockets.
 func openCanaries(rec *core.Recorder) (*canaries, error) {
 	cs := &canaries{}
-	loopback := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)}
-	ln, err := net.ListenTCP("tcp4", loopback)
-	if err != nil {
-		return nil, err
-	}
-	cs.closers = append(cs.closers, ln)
-	pc, err := net.ListenUDP("udp4", &net.UDPAddr{IP: loopback.IP})
-	if err != nil {
-		cs.Close()
-		return nil, err
-	}
-	cs.closers = append(cs.closers, pc)
-
 	for _, c := range []struct {
-		conn  syscall.Conn
 		proto string
-		addr  net.Addr
-	}{{ln, "tcp", ln.Addr()}, {pc, "udp", pc.LocalAddr()}} {
-		ino, err := inode(c.conn)
+		typ   int
+	}{{"tcp", unix.SOCK_STREAM}, {"udp", unix.SOCK_DGRAM}} {
+		sock, err := openLoopback(c.proto, c.typ)
 		if err != nil {
 			cs.Close()
 			return nil, err
 		}
-		label := fmt.Sprintf("%s socket %s", c.proto, c.addr)
-		cs.socks = append(cs.socks, canarySock{label: label, proto: c.proto, inode: ino})
+		cs.fds = append(cs.fds, sock.fd)
+		label := fmt.Sprintf("%s socket %s", c.proto, sock.addr)
+		cs.socks = append(cs.socks, canarySock{label: label, proto: c.proto, inode: sock.inode})
 		if rec != nil {
-			rec.Footprint("canary_socket", fmt.Sprintf("%s (inode %d)", label, ino))
+			rec.Footprint("canary_socket", fmt.Sprintf("%s (inode %d)", label, sock.inode))
 		}
 	}
 	return cs, nil
+}
+
+type loopbackSock struct {
+	fd    int
+	addr  netip.AddrPort
+	inode uint64
+}
+
+// openLoopback binds a socket of type typ to 127.0.0.1 on a port the kernel
+// picks, and listens on it if it is a stream socket.
+func openLoopback(proto string, typ int) (loopbackSock, error) {
+	fd, err := unix.Socket(unix.AF_INET, typ|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return loopbackSock{}, fmt.Errorf("%s canary socket: %w", proto, err)
+	}
+	fail := func(op string, err error) (loopbackSock, error) {
+		_ = unix.Close(fd)
+		return loopbackSock{}, fmt.Errorf("%s canary socket: %s: %w", proto, op, err)
+	}
+	if err := unix.Bind(fd, &unix.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}}); err != nil {
+		return fail("bind", err)
+	}
+	if typ == unix.SOCK_STREAM {
+		if err := unix.Listen(fd, 1); err != nil {
+			return fail("listen", err)
+		}
+	}
+	sa, err := unix.Getsockname(fd)
+	if err != nil {
+		return fail("getsockname", err)
+	}
+	in4, ok := sa.(*unix.SockaddrInet4)
+	if !ok {
+		return fail("getsockname", fmt.Errorf("unexpected address type %T", sa))
+	}
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return fail("fstat", err)
+	}
+	return loopbackSock{
+		fd:    fd,
+		addr:  netip.AddrPortFrom(netip.AddrFrom4(in4.Addr), uint16(in4.Port)),
+		inode: st.Ino,
+	}, nil
 }
 
 func (cs *canaries) has(k key) bool {
@@ -729,20 +761,8 @@ func (cs *canaries) hasInode(ino uint64) bool {
 }
 
 func (cs *canaries) Close() {
-	for _, c := range cs.closers {
-		c.Close()
+	for _, fd := range cs.fds {
+		_ = unix.Close(fd)
 	}
-}
-
-func inode(c syscall.Conn) (uint64, error) {
-	raw, err := c.SyscallConn()
-	if err != nil {
-		return 0, err
-	}
-	var st unix.Stat_t
-	var serr error
-	if err := raw.Control(func(fd uintptr) { serr = unix.Fstat(int(fd), &st) }); err != nil {
-		return 0, err
-	}
-	return st.Ino, serr
+	cs.fds = nil
 }

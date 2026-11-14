@@ -39,6 +39,9 @@ The generated eBPF objects and Go bindings (`cells/*/*_bpfel.{go,o}`, `internal/
 
 Requires Go 1.25 (see `go.mod`). `bpf2go` is a Go tool dependency, run through `go tool bpf2go`.
 
+### Binary size
+
+Release binaries are static (`CGO_ENABLED=0`), built with `-trimpath` and linked with `-s -w` (no symbol table, no DWARF): about 6.5 MB on amd64 and 6.2 MB on arm64. About 10% of that is the embedded BPF objects, mostly the BTF that CO-RE relocation needs. Keep heavy standard-library packages out of the import graph: package `net`, for instance, would add about 130 KB, so the socket Cell opens its canary sockets with raw syscalls instead.
 ### Regenerating BPF objects
 
 After changing a `.bpf.c` file or `bpf/include/`:
@@ -88,4 +91,4 @@ flowchart LR
 
 ## Release
 
-`const version` in `cmd/zygarde/main.go` is reported by `--version` and stored in every report. CI builds `dist/` for both architectures and uploads them as an artifact.
+`version` in `cmd/zygarde/main.go` (overridden by the Makefile with `git describe`) is reported by `--version` and stored in every report. CI builds `dist/` for both architectures and uploads them as an artifact.
