@@ -61,8 +61,12 @@ func TestOnePerModule(t *testing.T) {
 		"6.1.0-13-amd64": true, "6.3.9": true, "6.4.0": false, "6.8.0-147-generic": false, "6.12.0-211.74.2.el10_2.x86_64": false,
 		"7.0.0-43-generic": false, "garbage": false, "": false,
 	} {
-		if got := onePerModule(rel); got != want {
+		if got := onePerModule(rel, false); got != want {
 			t.Errorf("onePerModule(%q) = %v, want %v", rel, got, want)
+		}
+		// A backported module_memory (RHEL 9.8's 5.14) overrides the release.
+		if onePerModule(rel, true) {
+			t.Errorf("onePerModule(%q, module_memory) = true, want false", rel)
 		}
 	}
 }

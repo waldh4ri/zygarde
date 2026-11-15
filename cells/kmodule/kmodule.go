@@ -113,7 +113,7 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 			Benign:      "A module loading or unloading during the scan; unlikely, since it was seen in two snapshots.",
 		})
 	}
-	loader := c.checkLoaderAllocations(rec)
+	loader := c.checkLoaderAllocations(rec, hasModuleMemory(env))
 	boot := c.checkAutoload(rec)
 	switch {
 	case loader > 0 && len(found) == 0:

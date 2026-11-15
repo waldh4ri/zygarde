@@ -32,9 +32,6 @@ for lib in /usr/lib/x86_64-linux-gnu/libnss_files.so.2 /usr/lib/aarch64-linux-gn
 	fi
 done
 
-# usermode_helpers: module autoloading pointed at a program in /tmp.
-echo /tmp/zyg-fixture-modprobe > /proc/sys/kernel/modprobe
-
 # hidden_file: a "trojaned sudo" in a dot-directory under /usr/bin (Scales).
 mkdir -p /usr/bin/.local
 cp /bin/true /usr/bin/.local/sudo
@@ -81,4 +78,10 @@ while [ $i -lt 30 ] && ! grep -q ready "$log" 2>/dev/null; do
 	sleep 1
 	i=$((i + 1))
 done
+
+# usermode_helpers: module autoloading pointed at a program in /tmp. Last, so
+# the setup above can still autoload modules (sch_ingress for the clsact qdisc
+# on kernels without tcx, dummy for the orphan namespace).
+echo /tmp/zyg-fixture-modprobe > /proc/sys/kernel/modprobe
+
 echo "fixtures=yes" >> "$out/meta.env"
