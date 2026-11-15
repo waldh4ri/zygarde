@@ -116,16 +116,19 @@ docker-dist: docker-image
 docker-build: docker-image
 	$(DOCKER) make build
 
-docker-check: docker-image
-	$(DOCKER) make check
-
-# Tests run twice, as an unprivileged user and as root: some tests skip unless
-# root, and the user run is what CI sees. -modcacherw keeps the shared module
-# cache removable.
+# Tests run twice, as root and as an unprivileged user: some tests skip unless
+# root, and the user run is what CI's `make check` sees. Root goes first: the
+# module cache volume belongs to root, so it fills it and the user run only
+# reads it. -modcacherw keeps anything the user run adds removable.
 DOCKER_USER := docker run --rm --user 1000:1000 -e HOME=/tmp -e GOCACHE=/tmp/gocache -e GOFLAGS=-modcacherw \
                -v "$(CURDIR):/src" -v zygarde-gomod:/go/pkg/mod -w /src $(IMAGE)
 
-docker-test: docker-test-user docker-test-root
+# check as root, then the race tests again as the unprivileged user CI runs them as.
+docker-check: docker-image
+	$(DOCKER) make check
+	$(DOCKER_USER) make test-race
+
+docker-test: docker-test-root docker-test-user
 
 docker-test-user: docker-image
 	$(DOCKER_USER) sh -c '$(GO) vet ./... && $(GO) test -count=1 ./...'

@@ -17,7 +17,8 @@ flowchart LR
 make test           # go test ./...   (needs Linux for most packages)
 make vet
 make test-root      # the same, executed under sudo so root-only tests run
-make docker-test    # go vet + go test inside the toolchain image, as an unprivileged user and then as root; works on Windows and macOS
+make docker-test    # go vet + go test inside the toolchain image, as root and then as an unprivileged user; works on Windows and macOS
+make docker-check   # every static check and the race tests as root, then the race tests as an unprivileged user, as CI runs them
 ```
 
 Some tests skip unless root (for example the trusted-link test in `internal/fsutil`), so a normal `make test` does not cover them. `make test-root` and `make docker-test-root` do, and CI runs both the unprivileged and the root pass.
