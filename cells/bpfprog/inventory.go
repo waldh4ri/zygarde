@@ -9,7 +9,6 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
-	"golang.org/x/sys/unix"
 
 	"github.com/waldh4ri/zygarde/internal/bpfutil"
 	"github.com/waldh4ri/zygarde/internal/core"
@@ -22,6 +21,7 @@ type inventory struct {
 	links    []uint32
 	table    *fdowner.Table  // nil if ownership could not be read
 	listed   map[uint32]bool // PIDs listed in /proc; nil if not comparable
+	mounts   []bpffsMount
 	pins     []pin
 	pinned   map[uint32]string   // program ID -> pin keeping it loaded
 	mapUsers map[uint32][]uint32 // map ID -> programs using it
@@ -62,6 +62,7 @@ func collect(env *core.Env, rec *core.Recorder, progs map[uint32]bpfprogProgInfo
 	lit.Close()
 	cgroups := cgroupAttachments(linkedCgroups)
 	tailTargets := progArrayTargets()
+	sockmaps := sockmapAttachments()
 
 	if err := fdowner.Supported(env); err != nil {
 		rec.Limit("Owners of BPF objects not identified: %v", err)
@@ -96,17 +97,17 @@ func collect(env *core.Env, rec *core.Recorder, progs map[uint32]bpfprogProgInfo
 			inv.add(a)
 		}
 	}
-	for _, list := range [][]attachment{links, perf, tc, cgroups, tailTargets} {
+	for _, list := range [][]attachment{links, perf, tc, cgroups, tailTargets, sockmaps} {
 		for _, a := range list {
 			inv.add(a)
 		}
 	}
 
-	var st unix.Statfs_t
-	if err := unix.Statfs(bpffsRoot, &st); err != nil || st.Type != unix.BPF_FS_MAGIC {
-		rec.Limit("Pinned BPF objects not listed: no BPF filesystem is mounted at %s (objects pinned elsewhere look unowned)", bpffsRoot)
+	inv.mounts = bpffsMounts()
+	if len(inv.mounts) == 0 {
+		rec.Limit("Pinned BPF objects not listed: no BPF filesystem is mounted in any mount namespace")
 	}
-	inv.pins = pins()
+	inv.pins = pins(inv.mounts)
 	inv.pinned = pinnedProgs(inv.pins)
 
 	for id := range progs {
@@ -229,7 +230,7 @@ func (inv *inventory) report(env *core.Env, rec *core.Recorder, progs map[uint32
 				rec.Suspicious(core.Finding{
 					Description: fmt.Sprintf("BPF program %s attached to %s %s", label, a.Where, why),
 					Details:     with(map[string]string{"attached_to": a.Where, "via": a.Via, "tc_filter_name": a.TCName, "held_by": heldBy}),
-					Why: "Programs on network interfaces see and can rewrite or drop every packet, which is how eBPF " +
+					Why: "Programs on network interfaces and socket maps see and can rewrite or drop every packet, which is how eBPF " +
 						"backdoors run covert channels (e.g. port knocking on XDP, replies rewritten on tc egress). " +
 						"Legitimate networking tools name their programs and don't hide them.",
 					Benign: "Programs loaded by old iproute2 versions (tc/ip without libbpf) can be unnamed; the tc filter " +
@@ -246,7 +247,7 @@ func (inv *inventory) report(env *core.Env, rec *core.Recorder, progs map[uint32
 		}
 
 		if inv.table != nil && len(holders) == 0 && inv.pinned[id] == "" && !anyNet(atts) && len(atts) == 0 {
-			rec.Observe(fmt.Sprintf("BPF program %s is held by no process and is not pinned under %s", label, bpffsRoot), with(map[string]string{
+			rec.Observe(fmt.Sprintf("BPF program %s is held by no process and is not pinned in any BPF filesystem", label), with(map[string]string{
 				"attached_to": wheres(atts),
 				"note": "kept alive by the kernel: e.g. attached in another cgroup/netns, sockmap, " +
 					"or a struct_ops attachment",
@@ -288,11 +289,51 @@ func (inv *inventory) report(env *core.Env, rec *core.Recorder, progs map[uint32
 		}
 	}
 
+	// Pins in BPF filesystems mounted in odd places, one finding per filesystem.
+	odd := map[*bpffsMount][]pin{}
+	for _, p := range inv.pins {
+		if (p.Kind == fdowner.Prog && own[p.ID]) || (p.Kind == fdowner.Link && own[p.ProgID]) {
+			continue
+		}
+		if p.Mount != nil && unusualMount(p.Mount.Point) != "" {
+			odd[p.Mount] = append(odd[p.Mount], p)
+		}
+	}
+	for i := range inv.mounts {
+		m := &inv.mounts[i]
+		ps := odd[m]
+		if len(ps) == 0 {
+			continue
+		}
+		var objs []string
+		for _, p := range ps {
+			objs = append(objs, fmt.Sprintf("%s %s #%d", p.Kind, p.Path, p.ID))
+		}
+		d := map[string]string{"mount_point": m.Point, "pinned": truncateList(objs, 10)}
+		where := m.Point
+		if m.MntNS != "" {
+			d["mount_namespace"] = m.MntNS
+			d["seen_through_pid"] = m.PID
+			where += " (mount namespace " + m.MntNS + ")"
+		}
+		rec.Suspicious(core.Finding{
+			Description: fmt.Sprintf("BPF objects are pinned in a BPF filesystem mounted at %s, %s", where, unusualMount(m.Point)),
+			Details:     d,
+			Why: "A pin keeps a BPF program, map or link alive with no process holding it, which is how an eBPF " +
+				"rootkit stays loaded after its loader exits. Tools mount the BPF filesystem at /sys/fs/bpf; one mounted " +
+				"in a temporary, memory-backed or hidden directory keeps those pins away from where anyone looks.",
+			Benign: "A test or development setup mounting a scratch BPF filesystem.",
+		})
+	}
+
 	for _, p := range inv.pins {
 		if (p.Kind == fdowner.Prog && own[p.ID]) || (p.Kind == fdowner.Link && own[p.ProgID]) {
 			continue
 		}
 		details := map[string]string{"path": p.Path, p.Kind.String() + "_id": strconv.Itoa(int(p.ID))}
+		if p.Mount != nil && p.Mount.MntNS != "" {
+			details["mount_namespace"] = p.Mount.MntNS
+		}
 		if p.Name != "" {
 			details["name"] = p.Name
 		}

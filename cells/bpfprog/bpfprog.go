@@ -27,7 +27,7 @@ import (
 // Cell compares three views of the loaded eBPF programs:
 //   - kernel: the bpf_prog iterator walks the kernel's program IDR directly
 //   - userspace: BPF_PROG_GET_NEXT_ID (run under comm "bpftool")
-//   - pinned: programs pinned under /sys/fs/bpf
+//   - pinned: programs pinned in a BPF filesystem (any mount point, any mount namespace)
 type Cell struct{}
 
 // New returns the hidden eBPF program Cell.
@@ -37,7 +37,7 @@ func (*Cell) ID() string             { return "hidden_ebpf_program" }
 func (*Cell) Name() string           { return "Hidden eBPF Program Detection" }
 func (*Cell) Timeout() time.Duration { return 30 * time.Second }
 func (*Cell) Description() string {
-	return "Compares the kernel's BPF program list (iterator) with BPF_PROG_GET_NEXT_ID enumeration and /sys/fs/bpf pins, and inventories where programs are attached and which processes hold them"
+	return "Compares the kernel's BPF program list (iterator) with BPF_PROG_GET_NEXT_ID enumeration and BPF filesystem pins, and inventories where programs are attached and which processes hold them"
 }
 
 func (*Cell) Supported(env *core.Env) error {

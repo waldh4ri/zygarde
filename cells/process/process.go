@@ -35,7 +35,7 @@ func (*Cell) ID() string             { return "hidden_process" }
 func (*Cell) Name() string           { return "Hidden Process Detection" }
 func (*Cell) Timeout() time.Duration { return 30 * time.Second }
 func (*Cell) Description() string {
-	return "Compares kernel task views (BPF task iterator, init_task.tasks and scheduler) with /proc processes and threads, flags processes hidden by a mount over their /proc entry, and disguised or fileless processes"
+	return "Compares kernel task views (BPF task iterator, init_task.tasks and scheduler) with /proc processes and threads, flags processes hidden by a mount over their /proc entry, disguised or fileless processes, and ptrace tracers that /proc hides or that run from fileless executables"
 }
 
 func (*Cell) Supported(env *core.Env) error {
@@ -275,7 +275,17 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	}
 	disguised := len(rec.Findings()) - hidden
 
+	// Tracers attached to processes, from the kernel's task list.
+	if err := checkPtrace(rec, before, after, listed, map[uint32]bool{uint32(os.Getpid()): true, canaryPID: true}, func() (snapshot, error) {
+		return kernelTasks(iter.DumpTask)
+	}); err != nil {
+		return err
+	}
+	traced := len(rec.Findings()) - hidden - disguised
+
 	switch {
+	case traced > 0:
+		rec.Message("%d hidden, %d disguised process(es), %d suspicious tracer(s) (ptrace)", hidden, disguised, traced)
 	case hidden > 0 && disguised > 0:
 		rec.Message("%d hidden and %d disguised process(es)", hidden, disguised)
 	case hidden > 0:

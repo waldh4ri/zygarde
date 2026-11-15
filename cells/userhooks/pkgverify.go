@@ -19,11 +19,12 @@ import (
 
 	"github.com/waldh4ri/zygarde/internal/core"
 	"github.com/waldh4ri/zygarde/internal/fsutil"
+	"github.com/waldh4ri/zygarde/internal/pkgdb"
 	"github.com/waldh4ri/zygarde/internal/rpmdb"
 )
 
 // dpkgInfoDir holds one <package>.md5sums file per installed Debian package.
-const dpkgInfoDir = "/var/lib/dpkg/info"
+const dpkgInfoDir = pkgdb.DpkgInfoDir
 
 // systemLibDirs are where distribution packages install shared libraries.
 var systemLibDirs = []string{"/lib", "/lib32", "/lib64", "/usr/lib", "/usr/lib32", "/usr/lib64"}
@@ -154,19 +155,6 @@ func (c *Cell) mappedSystemLibs(ctx context.Context) (map[string][]string, error
 // pkgDigest is a checksum a package database declares for a file.
 type pkgDigest struct{ algo, hex, pkg string }
 
-// rpmDBPaths are where rpm keeps its SQLite database ("/var/lib/rpm" is
-// usually a symlink to the first).
-var rpmDBPaths = []string{"/usr/lib/sysimage/rpm/rpmdb.sqlite", "/var/lib/rpm/rpmdb.sqlite"}
-
-// pathVariants returns the names a packaged file can be recorded under: the
-// path as mapped and with the usr-merge prefix added or removed.
-func pathVariants(p string) []string {
-	if strings.HasPrefix(p, "/usr/") {
-		return []string{p, strings.TrimPrefix(p, "/usr")}
-	}
-	return []string{p, "/usr" + p}
-}
-
 // declaredDigests returns the checksums installed packages declare for the
 // wanted paths, and which database they came from ("dpkg" or "rpm"). It
 // records a limit and returns nil when the system's package database cannot be read.
@@ -183,9 +171,9 @@ func (c *Cell) declaredDigests(rec *core.Recorder, wanted map[string]bool) (dige
 				out[p] = append(out[p], pkgDigest{"md5", sum, pkg})
 			}
 		}
-		return out, dpkgOwners(infoDir, wanted), "dpkg"
+		return out, pkgdb.DpkgOwners(infoDir, wanted), "dpkg"
 	}
-	for _, dbPath := range rpmDBPaths {
+	for _, dbPath := range pkgdb.RPMDBPaths {
 		real := c.path(dbPath)
 		if _, err := os.Stat(real); err != nil {
 			continue
@@ -193,7 +181,7 @@ func (c *Cell) declaredDigests(rec *core.Recorder, wanted map[string]bool) (dige
 		byVariant := map[string]string{}
 		variants := map[string]bool{}
 		for p := range wanted {
-			for _, v := range pathVariants(p) {
+			for _, v := range pkgdb.PathVariants(p) {
 				byVariant[v] = p
 				variants[v] = true
 			}
@@ -217,36 +205,6 @@ func (c *Cell) declaredDigests(rec *core.Recorder, wanted map[string]bool) (dige
 	}
 	rec.Limit("Mapped system libraries were not verified against package checksums: no dpkg or SQLite rpm database found (Berkeley DB rpm databases are not supported)")
 	return nil, nil, ""
-}
-
-// dpkgOwners returns, for each wanted library path, a package whose file list
-// (<infoDir>/*.list) contains it. Unlike the md5sums files, the lists cover
-// every file a package installs, so a path missing from all of them is unowned.
-func dpkgOwners(infoDir string, wanted map[string]bool) map[string]string {
-	byVariant := map[string]string{}
-	for p := range wanted {
-		for _, v := range pathVariants(p) {
-			byVariant[v] = p
-		}
-	}
-	owners := map[string]string{}
-	files, _ := filepath.Glob(filepath.Join(infoDir, "*.list"))
-	for _, f := range files {
-		fh, err := fsutil.Open(f)
-		if err != nil {
-			continue
-		}
-		pkg := strings.TrimSuffix(filepath.Base(f), ".list")
-		sc := bufio.NewScanner(fh)
-		sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
-		for sc.Scan() {
-			if p, ok := byVariant[sc.Text()]; ok {
-				owners[p] = pkg
-			}
-		}
-		fh.Close()
-	}
-	return owners
 }
 
 func dirExists(p string) bool {
@@ -276,16 +234,21 @@ func fileDigest(path, algo string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// pamGlobs match the directories PAM loads its modules from. A module is only
-// mapped while a login, sudo or sshd session is being authenticated, so the
-// directories are listed as well as the running processes' maps.
-var pamGlobs = []string{"/lib/security/*.so*", "/lib*/security/*.so*", "/lib/*/security/*.so*", "/usr/lib*/security/*.so*", "/usr/lib/*/security/*.so*"}
+// moduleGlobs match the modules PAM and NSS load on demand: PAM modules while a
+// login, sudo or sshd session is being authenticated, NSS modules
+// (libnss_<service>.so.2, named by /etc/nsswitch.conf) when a program looks up
+// a user, group or host. Either may be mapped by no process at scan time, so
+// the files are listed as well as the running processes' maps.
+var moduleGlobs = []string{
+	"/lib/security/*.so*", "/lib*/security/*.so*", "/lib/*/security/*.so*", "/usr/lib*/security/*.so*", "/usr/lib/*/security/*.so*",
+	"/lib*/libnss_*.so*", "/lib/*/libnss_*.so*", "/usr/lib*/libnss_*.so*", "/usr/lib/*/libnss_*.so*",
+}
 
-// addPAMModules adds the regular files of the PAM module directories to mapped
-// (with no process), so they are checked like mapped libraries.
-func (c *Cell) addPAMModules(mapped map[string][]string) {
+// addModuleFiles adds the regular files of the PAM module directories and the
+// NSS modules to mapped (with no process), so they are checked like mapped libraries.
+func (c *Cell) addModuleFiles(mapped map[string][]string) {
 	prefix := strings.TrimSuffix(c.root, "/")
-	for _, g := range pamGlobs {
+	for _, g := range moduleGlobs {
 		matches, _ := filepath.Glob(c.path(g))
 		for _, m := range matches {
 			if st, err := os.Lstat(m); err != nil || !st.Mode().IsRegular() {
@@ -318,7 +281,7 @@ func (c *Cell) reportUnowned(rec *core.Recorder, p, source string, pids []string
 	rec.Suspicious(core.Finding{
 		Description: fmt.Sprintf("Library %s in a system directory belongs to no installed package", p),
 		Details:     d,
-		Why: "This library sits among the distribution's own libraries (mapped by a process or in a PAM module directory), but no " +
+		Why: "This library sits among the distribution's own libraries (mapped by a process, a PAM module or an NSS module), but no " +
 			"package's file list contains it. Implants add a module such as a PAM module or NSS library next to the " +
 			"legitimate ones (pam_unix.so lookalikes that accept a backdoor password or log credentials), where it " +
 			"passes for part of the system and is loaded by sshd, login or sudo.",
@@ -339,7 +302,7 @@ func (c *Cell) checkPackagedLibraries(ctx context.Context, rec *core.Recorder) (
 	if err != nil {
 		return 0, err
 	}
-	c.addPAMModules(mapped)
+	c.addModuleFiles(mapped)
 	if len(mapped) == 0 {
 		return 0, nil
 	}

@@ -5,6 +5,11 @@
 # canary is missed. SUSPICIOUS is expected for the Cells listed with findings.
 
 userspace_hooks|finding|/etc/ld.so.preload preloads
+userspace_hooks|finding|libnss_zygfx.so.2 in a system directory belongs to no installed package
+userspace_hooks|finding|runs an ELF image loaded into anonymous memory
+usermode_helpers|finding|runs /tmp/zyg-fixture-modprobe as root through modprobe
+hidden_process|observation|is traced (ptrace) by process
+hidden_ebpf_program|observation|(zyg_fx_skmsg) is attached to sk_msg verdict on sockmap
 hidden_file|finding|/usr/bin/.local
 hidden_kernel_module|finding|/etc/intel_audio/intel_audio.ko
 hidden_kernel_module|finding|whenever zyg_fixture_mod is loaded

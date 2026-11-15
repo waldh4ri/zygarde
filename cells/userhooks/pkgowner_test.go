@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/waldh4ri/zygarde/internal/pkgdb"
 )
 
 func TestDpkgOwners(t *testing.T) {
@@ -17,7 +19,7 @@ func TestDpkgOwners(t *testing.T) {
 		"/usr/lib/x86_64-linux-gnu/libfoo.so.1":          true,
 		"/usr/lib/x86_64-linux-gnu/security/pam_evil.so": true,
 	}
-	got := dpkgOwners(info, wanted)
+	got := pkgdb.DpkgOwners(info, wanted)
 	if got["/usr/lib/x86_64-linux-gnu/security/pam_unix.so"] == "" || got["/usr/lib/x86_64-linux-gnu/libfoo.so.1"] == "" {
 		t.Errorf("owned libraries not found: %v", got)
 	}
@@ -26,22 +28,30 @@ func TestDpkgOwners(t *testing.T) {
 	}
 }
 
-func TestAddPAMModules(t *testing.T) {
+func TestAddModuleFiles(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, "usr/lib/x86_64-linux-gnu/security")
+	lib := filepath.Join(root, "usr/lib/x86_64-linux-gnu")
+	dir := filepath.Join(lib, "security")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "pam_evil.so"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
+	for _, f := range []string{filepath.Join(dir, "pam_evil.so"), filepath.Join(lib, "libnss_evil.so.2"), filepath.Join(lib, "libother.so.1")} {
+		if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := os.Symlink("pam_evil.so", filepath.Join(dir, "pam_link.so")); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Symlink("libnss_evil.so.2", filepath.Join(lib, "libnss_evil.so")); err != nil {
+		t.Fatal(err)
+	}
 	c := &Cell{root: root}
 	m := map[string][]string{}
-	c.addPAMModules(m)
-	if _, ok := m["/usr/lib/x86_64-linux-gnu/security/pam_evil.so"]; !ok || len(m) != 1 {
-		t.Errorf("addPAMModules = %v", m)
+	c.addModuleFiles(m)
+	_, pam := m["/usr/lib/x86_64-linux-gnu/security/pam_evil.so"]
+	_, nss := m["/usr/lib/x86_64-linux-gnu/libnss_evil.so.2"]
+	if !pam || !nss || len(m) != 2 {
+		t.Errorf("addModuleFiles = %v", m)
 	}
 }

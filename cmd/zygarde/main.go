@@ -26,6 +26,7 @@ import (
 	"github.com/waldh4ri/zygarde/cells/socket"
 	"github.com/waldh4ri/zygarde/cells/syscalltable"
 	"github.com/waldh4ri/zygarde/cells/taint"
+	"github.com/waldh4ri/zygarde/cells/umhelper"
 	"github.com/waldh4ri/zygarde/cells/userhooks"
 	"github.com/waldh4ri/zygarde/internal/canary"
 	"github.com/waldh4ri/zygarde/internal/core"
@@ -80,6 +81,7 @@ func allCells(o options) []core.Cell {
 		inlinehook.New(),
 		kptr.New(),
 		kmodule.New(),
+		umhelper.New(),
 		taint.New(),
 		process.New(),
 		file.New(),

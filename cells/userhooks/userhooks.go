@@ -56,11 +56,21 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 		return err
 	}
 	suspicious += m
+	h, err := c.checkHiddenMappings(ctx, env, rec)
+	if err != nil {
+		return err
+	}
+	suspicious += h
 	p, err := c.checkPackagedLibraries(ctx, rec)
 	if err != nil {
 		return err
 	}
 	suspicious += p
+	s, err := c.checkSetuidSearchPaths(ctx, rec)
+	if err != nil {
+		return err
+	}
+	suspicious += s
 
 	if suspicious > 0 {
 		rec.Message("%d dynamic linker or memory injection point(s)", suspicious)

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 	"unsafe"
@@ -50,6 +51,53 @@ func checkRegular(fd int, path string) (*os.File, error) {
 		return nil, &os.PathError{Op: "open", Path: path, Err: ErrNotRegular}
 	}
 	return os.NewFile(uintptr(fd), path), nil
+}
+
+// ControlledBy says how a user other than root can create or replace path
+// (prefixed by root, which tests use for a fixture tree), or returns "": path
+// or one of its parents is owned by another user, or writable by everyone or
+// by a group other than root. A missing path counts through its closest
+// existing parent. Symlinks along the way are followed, as exec and the
+// dynamic linker do.
+func ControlledBy(root, path string) string {
+	// Walk the directories the path really goes through: with /bin a symlink
+	// to usr/bin, /bin/x depends on /usr, which /bin's own parent (/) hides.
+	if r, err := filepath.EvalSymlinks(filepath.Join(root, path)); err == nil {
+		if root == "" {
+			path = r
+		} else if rel, err := filepath.Rel(root, r); err == nil && !strings.HasPrefix(rel, "..") {
+			path = "/" + filepath.ToSlash(rel)
+		}
+	}
+	missing := false
+	for p := filepath.Clean(path); ; p = filepath.Dir(p) {
+		var st unix.Stat_t
+		if err := unix.Stat(filepath.Join(root, p), &st); err != nil {
+			missing = true
+		} else {
+			who := ""
+			switch {
+			case st.Uid != 0:
+				who = "owned by uid " + strconv.Itoa(int(st.Uid))
+			case st.Mode&0o002 != 0:
+				who = "writable by everyone"
+			case st.Mode&0o020 != 0 && st.Gid != 0:
+				who = "writable by group " + strconv.Itoa(int(st.Gid))
+			}
+			if who != "" {
+				switch {
+				case missing:
+					return "it does not exist and " + p + ", which can create it, is " + who
+				case p == filepath.Clean(path):
+					return "it is " + who
+				}
+				return "its parent " + p + " is " + who
+			}
+		}
+		if p == "/" || p == "." {
+			return ""
+		}
+	}
 }
 
 // maxLinks bounds how many trusted symlinks OpenSystem follows.

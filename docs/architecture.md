@@ -102,6 +102,7 @@ Supporting packages:
 | `internal/kernel` | `/proc/kallsyms` (and the kernel image range), lockdown, tracefs, `/proc/self/status` |
 | `internal/netlink` | minimal netlink dumps: `sock_diag`, links, qdiscs, tc filters |
 | `internal/rpmdb` | read-only SQLite reader for the rpm database, including its write-ahead log |
+| `internal/pkgdb` | which installed package owns a file (dpkg file lists, or the rpm database through `rpmdb`) |
 | `internal/fsutil` | safe opens of user-controlled paths, `openat2` inside a process's root, artifact preservation |
 | `internal/report` | host facts, scanner footprint, verdict |
 

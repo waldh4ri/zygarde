@@ -95,6 +95,7 @@ func (c *Cell) checkProcessMaps(ctx context.Context, rec *core.Recorder) (int, e
 	}
 	holders := map[mappedLib][]string{}
 	trusted := map[mappedLib][]string{} // mapped by a verified JVM from files it extracted itself
+	suspicious := 0
 
 	for _, e := range entries {
 		if ctx.Err() != nil {
@@ -123,6 +124,8 @@ func (c *Cell) checkProcessMaps(ctx context.Context, rec *core.Recorder) (int, e
 		}
 		var lines []string
 		var cands []candidate
+		var anonStarts []anonExec
+		var prev mapLine
 		sc := bufio.NewScanner(f)
 		for sc.Scan() {
 			line := sc.Text()
@@ -131,8 +134,21 @@ func (c *Cell) checkProcessMaps(ctx context.Context, rec *core.Recorder) (int, e
 				rng, _, _ := strings.Cut(line, " ")
 				cands = append(cands, candidate{mappedLib{libPath, reason}, filepath.Join(c.proc, pid, "map_files", rng)})
 			}
+			cur, ok := parseMapLine(line)
+			if ok && cur.anon && strings.Contains(cur.perms, "x") {
+				// A loaded ELF image starts with its header, in the executable
+				// segment or in the read-only one right before it.
+				anonStarts = append(anonStarts, anonExec{cur, cur.start})
+				if prev.anon && prev.end == cur.start {
+					anonStarts = append(anonStarts, anonExec{cur, prev.start})
+				}
+			}
+			prev = cur
 		}
 		f.Close()
+		if len(anonStarts) > 0 {
+			suspicious += c.checkAnonELF(rec, pid, exe, anonStarts)
+		}
 
 		uid, gid := c.procOwner(pid)
 		var jvmInfo jvm
@@ -169,7 +185,6 @@ func (c *Cell) checkProcessMaps(ctx context.Context, rec *core.Recorder) (int, e
 		})
 	}
 
-	suspicious := 0
 	for _, k := range keys {
 		pids := holders[k]
 		sort.Slice(pids, func(i, j int) bool { a, _ := strconv.Atoi(pids[i]); b, _ := strconv.Atoi(pids[j]); return a < b })
@@ -231,6 +246,88 @@ func classifyExecMapLine(c *Cell, line, mainExe, procRoot string) (string, strin
 		return mapped, "mapped from " + why
 	}
 	return "", ""
+}
+
+// mapLine is one parsed /proc/<pid>/maps line.
+type mapLine struct {
+	start, end uint64
+	perms      string
+	name       string
+	anon       bool // no file: anonymous memory (or named with PR_SET_VMA_ANON_NAME)
+}
+
+// parseMapLine parses "start-end perms offset dev inode [name]".
+func parseMapLine(line string) (mapLine, bool) {
+	fields := strings.Fields(line)
+	if len(fields) < 5 {
+		return mapLine{}, false
+	}
+	lo, hi, ok := strings.Cut(fields[0], "-")
+	if !ok {
+		return mapLine{}, false
+	}
+	start, err1 := strconv.ParseUint(lo, 16, 64)
+	end, err2 := strconv.ParseUint(hi, 16, 64)
+	if err1 != nil || err2 != nil {
+		return mapLine{}, false
+	}
+	m := mapLine{start: start, end: end, perms: fields[1]}
+	if len(fields) > 5 {
+		m.name = strings.Join(fields[5:], " ")
+	}
+	// [heap], [stack], [vdso] (an ELF image the kernel provides), [vvar] and
+	// [vsyscall] are the kernel's own; only unnamed or user-named anonymous
+	// memory counts.
+	m.anon = fields[4] == "0" && (m.name == "" || strings.HasPrefix(m.name, "[anon:"))
+	return m, true
+}
+
+// anonExec is an address to check for an ELF header, for an anonymous
+// executable mapping.
+type anonExec struct {
+	m    mapLine
+	addr uint64
+}
+
+var elfMagic = []byte{0x7f, 'E', 'L', 'F'}
+
+// checkAnonELF reads the first bytes of anonymous executable mappings (and of
+// the anonymous mapping just before each) and reports ELF images found there.
+func (c *Cell) checkAnonELF(rec *core.Recorder, pid, exe string, cands []anonExec) int {
+	mem, err := os.Open(filepath.Join(c.proc, pid, "mem"))
+	if err != nil {
+		rec.Log().Debug("process memory not readable", "pid", pid, "err", err)
+		return 0
+	}
+	defer mem.Close()
+	head := make([]byte, len(elfMagic))
+	for _, cd := range cands {
+		if n, err := mem.ReadAt(head, int64(cd.addr)); err != nil || n != len(head) || !bytes.Equal(head, elfMagic) {
+			continue
+		}
+		comm, _ := fsutil.ReadFileNoAtime(filepath.Join(c.proc, pid, "comm"))
+		cmdline, _ := fsutil.ReadFileNoAtime(filepath.Join(c.proc, pid, "cmdline"))
+		d := map[string]string{
+			"pid":            pid,
+			"comm":           strings.TrimSpace(string(comm)),
+			"exe":            exe,
+			"cmdline":        strings.TrimSpace(strings.ReplaceAll(string(cmdline), "\x00", " ")),
+			"elf_header_at":  fmt.Sprintf("%#x", cd.addr),
+			"executable_map": fmt.Sprintf("%x-%x %s %s", cd.m.start, cd.m.end, cd.m.perms, cd.m.name),
+		}
+		rec.Suspicious(core.Finding{
+			Description: fmt.Sprintf("Process %s (%s) runs an ELF image loaded into anonymous memory at %#x", pid, d["comm"], cd.addr),
+			Details:     d,
+			Why: "Programs and libraries are mapped from files, so their ELF header sits in a file-backed mapping. An ELF " +
+				"header at the start of anonymous executable memory means a program was copied into memory and run " +
+				"from there by hand (reflective or \"userland exec\" loading), which leaves no file behind: a way " +
+				"fileless implants run. The kernel's own ELF image ([vdso]) and JIT-compiled code never look like this.",
+			Benign: "Programs packed with UPX unpack themselves into anonymous memory. Check the executable (exe above) " +
+				"and its package.",
+		})
+		return 1 // one finding per process
+	}
+	return 0
 }
 
 // procOwner returns the user and group owning /proc/<pid>, the process's effective ones.

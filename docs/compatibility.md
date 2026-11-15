@@ -16,13 +16,14 @@
 | `inline_hook` | x86_64; Linux 5.2+ (read-only data maps); BTF |
 | `kernel_pointers` | BTF; `iter/task_file`, Linux 5.8+ |
 | `hidden_kernel_module` | none |
+| `usermode_helpers` | none for the `/proc/sys` and `/sys` view; the kernel-memory comparison needs `CONFIG_KALLSYMS_ALL`, readable `/proc/kallsyms` and not lockdown `confidentiality`; the programs are examined only when zygarde shares init's root directory (not from a container) |
 | `kernel_taint` | none |
 | `hidden_process` | BTF; `iter/task`, Linux 5.8+ (`init_task.tasks` walk needs 6.7+, else skipped as a limitation; the mount-tree walk needs global BPF functions, 5.5+, and is a limitation if the verifier rejects it) |
 | `hidden_file` | BTF; Linux 5.8+ |
 | `hidden_ebpf_program` | BTF; `iter/bpf_prog`, Linux 5.9+ |
 | `hidden_socket` | none for the `/proc/net` and `sock_diag` views; BTF and Linux 5.8+ for the iterators and ownership check |
 | `netfilter_hooks` | BTF; Linux 5.8+; netfilter. The canary BPF netfilter link needs 6.4+ |
-| `userspace_hooks` | none |
+| `userspace_hooks` | none; the comparison with the kernel's executable mappings needs BTF and `iter/task_vma`, Linux 5.12+ (RHEL 8's 4.18 has it). Package checks need dpkg or a SQLite rpm database |
 | `orphan_namespace` | BTF; `iter/task` and `iter/task_file`, Linux 5.8+. Entering a network namespace held only by a socket needs `pidfd_getfd` (5.6+), otherwise its contents are not listed |
 
 Kernel facts behind these, verified from source and the VM matrix:
@@ -40,7 +41,7 @@ Kernel facts behind these, verified from source and the VM matrix:
 | Mode | Effect |
 |------|--------|
 | `none`, `integrity` (the usual Secure Boot default) | no effect |
-| `confidentiality` | BPF may not read kernel memory. Skipped: `altered_syscall_table`, `inline_hook`, `kernel_pointers`, `netfilter_hooks`, `hidden_process`, `hidden_file` (all read kernel memory), and `hook_inventory` (tracefs locked). `hidden_ebpf_program` is skipped too: it only reads user memory, which lockdown allows, but cilium/ebpf detects helper support by probing `bpf_probe_read_kernel()`, is denied, and downgrades `bpf_probe_read_user()` to the legacy `bpf_probe_read()`, which lockdown forbids. `hidden_socket` runs without its ownership check. `ebpf_integrity`, `hidden_kernel_module`, `kernel_taint` and `userspace_hooks` still run |
+| `confidentiality` | BPF may not read kernel memory. Skipped: `altered_syscall_table`, `inline_hook`, `kernel_pointers`, `netfilter_hooks`, `hidden_process`, `hidden_file` (all read kernel memory), and `hook_inventory` (tracefs locked). `hidden_ebpf_program` is skipped too: it only reads user memory, which lockdown allows, but cilium/ebpf detects helper support by probing `bpf_probe_read_kernel()`, is denied, and downgrades `bpf_probe_read_user()` to the legacy `bpf_probe_read()`, which lockdown forbids. `hidden_socket` runs without its ownership check. `ebpf_integrity`, `hidden_kernel_module`, `kernel_taint` and `userspace_hooks` still run; `usermode_helpers` and `userspace_hooks` run without their kernel-memory comparison |
 
 The report header shows the lockdown mode; Coverage lists what it excluded.
 
