@@ -176,9 +176,9 @@ func RemoveFiles(dir string, pid int) {
 }
 
 // RemoveStale deletes canary files in dir (and /dev/shm) left behind by dead
-// processes older than ten minutes. Only root-owned regular files are removed.
+// processes older than a minute. Only root-owned regular files are removed.
 func RemoveStale(dir string) {
-	old := time.Now().Add(-10 * time.Minute).Unix()
+	old := time.Now().Add(-time.Minute).Unix()
 	for _, d := range []string{dir, "/dev/shm"} {
 		if d == "" {
 			continue
