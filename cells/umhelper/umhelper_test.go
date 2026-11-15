@@ -105,3 +105,46 @@ func TestRun(t *testing.T) {
 		t.Errorf("got %d findings, want 2:\n%s", len(got), all)
 	}
 }
+
+// When /bin/sh can be replaced by anyone, so can every system program: a
+// helper in the same directories is not singled out.
+func TestOwnershipBaseline(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("the ownership checks need a fixture owned by root")
+	}
+	root := t.TempDir()
+	for p, content := range map[string]string{
+		"/proc/sys/kernel/modprobe":       "/usr/sbin/modprobe\n",
+		"/usr/sbin/modprobe":              "x",
+		"/usr/bin/sh":                     "x",
+		"/var/lib/dpkg/info/kmod.list":    "/usr/sbin/modprobe\n",
+		"/proc/self/mountinfo":            "",
+		"/proc/sys/kernel/core_pattern":   "core\n",
+		"/proc/sys/kernel/poweroff_cmd":   "\n",
+		"/sys/kernel/uevent_helper":       "\n",
+		"/var/lib/dpkg/info/dash.list":    "/usr/bin/sh\n",
+		"/var/lib/dpkg/info/other.md5sum": "",
+	} {
+		full := filepath.Join(root, p)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink("usr/bin", filepath.Join(root, "bin")); err != nil {
+		t.Fatal(err)
+	}
+	os.Chmod(filepath.Join(root, "usr"), 0o777)
+
+	c := &Cell{root: root, mountinfo: "/proc/self/mountinfo"}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	rec := core.NewRecorder(log)
+	if err := c.Run(context.Background(), &core.Env{Log: log}, rec); err != nil {
+		t.Fatal(err)
+	}
+	if f := rec.Findings(); len(f) != 0 {
+		t.Errorf("helper singled out although /bin/sh is just as replaceable: %v", f[0].Description)
+	}
+}

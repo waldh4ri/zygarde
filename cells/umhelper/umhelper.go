@@ -361,6 +361,13 @@ func nixRun(p string) bool {
 func (c *Cell) examiner(rec *core.Recorder) func(prog, source, trigger string, extra map[string]string) int {
 	sameRoot := c.root != "" || fsutil.SameAsHostRoot("/proc/1/root")
 	limited := false
+	// When the base system itself (/bin/sh) can be replaced by a user other than
+	// root, one helper being replaceable the same way says nothing about it.
+	baseline := ""
+	if sameRoot {
+		baseline = fsutil.ControlledBy(c.root, "/bin/sh")
+	}
+	baselineNoted := false
 	var owners map[string]string
 	var ownerSource string
 	ownersRead := false
@@ -411,7 +418,12 @@ func (c *Cell) examiner(rec *core.Recorder) func(prog, source, trigger string, e
 			d["reason"] = "hidden from its directory listing"
 			return suspicious("it is hidden from its directory listing", "None expected.")
 		}
-		if why := fsutil.ControlledBy(c.root, prog); why != "" {
+		if why := fsutil.ControlledBy(c.root, prog); why != "" && baseline != "" {
+			if !baselineNoted {
+				rec.Limit("Ownership of usermode helper programs not judged: /bin/sh can be replaced by a user other than root too (%s)", baseline)
+				baselineNoted = true
+			}
+		} else if why != "" {
 			d["reason"] = why
 			return suspicious(why+", so a user other than root can replace it",
 				"A program installed with loose permissions. Check who owns it and its directories.")

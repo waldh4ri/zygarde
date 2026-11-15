@@ -100,7 +100,7 @@ The kernel itself starts some programs as root, outside any session: `modprobe` 
   - procfs or sysfs shows another value than kernel memory, in two reads of both (the read is filtered to hide the real helper);
   - a helper program lives in a temporary, memory-backed (`/dev/shm`, `/run`) or hidden directory;
   - the program is hidden from its directory listing;
-  - the program or one of its directories is owned by a user other than root, or writable by everyone or a non-root group;
+  - the program or one of its directories is owned by a user other than root, or writable by everyone or a non-root group (unless `/bin/sh` can be replaced the same way: then the whole system can, which is recorded as a limitation);
   - the program is in a system directory (`/usr`, `/bin`, `/sbin`, `/lib*`, not `/usr/local`) but belongs to no installed package (dpkg file lists or the SQLite rpm database; symlinks are resolved first, so a packaged `/sbin/modprobe` link pointing at a new file is caught).
 - **Observations**: every helper and the program it runs (vendor crash handlers in `/opt` are listed, not flagged), and helpers naming a missing file.
 - **Canary**: `linux_banner`, read with the helpers, must start with `Linux version `.
