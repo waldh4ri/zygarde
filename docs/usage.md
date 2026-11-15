@@ -8,7 +8,7 @@ zygarde [flags]
 
 | Flag | Meaning |
 |------|---------|
-| `-o`, `--output <file>` | Save the JSON report to a file. Checked writable before the scan starts; written atomically with mode 0600 |
+| `-o`, `--output <file>` | Save the JSON report to a new file. Refused if the path already exists (a file, symlink, device or pipe: nothing is ever overwritten), checked writable before the scan starts, written atomically with mode 0600 |
 | `--preserve-dir <dir>` | Save copies of volatile suspicious binaries (deleted or memfd-backed) into `<dir>` (directory mode 0700, files 0600) |
 | `--json` | Print the full JSON report on stdout instead of the text report |
 | `-v` | Verbose: show what each check does, its observations (for example legitimate hooks) and canaries |
