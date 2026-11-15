@@ -15,14 +15,18 @@ GOVULN   := GOTOOLCHAIN=auto $(GO) run golang.org/x/vuln/cmd/govulncheck@v1.9.0
 
 # Stamp binaries with the git revision when it is known (empty otherwise, in
 # which case the default in cmd/zygarde/main.go applies).
-VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null)
+# Without a POSIX sh (plain make on Windows) $(shell) goes through cmd.exe, which
+# has no /dev/null; a resolved sh shows up as a path with a slash in $(SHELL).
+NULLDEV  := $(if $(findstring /,$(SHELL)),/dev/null,nul)
+VERSION  ?= $(shell git describe --tags --always --dirty 2>$(NULLDEV))
 LDFLAGS  := -s -w $(if $(VERSION),-X main.version=$(VERSION))
 IMAGE    := zygarde-build
 DOCKER   := docker run --rm -e VERSION="$(VERSION)" -v "$(CURDIR):/src" -v zygarde-gomod:/go/pkg/mod -w /src $(IMAGE)
 
-.PHONY: all help generate build dist test vet fmt clean \
+.PHONY: all help generate build dist test test-root vet fmt clean \
         check fmt-check tidy-check vet-all test-race lint vuln \
-        docker-check docker-image docker-generate docker-build docker-dist docker-test docker-run
+        docker-check docker-image docker-generate docker-build docker-dist docker-test \
+        docker-test-user docker-test-root docker-run
 
 all: build
 
@@ -31,6 +35,7 @@ help:
 	@echo "make build           build ./zygarde for the host architecture"
 	@echo "make dist            build static binaries for $(ARCHES) into dist/"
 	@echo "make test            run unit tests"
+	@echo "make test-root       run unit tests as root via sudo (runs the root-only tests)"
 	@echo "make vet             run go vet"
 	@echo "make check           run every static check and the race tests (see below)"
 	@echo "make docker-check    the same, inside the toolchain image"
@@ -55,6 +60,12 @@ dist:
 
 test:
 	$(GO) test ./...
+
+# Root-only tests (see internal/fsutil) skip silently as a normal user. The test
+# binaries are built as you and only executed under sudo, so the Go caches stay
+# yours. Needs passwordless sudo.
+test-root:
+	$(GO) test -count=1 -exec "sudo -E" ./...
 
 vet:
 	$(GO) vet ./...
@@ -105,11 +116,25 @@ docker-dist: docker-image
 docker-build: docker-image
 	$(DOCKER) make build
 
+# Tests run twice, as root and as an unprivileged user: some tests skip unless
+# root, and the user run is what CI's `make check` sees. Root goes first: the
+# module cache volume belongs to root, so it fills it and the user run only
+# reads it. -modcacherw keeps anything the user run adds removable.
+DOCKER_USER := docker run --rm --user 1000:1000 -e HOME=/tmp -e GOCACHE=/tmp/gocache -e GOFLAGS=-modcacherw \
+               -v "$(CURDIR):/src" -v zygarde-gomod:/go/pkg/mod -w /src $(IMAGE)
+
+# check as root, then the race tests again as the unprivileged user CI runs them as.
 docker-check: docker-image
 	$(DOCKER) make check
+	$(DOCKER_USER) make test-race
 
-docker-test: docker-image
-	$(DOCKER) sh -c '$(GO) vet ./... && $(GO) test ./...'
+docker-test: docker-test-root docker-test-user
+
+docker-test-user: docker-image
+	$(DOCKER_USER) sh -c '$(GO) vet ./... && $(GO) test -count=1 ./...'
+
+docker-test-root: docker-image
+	$(DOCKER) $(GO) test -count=1 ./...
 
 # The container shares the Docker host's kernel (on Docker Desktop, its VM).
 docker-run: docker-build

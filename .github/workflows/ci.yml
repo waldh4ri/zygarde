@@ -27,6 +27,8 @@ jobs:
       # fmt, go mod tidy, vet on amd64 and arm64, golangci-lint, govulncheck and
       # go test -race; the same `make check` runs locally.
       - run: make check
+      # check ran as the runner user; this runs the tests that skip unless root.
+      - run: make test-root
       - run: make dist
       - name: Smoke test on the runner's kernel
         # Exit 1 means a Cell failed to run; 0 and 2 are valid outcomes.
