@@ -47,8 +47,11 @@ func (c *Cell) checkSetuidSearchPaths(ctx context.Context, rec *core.Recorder) (
 	}
 	n := 0
 	for _, b := range bins {
+		// Whoever can replace the program itself gains nothing from its search
+		// path: only report directories that give more control than the program.
+		programControlled := fsutil.ControlledBy(c.root, b.path) != ""
 		for _, entry := range filepath.SplitList(b.value) {
-			why := c.searchDirRisk(filepath.Dir(b.path), entry)
+			why := c.searchDirRisk(filepath.Dir(b.path), entry, programControlled)
 			if why == "" {
 				continue
 			}
@@ -172,8 +175,11 @@ func readSearchPaths(p string) []privBinary {
 }
 
 // searchDirRisk says why an RPATH/RUNPATH entry of a privileged program in
-// binDir can be controlled by an unprivileged user, or returns "".
-func (c *Cell) searchDirRisk(binDir, entry string) string {
+// binDir can be controlled by an unprivileged user, or returns "". When the
+// program itself can be replaced by such a user (programControlled), a
+// directory they can write adds nothing and is not reported; entries that
+// resolve from the current directory or an unusual place still are.
+func (c *Cell) searchDirRisk(binDir, entry string, programControlled bool) string {
 	switch {
 	case entry == "":
 		return "an empty entry, which means the current directory of whoever runs it"
@@ -189,6 +195,9 @@ func (c *Cell) searchDirRisk(binDir, entry string) string {
 	}
 	if why := c.unusualDir(entry, ""); why != "" {
 		return "it is " + why
+	}
+	if programControlled {
+		return ""
 	}
 	return fsutil.ControlledBy(c.root, filepath.Clean(entry))
 }

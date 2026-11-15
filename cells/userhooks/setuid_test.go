@@ -43,9 +43,28 @@ func TestSearchDirRisk(t *testing.T) {
 		if tc.asRoot && os.Getuid() != 0 {
 			continue
 		}
-		got := c.searchDirRisk("/usr/bin", tc.entry)
+		got := c.searchDirRisk("/usr/bin", tc.entry, false)
 		if (tc.want == "") != (got == "") || !strings.Contains(got, tc.want) {
 			t.Errorf("searchDirRisk(%q) = %q, want %q", tc.entry, got, tc.want)
+		}
+	}
+}
+
+// A program that a user can replace gains nothing from a search directory the
+// same user controls; locations that are unsafe for anyone still count.
+func TestSearchDirRiskControlledProgram(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "srv/open"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.Chmod(filepath.Join(root, "srv/open"), 0o777)
+	c := &Cell{root: root}
+	if got := c.searchDirRisk("/usr/bin", "/srv/open/missing", true); got != "" {
+		t.Errorf("controlled program: got %q, want nothing", got)
+	}
+	for _, e := range []string{"", "lib", "/tmp/x"} {
+		if c.searchDirRisk("/usr/bin", e, true) == "" {
+			t.Errorf("entry %q not reported for a controlled program", e)
 		}
 	}
 }
