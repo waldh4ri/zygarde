@@ -26,7 +26,7 @@ type attachment struct {
 	Name       string // bare kernel function or tracepoint, used to recognise sensitive attach points
 	AttachType ebpf.AttachType
 	Link       uint32
-	Net        bool   // XDP, tc, tcx, netkit
+	Net        bool   // XDP, tc, tcx, netkit, sockmap/sockhash verdicts: they see traffic
 	TCName     string // TCA_BPF_NAME for tc filters
 }
 

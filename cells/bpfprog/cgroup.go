@@ -104,6 +104,59 @@ func cgroupAttachments(linkedProgCgroups map[string]bool) []attachment {
 	return out
 }
 
+// sockmapQueryTypes are the programs a sockmap or sockhash runs on the
+// messages and streams of the sockets it holds.
+var sockmapQueryTypes = []ebpf.AttachType{
+	ebpf.AttachSkMsgVerdict,
+	ebpf.AttachSkSKBStreamParser,
+	ebpf.AttachSkSKBStreamVerdict,
+	ebpf.AttachSkSKBVerdict,
+}
+
+// sockmapAttachments lists the programs attached to sockmaps and sockhashes
+// with BPF_PROG_ATTACH (no link, no file descriptor: nothing else shows
+// them). They read, redirect or drop the data of every socket in the map.
+// BPF_PROG_QUERY on a map needs Linux 6.0; older kernels return nothing.
+func sockmapAttachments() []attachment {
+	mapIDs, err := fsutil.WithCommVal("bpftool", bpfutil.EnumerateMapIDs)
+	if err != nil {
+		return nil
+	}
+	var out []attachment
+	for _, mid := range mapIDs {
+		m, err := ebpf.NewMapFromID(ebpf.MapID(mid))
+		if err != nil {
+			continue
+		}
+		info, err := m.Info()
+		if err != nil || (info.Type != ebpf.SockMap && info.Type != ebpf.SockHash) {
+			m.Close()
+			continue
+		}
+		label := fmt.Sprintf("%s #%d", map[bool]string{true: "sockmap", false: "sockhash"}[info.Type == ebpf.SockMap], mid)
+		if info.Name != "" {
+			label += " (" + info.Name + ")"
+		}
+		for _, at := range sockmapQueryTypes {
+			res, err := link.QueryPrograms(link.QueryOptions{Target: m.FD(), Attach: at})
+			if err != nil || res == nil {
+				continue
+			}
+			for _, p := range res.Programs {
+				out = append(out, attachment{
+					ProgID:     uint32(p.ID),
+					Where:      fmt.Sprintf("%s on %s", attachTypeName(at), label),
+					Via:        "BPF_PROG_ATTACH",
+					AttachType: at,
+					Net:        true,
+				})
+			}
+		}
+		m.Close()
+	}
+	return out
+}
+
 // progArrayTargets inspects loaded BPF_MAP_TYPE_PROG_ARRAY maps to attribute
 // tail-call target programs that may have no direct link or FD holder.
 func progArrayTargets() []attachment {
