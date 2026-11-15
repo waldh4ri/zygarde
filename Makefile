@@ -15,7 +15,10 @@ GOVULN   := GOTOOLCHAIN=auto $(GO) run golang.org/x/vuln/cmd/govulncheck@v1.9.0
 
 # Stamp binaries with the git revision when it is known (empty otherwise, in
 # which case the default in cmd/zygarde/main.go applies).
-VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null)
+# Without a POSIX sh (plain make on Windows) $(shell) goes through cmd.exe, which
+# has no /dev/null; a resolved sh shows up as a path with a slash in $(SHELL).
+NULLDEV  := $(if $(findstring /,$(SHELL)),/dev/null,nul)
+VERSION  ?= $(shell git describe --tags --always --dirty 2>$(NULLDEV))
 LDFLAGS  := -s -w $(if $(VERSION),-X main.version=$(VERSION))
 IMAGE    := zygarde-build
 DOCKER   := docker run --rm -e VERSION="$(VERSION)" -v "$(CURDIR):/src" -v zygarde-gomod:/go/pkg/mod -w /src $(IMAGE)
