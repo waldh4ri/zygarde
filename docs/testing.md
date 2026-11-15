@@ -16,8 +16,11 @@ flowchart LR
 ```bash
 make test           # go test ./...   (needs Linux for most packages)
 make vet
-make docker-test    # go vet + go test inside the toolchain image; works on Windows and macOS
+make test-root      # the same, executed under sudo so root-only tests run
+make docker-test    # go vet + go test inside the toolchain image, as an unprivileged user and then as root; works on Windows and macOS
 ```
+
+Some tests skip unless root (for example the trusted-link test in `internal/fsutil`), so a normal `make test` does not cover them. `make test-root` and `make docker-test-root` do, and CI runs both the unprivileged and the root pass.
 
 They cover parsing and decision logic in each Cell package (ftrace and kprobe lists, `/proc/net` and sniffer filters, kernel module and boot persistence, masquerade detection, taint, attach points, instruction decoding), plus `internal/core` (error classification), `internal/supervisor`, `internal/kattr`, `internal/rpmdb`, `internal/fsutil` and report rendering. They do not load eBPF programs.
 

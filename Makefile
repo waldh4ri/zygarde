@@ -23,9 +23,10 @@ LDFLAGS  := -s -w $(if $(VERSION),-X main.version=$(VERSION))
 IMAGE    := zygarde-build
 DOCKER   := docker run --rm -e VERSION="$(VERSION)" -v "$(CURDIR):/src" -v zygarde-gomod:/go/pkg/mod -w /src $(IMAGE)
 
-.PHONY: all help generate build dist test vet fmt clean \
+.PHONY: all help generate build dist test test-root vet fmt clean \
         check fmt-check tidy-check vet-all test-race lint vuln \
-        docker-check docker-image docker-generate docker-build docker-dist docker-test docker-run
+        docker-check docker-image docker-generate docker-build docker-dist docker-test \
+        docker-test-user docker-test-root docker-run
 
 all: build
 
@@ -34,6 +35,7 @@ help:
 	@echo "make build           build ./zygarde for the host architecture"
 	@echo "make dist            build static binaries for $(ARCHES) into dist/"
 	@echo "make test            run unit tests"
+	@echo "make test-root       run unit tests as root via sudo (runs the root-only tests)"
 	@echo "make vet             run go vet"
 	@echo "make check           run every static check and the race tests (see below)"
 	@echo "make docker-check    the same, inside the toolchain image"
@@ -58,6 +60,12 @@ dist:
 
 test:
 	$(GO) test ./...
+
+# Root-only tests (see internal/fsutil) skip silently as a normal user. The test
+# binaries are built as you and only executed under sudo, so the Go caches stay
+# yours. Needs passwordless sudo.
+test-root:
+	$(GO) test -count=1 -exec "sudo -E" ./...
 
 vet:
 	$(GO) vet ./...
@@ -111,8 +119,19 @@ docker-build: docker-image
 docker-check: docker-image
 	$(DOCKER) make check
 
-docker-test: docker-image
-	$(DOCKER) sh -c '$(GO) vet ./... && $(GO) test ./...'
+# Tests run twice, as an unprivileged user and as root: some tests skip unless
+# root, and the user run is what CI sees. -modcacherw keeps the shared module
+# cache removable.
+DOCKER_USER := docker run --rm --user 1000:1000 -e HOME=/tmp -e GOCACHE=/tmp/gocache -e GOFLAGS=-modcacherw \
+               -v "$(CURDIR):/src" -v zygarde-gomod:/go/pkg/mod -w /src $(IMAGE)
+
+docker-test: docker-test-user docker-test-root
+
+docker-test-user: docker-image
+	$(DOCKER_USER) sh -c '$(GO) vet ./... && $(GO) test -count=1 ./...'
+
+docker-test-root: docker-image
+	$(DOCKER) $(GO) test -count=1 ./...
 
 # The container shares the Docker host's kernel (on Docker Desktop, its VM).
 docker-run: docker-build
