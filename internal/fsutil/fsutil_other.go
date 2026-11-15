@@ -7,6 +7,8 @@ import (
 	"os"
 )
 
+func ControlledBy(_, _ string) string { return "" }
+
 func Open(path string) (*os.File, error) {
 	st, err := os.Lstat(path)
 	if err != nil {

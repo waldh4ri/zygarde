@@ -52,6 +52,44 @@ func checkRegular(fd int, path string) (*os.File, error) {
 	return os.NewFile(uintptr(fd), path), nil
 }
 
+// ControlledBy says how a user other than root can create or replace path
+// (prefixed by root, which tests use for a fixture tree), or returns "": path
+// or one of its parents is owned by another user, or writable by everyone or
+// by a group other than root. A missing path counts through its closest
+// existing parent. Symlinks along the way are followed, as exec and the
+// dynamic linker do.
+func ControlledBy(root, path string) string {
+	missing := false
+	for p := filepath.Clean(path); ; p = filepath.Dir(p) {
+		var st unix.Stat_t
+		if err := unix.Stat(filepath.Join(root, p), &st); err != nil {
+			missing = true
+		} else {
+			who := ""
+			switch {
+			case st.Uid != 0:
+				who = "owned by uid " + strconv.Itoa(int(st.Uid))
+			case st.Mode&0o002 != 0:
+				who = "writable by everyone"
+			case st.Mode&0o020 != 0 && st.Gid != 0:
+				who = "writable by group " + strconv.Itoa(int(st.Gid))
+			}
+			if who != "" {
+				switch {
+				case missing:
+					return "it does not exist and " + p + ", which can create it, is " + who
+				case p == filepath.Clean(path):
+					return "it is " + who
+				}
+				return "its parent " + p + " is " + who
+			}
+		}
+		if p == "/" || p == "." {
+			return ""
+		}
+	}
+}
+
 // maxLinks bounds how many trusted symlinks OpenSystem follows.
 const maxLinks = 8
 
