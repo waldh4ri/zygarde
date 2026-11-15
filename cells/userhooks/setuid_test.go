@@ -73,6 +73,9 @@ func TestSearchDirRiskControlledProgram(t *testing.T) {
 
 // /bin -> usr/bin: the program depends on /usr, which only the resolved path shows.
 func TestControlledProgramThroughSymlink(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("the fixture must be owned by root, or its owner is reported first")
+	}
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "usr/bin"), 0o755); err != nil {
 		t.Fatal(err)
