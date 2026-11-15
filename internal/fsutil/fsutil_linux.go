@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 	"unsafe"
@@ -59,6 +60,15 @@ func checkRegular(fd int, path string) (*os.File, error) {
 // existing parent. Symlinks along the way are followed, as exec and the
 // dynamic linker do.
 func ControlledBy(root, path string) string {
+	// Walk the directories the path really goes through: with /bin a symlink
+	// to usr/bin, /bin/x depends on /usr, which /bin's own parent (/) hides.
+	if r, err := filepath.EvalSymlinks(filepath.Join(root, path)); err == nil {
+		if root == "" {
+			path = r
+		} else if rel, err := filepath.Rel(root, r); err == nil && !strings.HasPrefix(rel, "..") {
+			path = "/" + filepath.ToSlash(rel)
+		}
+	}
 	missing := false
 	for p := filepath.Clean(path); ; p = filepath.Dir(p) {
 		var st unix.Stat_t

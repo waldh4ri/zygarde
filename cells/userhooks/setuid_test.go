@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/waldh4ri/zygarde/internal/fsutil"
 )
 
 func TestSearchDirRisk(t *testing.T) {
@@ -66,5 +68,21 @@ func TestSearchDirRiskControlledProgram(t *testing.T) {
 		if c.searchDirRisk("/usr/bin", e, true) == "" {
 			t.Errorf("entry %q not reported for a controlled program", e)
 		}
+	}
+}
+
+// /bin -> usr/bin: the program depends on /usr, which only the resolved path shows.
+func TestControlledProgramThroughSymlink(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "usr/bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(root, "usr/bin/prog"), []byte("x"), 0o755)
+	if err := os.Symlink("usr/bin", filepath.Join(root, "bin")); err != nil {
+		t.Fatal(err)
+	}
+	os.Chmod(filepath.Join(root, "usr"), 0o777)
+	if got := fsutil.ControlledBy(root, "/bin/prog"); !strings.Contains(got, "/usr is writable by everyone") {
+		t.Errorf("ControlledBy(/bin/prog) = %q, want /usr reported", got)
 	}
 }
