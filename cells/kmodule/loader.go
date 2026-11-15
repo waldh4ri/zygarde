@@ -87,8 +87,8 @@ func (c *Cell) readLoaderView() (loaderView, error) {
 // It deliberately reads only /proc/modules and /proc/vmallocinfo. A module's
 // sysfs section files are backed by memory a rootkit can free while leaving
 // the files behind, and reading them oopses the kernel.
-func (c *Cell) checkLoaderAllocations(rec *core.Recorder) int {
-	if !onePerModule(c.release) {
+func (c *Cell) checkLoaderAllocations(rec *core.Recorder, moduleMemory bool) int {
+	if !onePerModule(c.release, moduleMemory) {
 		rec.Limit("Module memory in /proc/vmallocinfo was not compared with /proc/modules: kernel %s gives each module several allocations or carves them from a shared cache", c.release)
 		return 0
 	}
@@ -128,10 +128,26 @@ func (c *Cell) checkLoaderAllocations(rec *core.Recorder) int {
 	return 1
 }
 
-// onePerModule reports whether the kernel release gives every module exactly
-// one module-loader allocation (before Linux 6.4), which the count comparison
-// relies on. Unparseable releases are treated as new.
-func onePerModule(release string) bool {
+// hasModuleMemory reports whether the kernel BTF has struct module_memory,
+// which Linux 6.4 introduced when it split module memory into one allocation
+// per type. Distributions backport it to older releases: RHEL 9.8's 5.14 gives
+// 53 modules 189 allocations. Without BTF only the release can be judged.
+func hasModuleMemory(env *core.Env) bool {
+	if env == nil || env.BTF == nil {
+		return false
+	}
+	_, err := env.BTF.AnyTypeByName("module_memory")
+	return err == nil
+}
+
+// onePerModule reports whether the kernel gives every module exactly one
+// module-loader allocation, which the count comparison relies on: before Linux
+// 6.4 and without a backported module_memory. Unparseable releases are treated
+// as new.
+func onePerModule(release string, moduleMemory bool) bool {
+	if moduleMemory {
+		return false
+	}
 	var major, minor int
 	if n, _ := fmt.Sscanf(release, "%d.%d", &major, &minor); n != 2 {
 		return false
