@@ -13,6 +13,7 @@
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 #define PF_EXITING 0x00000004 /* include/linux/sched.h; same value in 5.4 and current kernels */
+#define PT_PTRACED 0x00000001 /* include/linux/ptrace.h; unchanged since 2.6 */
 
 // Kernels before 5.14 name the field "state" instead of "__state".
 struct task_struct___old {
@@ -31,11 +32,13 @@ struct task_info {
 	__u32 uid;
 	__u32 euid;
 	__u32 gid;
-	__u32 pad;
+	__u32 ptraced;        // 1 when a tracer is attached (PT_PTRACED)
 	__u64 start_boottime; // nanoseconds since boot
 	char comm[16];
 	__u64 start_time;  // the process's start (its leader's start_boottime, ns):
 	                   // tells a reused PID apart; /proc/<pid>/stat shows it in ticks
+	__u32 tracer_pid;  // ptraced: the tracing thread, in zygarde's PID namespace (0: outside it)
+	__u32 tracer_tgid; // ptraced: its process
 };
 
 // Emit task_info into BTF so bpf2go generates a Go type for it.
@@ -490,6 +493,16 @@ int dump_task(struct bpf_iter__task *ctx)
 		info.start_time = BPF_CORE_READ(task, group_leader, start_time);
 	}
 	BPF_CORE_READ_STR_INTO(&info.comm, task, comm);
+	// A traced task's parent is its tracer (real_parent stays the original one).
+	if (BPF_CORE_READ(task, ptrace) & PT_PTRACED) {
+		struct task_struct *tracer = BPF_CORE_READ(task, parent);
+
+		info.ptraced = 1;
+		if (tracer) {
+			info.tracer_pid = pid_nr(BPF_CORE_READ(tracer, thread_pid), level);
+			info.tracer_tgid = pid_nr(BPF_CORE_READ(tracer, group_leader, thread_pid), level);
+		}
+	}
 
 	bpf_seq_write(ctx->meta->seq, &info, sizeof(info));
 	return 0;

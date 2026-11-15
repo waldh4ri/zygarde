@@ -56,10 +56,12 @@ type processTaskInfo struct {
 	Uid           uint32
 	Euid          uint32
 	Gid           uint32
-	Pad           uint32
+	Ptraced       uint32
 	StartBoottime uint64
 	Comm          [16]int8
 	StartTime     uint64
+	TracerPid     uint32
+	TracerTgid    uint32
 }
 
 type processWalk struct {
