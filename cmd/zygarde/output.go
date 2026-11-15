@@ -2,13 +2,16 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"unicode/utf8"
 
 	"github.com/waldh4ri/zygarde/internal/core"
@@ -377,9 +380,20 @@ func (p *printer) writeJSON(r *report.Report) {
 	_ = enc.Encode(r)
 }
 
-// checkOutputWritable verifies that path's parent directory exists and is
-// writable before running the scan, avoiding lost reports after long runs.
+// errOutputExists means the -o path already exists. Zygarde runs as root and
+// never replaces a file: a mistyped -o could otherwise clobber a system file,
+// and a device or pipe (-o /dev/null) would be replaced by a regular file.
+var errOutputExists = errors.New("it already exists (zygarde never overwrites a file; choose a new path)")
+
+// checkOutputWritable verifies before the scan that path does not exist and
+// that its parent directory exists and is writable, avoiding lost reports
+// after long runs.
 func checkOutputWritable(path string) error {
+	if _, err := os.Lstat(path); err == nil {
+		return errOutputExists
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
 	dir := filepath.Dir(path)
 	f, err := os.CreateTemp(dir, ".zygarde-out-*")
 	if err != nil {
@@ -391,7 +405,11 @@ func checkOutputWritable(path string) error {
 	return nil
 }
 
-// saveReport writes the JSON report atomically to path, readable by the owner only.
+// saveReport writes the JSON report to a new file at path, readable by the
+// owner only. The report is written to a temporary file and hard-linked to
+// path, which fails if anything exists there: the report appears complete or
+// not at all, and nothing is ever replaced. Filesystems without hard links get
+// an exclusive create instead.
 func saveReport(r *report.Report, path string) error {
 	data, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
@@ -418,8 +436,36 @@ func saveReport(r *report.Report, path string) error {
 		os.Remove(tmpName)
 		return err
 	}
-	if err := os.Rename(tmpName, path); err != nil {
-		os.Remove(tmpName)
+	defer os.Remove(tmpName)
+	err = os.Link(tmpName, path)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, fs.ErrExist):
+		return fmt.Errorf("%s: %w", path, errOutputExists)
+	case errors.Is(err, syscall.EPERM), errors.Is(err, syscall.ENOTSUP), errors.Is(err, syscall.EOPNOTSUPP), errors.Is(err, syscall.EMLINK):
+		return writeNew(path, data) // no hard links here (FAT, some FUSE filesystems)
+	}
+	return err
+}
+
+// writeNew creates path, which must not exist (O_EXCL, and O_NOFOLLOW so a
+// symlink planted there is not followed), and writes data to it.
+func writeNew(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+	if errors.Is(err, fs.ErrExist) {
+		return fmt.Errorf("%s: %w", path, errOutputExists)
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(path)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(path)
 		return err
 	}
 	return nil
