@@ -92,6 +92,8 @@ A clean-VM matrix proves there are no false positives. Fixture targets prove the
 | Stand-in | Cell expected to report it |
 |----------|----------------------------|
 | `/etc/ld.so.preload` naming an existing library | `userspace_hooks` |
+| a copy of `libnss_files.so.2` named `libnss_zygfx.so.2`, owned by no package | `userspace_hooks` |
+| `kernel.modprobe` set to `/tmp/zyg-fixture-modprobe` | `usermode_helpers` |
 | a `sudo` copy in `/usr/bin/.local` (Scales) | `hidden_file` |
 | `insmod /etc/intel_audio/intel_audio.ko` in `/etc/rc.modules` (Mélofée) | `hidden_kernel_module` |
 | a `modprobe.d` `install` directive running a command | `hidden_kernel_module` |
@@ -99,7 +101,9 @@ A clean-VM matrix proves there are no false positives. Fixture targets prove the
 | a child process disguised as `[kworker/0:7]` | `hidden_process` |
 | a network namespace with a device, pinned outside `/run/netns` by a bind mount (SELinux is switched off for the mount) | `orphan_namespace` |
 | an empty directory bind-mounted over a process's `/proc/<pid>` (SELinux is switched off for the mount) | `hidden_process` |
-| `test/vm/fixture`: do-nothing programs on `sys_enter_getdents64`, a kprobe, XDP and tc egress on `lo` | `hidden_ebpf_program` (observations, with `held_by=zyg-fixture`) |
+| `test/vm/fixture`: do-nothing programs on `sys_enter_getdents64`, a kprobe, XDP and tc egress on `lo`, and an sk_msg program on a sockmap | `hidden_ebpf_program` (observations, with `held_by=zyg-fixture`) |
+| `test/vm/fixture`: `/bin/true` copied into anonymous executable memory | `userspace_hooks` |
+| `test/vm/fixture`: ptrace attached to its disguised child | `hidden_process` (observation) |
 
 The report then checks each target against `test/vm/fixtures.expect` (`cell|finding or observation|substring[|detail=substring]`) instead of requiring a clean result. A fixture target passes when every line matches, no Cell errors and no canary is missed. Fixture VMs are throwaway: the script modifies `/etc`, `/usr/bin` and `/tmp`.
 

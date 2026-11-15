@@ -23,6 +23,18 @@ for lib in /usr/lib/x86_64-linux-gnu/libm.so.6 /usr/lib/aarch64-linux-gnu/libm.s
 	fi
 done
 
+# userspace_hooks: an NSS module no package installed, next to the real ones.
+for lib in /usr/lib/x86_64-linux-gnu/libnss_files.so.2 /usr/lib/aarch64-linux-gnu/libnss_files.so.2 \
+	/lib/x86_64-linux-gnu/libnss_files.so.2 /lib/aarch64-linux-gnu/libnss_files.so.2 /usr/lib64/libnss_files.so.2; do
+	if [ -e "$lib" ]; then
+		cp "$lib" "$(dirname "$lib")/libnss_zygfx.so.2"
+		break
+	fi
+done
+
+# usermode_helpers: module autoloading pointed at a program in /tmp.
+echo /tmp/zyg-fixture-modprobe > /proc/sys/kernel/modprobe
+
 # hidden_file: a "trojaned sudo" in a dot-directory under /usr/bin (Scales).
 mkdir -p /usr/bin/.local
 cp /bin/true /usr/bin/.local/sudo

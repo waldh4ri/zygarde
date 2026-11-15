@@ -19,7 +19,7 @@ d8888888P      .8'     `8oooooo.  `Y888""8o d888b    `Y8bod88P" `Y8bod8P'
 Zygarde is a forensic triage tool for Linux. It compares **what the kernel actually holds**, read with eBPF, against **what userspace is shown** through the usual syscalls and files. A rootkit that hides a process, file, module, hook, socket or eBPF program leaves a gap between the two, and Zygarde reports it with the evidence, why it matters, and what innocent cause to rule out first.
 
 - **One static binary**, no runtime dependencies, x86_64 and arm64. CO-RE and BTF relocate the same eBPF bytecode for the running kernel. Built on [cilium/ebpf](https://github.com/cilium/ebpf).
-- **14 detection modules ("Cells")**: hidden processes, files, modules, sockets and eBPF programs; syscall, ftrace, kprobe, inline and netfilter hooks; swapped kernel function pointers; `LD_PRELOAD`-style userspace hooks; namespaces that no process belongs to.
+- **15 detection modules ("Cells")**: hidden processes, files, modules, sockets, eBPF programs and memory mappings; syscall, ftrace, kprobe, inline and netfilter hooks; swapped kernel function pointers; `LD_PRELOAD`-style userspace hooks; tampered kernel usermode helpers (modprobe, core dump pipe); namespaces that no process belongs to.
 - **Hard to blind.** It plants canaries it knows must be visible, runs its checks in a supervised worker, and does not use libc.
 
 ```mermaid
@@ -61,13 +61,14 @@ No Linux machine? `make docker-run` runs it in a privileged container on the Doc
 | `inline_hook` | first bytes of syscall, VFS and `/proc` functions | what the kernel writes there |
 | `kernel_pointers` | `file_operations`, `seq_operations`, `proc_ops` behind `/proc`, `/sys` | pointer owner |
 | `hidden_kernel_module` | `/sys/module` kobjects; boot persistence | `/proc/modules` |
+| `usermode_helpers` | `modprobe_path`, `core_pattern`, `uevent_helper`, `poweroff_cmd` in kernel memory | `/proc/sys`, `/sys`; where each program lives and who can replace it |
 | `kernel_taint` | kernel taint flags | per-module taint |
-| `hidden_process` | BPF task iterator, `init_task` walk, `sched_switch` | `/proc` listings |
+| `hidden_process` | BPF task iterator, `init_task` walk, `sched_switch`, ptrace tracers | `/proc` listings, `TracerPid` |
 | `hidden_file` | what the filesystem produced (`filldir64`) | what `getdents64` returned |
-| `hidden_ebpf_program` | BPF program iterator, attachments, holders | `BPF_PROG_GET_NEXT_ID`, `/sys/fs/bpf` |
+| `hidden_ebpf_program` | BPF program iterator, attachments, holders | `BPF_PROG_GET_NEXT_ID`, pins in every BPF filesystem |
 | `hidden_socket` | BPF socket iterators, `sock_diag`, socket FDs | `/proc/net/*` |
 | `netfilter_hooks` | `nf_hook_entries` of every namespace | owner of each hook |
-| `userspace_hooks` | - | `ld.so.preload`, `LD_PRELOAD`, injected and trojaned libraries |
+| `userspace_hooks` | executable mappings (`iter/task_vma`) | `/proc/<pid>/maps`; `ld.so.preload`, `LD_PRELOAD`, injected and trojaned libraries, PAM/NSS modules, setuid search paths, ELF images in anonymous memory |
 | `orphan_namespace` | BPF task and file iterators: namespaces with a process, sockets per network namespace | namespaces pinned by `nsfs` mounts and descriptors |
 
 Per-Cell details, requirements and SUSPICIOUS conditions: [docs/cells.md](docs/cells.md).

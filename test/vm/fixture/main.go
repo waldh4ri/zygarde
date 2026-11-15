@@ -6,8 +6,10 @@
 // getppid's handler, an XDP program on lo and a tc egress program on lo
 // (tcx on Linux 6.6+, otherwise a clsact filter through tc(8)). Every
 // program does nothing. It also starts a child process disguised as a
-// kernel thread ("[kworker/0:7]"). It prints "ready" once set up and runs
-// until stdin closes or it receives SIGTERM.
+// kernel thread ("[kworker/0:7]") and stays attached to it with ptrace,
+// copies /bin/true into anonymous executable memory, and attaches an sk_msg
+// program to a sockmap. It prints "ready" once set up and runs until stdin
+// closes or it receives SIGTERM.
 //
 // usage: fixture [-port 34567]
 package main
@@ -20,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"unsafe"
 
@@ -128,6 +131,37 @@ func main() {
 		warn("masquerading child", err)
 	} else {
 		closers = append(closers, stdin) // the child exits when this closes
+		// A tracer stays attached as long as the thread that attached lives.
+		go func(pid int) {
+			runtime.LockOSThread()
+			if err := unix.PtraceSeize(pid); err != nil {
+				warn("ptrace the masquerading child", err)
+			}
+			select {}
+		}(kt.Process.Pid)
+	}
+
+	// An ELF image copied into anonymous executable memory, as in-memory loaders do.
+	if img, err := os.ReadFile("/bin/true"); err != nil {
+		warn("read /bin/true", err)
+	} else if mem, err := unix.Mmap(-1, 0, 2*os.Getpagesize(), unix.PROT_READ|unix.PROT_WRITE|unix.PROT_EXEC, unix.MAP_PRIVATE|unix.MAP_ANONYMOUS); err != nil {
+		warn("anonymous mapping", err)
+	} else {
+		copy(mem, img)
+	}
+
+	// An sk_msg program attached to a sockmap with BPF_PROG_ATTACH (queryable on Linux 6.0+).
+	if m, err := ebpf.NewMap(&ebpf.MapSpec{Name: "zyg_fx_sockmap", Type: ebpf.SockMap, KeySize: 4, ValueSize: 4, MaxEntries: 1}); err != nil {
+		warn("create sockmap", err)
+	} else if p, err := program("zyg_fx_skmsg", ebpf.SkMsg, 1 /* SK_PASS */); err != nil {
+		warn("load sk_msg program", err)
+		m.Close()
+	} else if err := link.RawAttachProgram(link.RawAttachProgramOptions{Target: m.FD(), Program: p, Attach: ebpf.AttachSkMsgVerdict}); err != nil {
+		warn("attach sk_msg program", err)
+		p.Close()
+		m.Close()
+	} else {
+		closers = append(closers, p, m)
 	}
 
 	ln, err := net.Listen("tcp4", fmt.Sprintf("127.0.0.1:%d", *port))
