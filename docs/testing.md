@@ -97,6 +97,7 @@ A clean-VM matrix proves there are no false positives. Fixture targets prove the
 | a `modprobe.d` `install` directive running a command | `hidden_kernel_module` |
 | a root process running from a binary deleted from `/tmp` | `hidden_process` |
 | a child process disguised as `[kworker/0:7]` | `hidden_process` |
+| a network namespace with a device, pinned outside `/run/netns` by a bind mount (SELinux is switched off for the mount) | `orphan_namespace` |
 | an empty directory bind-mounted over a process's `/proc/<pid>` (SELinux is switched off for the mount) | `hidden_process` |
 | `test/vm/fixture`: do-nothing programs on `sys_enter_getdents64`, a kprobe, XDP and tc egress on `lo` | `hidden_ebpf_program` (observations, with `held_by=zyg-fixture`) |
 

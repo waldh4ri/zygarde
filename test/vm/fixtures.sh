@@ -42,13 +42,19 @@ sleep 1
 rm -f /tmp/zyg-deleted-sleep
 
 # hidden_process: a process hidden by an empty directory mounted over its
-# /proc entry (SELinux denies this mount, so it is switched off for a moment).
+# /proc entry, and an orphan namespace (SELinux denies these mounts, so it is
+# switched off for a moment).
 mkdir -p /tmp/zyg-empty
 sleep 3600 > /dev/null 2>&1 &
 mask_pid=$!
 enforcing=$(getenforce 2>/dev/null)
 [ "$enforcing" = Enforcing ] && setenforce 0
 mount --bind /tmp/zyg-empty "/proc/$mask_pid" 2>> "$log"
+
+# orphan_namespace: a network namespace with a device that no process belongs to,
+# pinned outside /run/netns by a bind mount of its nsfs file.
+touch /run/zyg-orphan-net
+unshare --net=/run/zyg-orphan-net sh -c 'ip link add zyg0 type dummy 2>/dev/null; true' 2>> "$log"
 [ "$enforcing" = Enforcing ] && setenforce 1
 
 # hidden_ebpf_program, hidden_socket, hidden_process: BPF attachments, a

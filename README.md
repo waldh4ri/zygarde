@@ -16,7 +16,7 @@
 Zygarde is a forensic triage tool for Linux. It compares **what the kernel actually holds**, read with eBPF, against **what userspace is shown** through the usual syscalls and files. A rootkit that hides a process, file, module, hook, socket or eBPF program leaves a gap between the two, and Zygarde reports it with the evidence, why it matters, and what innocent cause to rule out first.
 
 - **One static binary**, no runtime dependencies, x86_64 and arm64. CO-RE and BTF relocate the same eBPF bytecode for the running kernel. Built on [cilium/ebpf](https://github.com/cilium/ebpf).
-- **13 detection modules ("Cells")**: hidden processes, files, modules, sockets and eBPF programs; syscall, ftrace, kprobe, inline and netfilter hooks; swapped kernel function pointers; `LD_PRELOAD`-style userspace hooks.
+- **14 detection modules ("Cells")**: hidden processes, files, modules, sockets and eBPF programs; syscall, ftrace, kprobe, inline and netfilter hooks; swapped kernel function pointers; `LD_PRELOAD`-style userspace hooks; namespaces that no process belongs to.
 - **Hard to blind.** It plants canaries it knows must be visible, runs its checks in a supervised worker, and does not use libc.
 
 ```mermaid
@@ -65,6 +65,7 @@ No Linux machine? `make docker-run` runs it in a privileged container on the Doc
 | `hidden_socket` | BPF socket iterators, `sock_diag`, socket FDs | `/proc/net/*` |
 | `netfilter_hooks` | `nf_hook_entries` of every namespace | owner of each hook |
 | `userspace_hooks` | - | `ld.so.preload`, `LD_PRELOAD`, injected and trojaned libraries |
+| `orphan_namespace` | BPF task and file iterators: namespaces with a process, sockets per network namespace | namespaces pinned by `nsfs` mounts and descriptors |
 
 Per-Cell details, requirements and SUSPICIOUS conditions: [docs/cells.md](docs/cells.md).
 

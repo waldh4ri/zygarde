@@ -16,8 +16,17 @@ char LICENSE[] SEC("license") = "Dual BSD/GPL";
 #define KIND_LINK      3
 #define KIND_PERF      4
 #define KIND_SOCKET    5
+#define KIND_NS        7 // a namespace file (nsfs); ino is the namespace inode
 #define KIND_LINK_POLL 6 // bpf_link_fops_poll, normalised to KIND_LINK
-#define NR_KINDS       7
+#define NR_KINDS       8
+
+// possible_net_t is an empty struct in kernels built without CONFIG_NET_NS, and
+// in some vmlinux.h dumps: read the field through a flavor that has the member.
+struct sock_common___ns {
+	struct {
+		struct net *net;
+	} skc_net;
+} __attribute__((preserve_access_index));
 
 struct fd_rec {
 	__u32 tgid;    // process ID (thread-group leader), in zygarde's PID namespace
@@ -28,7 +37,7 @@ struct fd_rec {
 	__u32 prog_id; // program a link or perf event runs
 	__u16 sfamily; // socket AF_* family (KIND_SOCKET)
 	__u16 stype;   // socket SOCK_* type (KIND_SOCKET)
-	__u32 pad;
+	__u32 netns;   // network namespace inode of the socket (KIND_SOCKET)
 	__u64 fop;     // f_op address (learning pass only)
 	__u64 ino;     // socket inode
 	char comm[16];
@@ -120,11 +129,22 @@ int dump_fds(struct bpf_iter__task_file *ctx)
 		if (!rec.prog_id)
 			return 0;
 		break;
+	case KIND_NS:
+		rec.ino = BPF_CORE_READ(file, f_inode, i_ino);
+		break;
 	case KIND_SOCKET:
 		rec.ino = BPF_CORE_READ(file, f_inode, i_ino);
 		if (priv) {
 			rec.stype = BPF_CORE_READ((struct socket *)priv, type);
 			rec.sfamily = BPF_CORE_READ((struct socket *)priv, sk, __sk_common.skc_family);
+			{
+				struct sock *sk = BPF_CORE_READ((struct socket *)priv, sk);
+				struct sock_common___ns *sc = (struct sock_common___ns *)sk;
+
+				// skc_net exists only with CONFIG_NET_NS.
+				if (sk && bpf_core_field_exists(sc->skc_net))
+					rec.netns = BPF_CORE_READ(sc, skc_net.net, ns.inum);
+			}
 		}
 		break;
 	}

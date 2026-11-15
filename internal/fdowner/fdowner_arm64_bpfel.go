@@ -23,7 +23,7 @@ type fdownerFdRec struct {
 	ProgId  uint32
 	Sfamily uint16
 	Stype   uint16
-	Pad     uint32
+	Netns   uint32
 	Fop     uint64
 	Ino     uint64
 	Comm    [16]int8
