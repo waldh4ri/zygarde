@@ -1,4 +1,4 @@
-// Copyright (c) 2026 waldh4ri
+// Copyright (c) 2025-2026 waldh4ri
 // SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
 
 package zygarde
@@ -17,7 +17,7 @@ func TestEmbeddedNotices(t *testing.T) {
 			t.Errorf("%s is empty", name)
 		}
 	}
-	for _, want := range []string{"Copyright (c) 2026 waldh4ri", "BSD-2-Clause", "GPL-2.0-only"} {
+	for _, want := range []string{"Copyright (c) 2025-2026 waldh4ri", "BSD-2-Clause", "GPL-2.0-only"} {
 		if !strings.Contains(License, want) {
 			t.Errorf("LICENSE lacks %q", want)
 		}

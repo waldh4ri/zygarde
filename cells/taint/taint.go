@@ -1,4 +1,4 @@
-// Copyright (c) 2026 waldh4ri
+// Copyright (c) 2025-2026 waldh4ri
 // SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
 
 // Package taint checks that the kernel's module-related taint flags are

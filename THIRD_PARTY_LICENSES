@@ -101,7 +101,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 --------------------------------------------------------------------------------
 libbpf headers: bpf/include/bpf_core_read.h, bpf_endian.h, bpf_helper_defs.h,
-bpf_helpers.h, bpf_tracing.h   (bundled; build-time only)
+bpf_helpers.h, bpf_tracing.h   (bundled; compiled into the eBPF programs)
 SPDX: LGPL-2.1-only OR BSD-2-Clause
 --------------------------------------------------------------------------------
 
@@ -122,7 +122,7 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 
 --------------------------------------------------------------------------------
 Linux kernel type definitions: bpf/include/x86/vmlinux.h, arm64/vmlinux.h
-(bundled; build-time only)
+(bundled; type declarations used to build the eBPF programs)
 SPDX: GPL-2.0-only
 --------------------------------------------------------------------------------
 

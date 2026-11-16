@@ -1,5 +1,3 @@
-	@cp LICENSE THIRD_PARTY_LICENSES dist/
-	@mkdir -p dist/LICENSES && cp LICENSES/*.txt dist/LICENSES/
 # Zygarde - eBPF rootkit detection
 #
 # Native targets need Go and clang on Linux. The docker-* targets run the same
