@@ -126,6 +126,19 @@ func TestImage(t *testing.T) {
 	if err != nil || img.HasData || img.InImage(0xffffffff82100000, 8) {
 		t.Errorf("without _end: %+v, %v", img, err)
 	}
+
+	// Rocky 8 (4.18.0-553): a local text label "_end" comes long before the
+	// global _end; the global one closes the image.
+	rhel := "ffffffff82800000 T _stext\nffffffff828df9a0 t _end\nffffffff83600f29 T _etext\n" +
+		"ffffffff85c00000 B __bss_stop\nffffffff85c2c000 B _end\n"
+	img, err = parse(rhel).Image()
+	if err != nil || img.End != 0xffffffff85c2c000 {
+		t.Errorf("RHEL local _end: %+v, %v; want End 0xffffffff85c2c000", img, err)
+	}
+	// Without a global duplicate, the local symbol is still found.
+	if a, ok := parse("ffffffff81000000 t helper\nffffffff81000100 t helper\n").Addr("helper"); !ok || a != 0xffffffff81000000 {
+		t.Errorf("local-only symbol: %#x, %v; want the first", a, ok)
+	}
 }
 
 func TestHiddenReason(t *testing.T) {
