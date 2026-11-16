@@ -60,7 +60,7 @@ No Linux machine? `make docker-run` runs it in a privileged container on the Doc
 | `hook_inventory` | ftrace `enabled_functions`, kprobes | owner: kernel, module, BPF, livepatch |
 | `inline_hook` | first bytes of syscall, VFS and `/proc` functions | what the kernel writes there |
 | `kernel_pointers` | `file_operations`, `seq_operations`, `proc_ops` behind `/proc`, `/sys` | pointer owner |
-| `hidden_kernel_module` | `/sys/module` kobjects; boot persistence | `/proc/modules` |
+| `hidden_kernel_module` | `/sys/module` kobjects; in kernel memory, the module list, module kobjects, `mod_tree` and section attributes; boot persistence | `/proc/modules`, `/sys/module` |
 | `usermode_helpers` | `modprobe_path`, `core_pattern`, `uevent_helper`, `poweroff_cmd` in kernel memory | `/proc/sys`, `/sys`; where each program lives and who can replace it |
 | `kernel_taint` | kernel taint flags | per-module taint |
 | `hidden_process` | BPF task iterator, `init_task` walk, `sched_switch`, ptrace tracers | `/proc` listings, `TracerPid` |

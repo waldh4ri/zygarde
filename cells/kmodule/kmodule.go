@@ -40,7 +40,7 @@ func (*Cell) Name() string                  { return "Hidden Kernel Module Detec
 func (*Cell) Timeout() time.Duration        { return 15 * time.Second }
 func (*Cell) Supported(env *core.Env) error { return nil }
 func (*Cell) Description() string {
-	return "Compares the module list (/proc/modules) with module kobjects (/sys/module) and module BTF (/sys/kernel/btf), and checks modules configured to load at boot"
+	return "Compares the module list (/proc/modules) with module kobjects (/sys/module), module BTF (/sys/kernel/btf) and, in kernel memory, the module list, module kobjects and module address tree; checks section attributes behind /sys/module and modules configured to load at boot"
 }
 
 // views are three independent records of the loaded modules.
@@ -113,9 +113,23 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 			Benign:      "A module loading or unloading during the scan; unlikely, since it was seen in two snapshots.",
 		})
 	}
-	loader := c.checkLoaderAllocations(rec, hasModuleMemory(env))
+	reported := make(map[string]bool, len(found))
+	for _, h := range found {
+		reported[h.module] = true
+	}
+	kr := c.checkKernelViews(env, rec, reported)
+	loader := 0
+	if kr.tree == 0 {
+		// Fallback where kernel memory could not be read (kptr_restrict=2,
+		// lockdown, no CONFIG_KALLSYMS_ALL): mod_tree names every module the
+		// allocation count can only count, on every kernel version.
+		loader = c.checkLoaderAllocations(rec, hasModuleMemory(env))
+	}
 	boot := c.checkAutoload(rec)
 	switch {
+	case kr.hidden > 0 || kr.dangling > 0:
+		rec.Message("%d hidden kernel module(s) (%d seen only in kernel memory), %d module(s) with sysfs files over freed attributes, %d suspicious boot-time module configuration(s)",
+			len(found)+kr.hidden, kr.hidden, kr.dangling, boot)
 	case loader > 0 && len(found) == 0:
 		rec.Message("%d module-loader allocation(s) belong to no listed module (a module hiding from every view)", loader)
 	case len(found) > 0 && boot > 0:
@@ -124,6 +138,9 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 		rec.Message("%d hidden kernel module(s)", len(found))
 	case boot > 0:
 		rec.Message("No hidden modules; %d suspicious boot-time module configuration(s)", boot)
+	case kr.ran:
+		rec.Message("All %d loaded modules are consistent across /proc/modules, /sys/module, module BTF and kernel memory "+
+			"(module list %d, module kobjects %d, mod_tree %d)", len(v.proc), kr.listed, kr.kobjects, kr.tree)
 	default:
 		rec.Message("All %d loaded modules are consistent across /proc/modules, /sys/module and module BTF", len(v.proc))
 	}

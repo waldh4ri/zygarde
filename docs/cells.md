@@ -82,8 +82,17 @@ Two parts.
 - **Userspace view**: the module list in `/proc/modules` (what `lsmod` shows).
 - Rootkits unlink themselves from the module list (`list_del`) or delete their kobject (`kobject_del`). Only loadable modules have `/sys/module/<name>/initstate`, which separates them from built-ins.
 - Note: the `iter/ksym` iterator walks the same `modules` list as `/proc/modules`, so it would not reveal a `list_del`-hidden module and is not used for this.
-- **Third view, for modules that remove themselves from both** `/proc/modules` and `/sys/module` (so those two agree): `/proc/vmallocinfo` names the allocator of every vmalloc area, and the module loader makes one allocation per module (`load_module`, `layout_and_allocate` or `move_module`, by kernel). More such allocations than modules listed, still true 300 ms later, is SUSPICIOUS. Only before Linux 6.4: from then a module has one allocation per memory type and 7.0 uses a shared cache, so those kernels record a limit. Older kernels with a backported `struct module_memory` in their BTF (RHEL 9.8's 5.14) are treated the same way.
-- **Not read on purpose**: `/sys/module/*/sections/*`. Those files are backed by memory a rootkit can free while leaving the files in place (Diamorphine frees its module's section attributes), and reading one oopses the kernel. Module symbols and `/proc/modules` give the same ownership without them.
+- **Kernel memory views** of `struct module`, walked from userspace with offsets from BTF through a BPF kernel-memory reader (`internal/kmem`, a kprobe on `getuid` using `bpf_probe_read_kernel()`, which cannot fault on freed memory):
+  - the module list (`modules`), which `/proc/modules` prints;
+  - `module_kset`, the kobjects behind `/sys/module`, each pointing to its `struct module`;
+  - `mod_tree`, the latched tree the kernel searches to map an address to its module (exception tables, kallsyms, stack traces). A module that unlinks itself from the list **and** deletes its kobject, so `/proc/modules` and `/sys/module` agree, is still there.
+  - Each walk must find every module userspace shows, or it is not trusted for this scan (a limit).
+- **SUSPICIOUS when** (confirmed by a second read 300 ms later; modules loading or unloading are skipped):
+  - a live module is in `mod_tree` or `module_kset` but not on the module list, naming the module;
+  - a live module is on the module list but `/proc/modules` leaves it out (filtered output);
+  - a module's `/sys/module/<name>/sections` (or `notes`) directory lists files while its `sect_attrs` (`notes_attrs`) is NULL, or points to memory that no longer holds the `sections` attribute group or names other sections. Diamorphine frees its section attributes this way, and reading those files oopses the kernel; only the directory is listed.
+- **Fallback when kernel memory cannot be read** (`kptr_restrict=2`, lockdown `confidentiality`, no `CONFIG_KALLSYMS_ALL`): `/proc/vmallocinfo` names the allocator of every vmalloc area, and before Linux 6.4 the module loader makes one allocation per module (`load_module`, `layout_and_allocate` or `move_module`, by kernel). More such allocations than modules listed, still true 300 ms later, is SUSPICIOUS. From 6.4 a module has one allocation per memory type (7.0 uses a shared cache), and older kernels with a backported `struct module_memory` in their BTF (RHEL 9.8's 5.14) behave the same, so there the fallback records a limit.
+- **Not read on purpose**: the files in `/sys/module/*/sections/`, for the reason above. Module symbols and `/proc/modules` give the same ownership without them.
 
 **Boot persistence**
 - Lists modules configured to load at boot: `modules-load.d`, `/etc/modules`, `modprobe.d`, systemd units, udev rules, and `insmod`/`modprobe` lines in `rc.local`, `rc.modules` and shell profiles.

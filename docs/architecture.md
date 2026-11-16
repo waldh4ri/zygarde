@@ -100,6 +100,7 @@ Supporting packages:
 | `internal/fdowner` | BPF task-file iterator reporting which processes hold BPF programs, links and sockets, from every task's file table, including processes hidden from `/proc` |
 | `internal/kattr` | address attribution: kernel image, visible module, BPF program, trampoline, or unknown |
 | `internal/kernel` | `/proc/kallsyms` (and the kernel image range), lockdown, tracefs, `/proc/self/status` |
+| `internal/kmem` | kernel memory reader: one kprobe on `getuid` copies up to 64 address ranges per call with `bpf_probe_read_kernel()`, which cannot fault on freed memory; Go walks lists and trees with member offsets resolved from BTF (a live `crash` without debug info). Used by `altered_syscall_table`, `inline_hook`, `usermode_helpers` and `hidden_kernel_module`. Only kernel-half addresses away from the vsyscall page are read |
 | `internal/netlink` | minimal netlink dumps: `sock_diag`, links, qdiscs, tc filters |
 | `internal/rpmdb` | read-only SQLite reader for the rpm database, including its write-ahead log |
 | `internal/pkgdb` | which installed package owns a file (dpkg file lists, or the rpm database through `rpmdb`) |
