@@ -20,13 +20,22 @@ SPDX-FileCopyrightText = "2015 The Libbpf Authors"
 SPDX-License-Identifier = "LGPL-2.1-only OR BSD-2-Clause"
 
 [[annotations]]
-path = ["bpf/include/bpf_core_read.h", "bpf/include/bpf_endian.h", "bpf/include/bpf_helpers.h", "bpf/include/bpf_tracing.h"]
+path = [
+  "bpf/include/bpf_core_read.h",
+  "bpf/include/bpf_endian.h",
+  "bpf/include/bpf_helpers.h",
+  "bpf/include/bpf_tracing.h",
+]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2015 The Libbpf Authors"
 SPDX-License-Identifier = "LGPL-2.1-only OR BSD-2-Clause"
 
 [[annotations]]
-path = ["go.sum", "docs/**", "README.md", "Makefile", ".gitattributes", ".gitignore", ".golangci.yml", ".github/**", "build/**", "test/vm/**", "go.mod", "REUSE.toml", "THIRD_PARTY_LICENSES"]
+path = [
+  "go.mod", "go.sum", "Makefile", "README.md", "docs/**", "REUSE.toml",
+  "THIRD_PARTY_LICENSES", ".gitattributes", ".gitignore", ".golangci.yml",
+  ".github/**", "build/**", "test/vm/**",
+]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2025-2026 waldh4ri"
 SPDX-License-Identifier = "GPL-2.0-only OR BSD-2-Clause"
