@@ -1,3 +1,6 @@
+// Copyright (c) 2025-2026 waldh4ri
+// SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+
 // Package supervisor runs Cells in a child worker process and watches it.
 //
 // If something on the system kills or freezes the scanner, the parent still

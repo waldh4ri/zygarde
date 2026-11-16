@@ -1,3 +1,6 @@
+// Copyright (c) 2025-2026 waldh4ri
+// SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+
 // Package bpfprog detects eBPF programs hidden from userspace enumeration and
 // inventories BPF attachments, capabilities, tail-call maps and owners.
 package bpfprog

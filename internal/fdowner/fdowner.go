@@ -1,3 +1,6 @@
+// Copyright (c) 2025-2026 waldh4ri
+// SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+
 // Package fdowner reads, from the kernel's own task and file tables, which
 // processes hold BPF programs, maps, links, BPF-attached perf events and
 // sockets. It does not go through /proc, so a process hidden from /proc still

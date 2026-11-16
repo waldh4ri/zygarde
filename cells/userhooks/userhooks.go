@@ -1,3 +1,6 @@
+// Copyright (c) 2025-2026 waldh4ri
+// SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+
 // Package userhooks detects libraries injected into processes through the
 // dynamic linker: /etc/ld.so.preload, unusual library directories in
 // ld.so.conf or /etc/ld.so.cache, LD_PRELOAD/LD_AUDIT in environments, and

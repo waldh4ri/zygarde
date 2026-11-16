@@ -1,3 +1,6 @@
+// Copyright (c) 2025-2026 waldh4ri
+// SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+
 package userhooks
 
 //go:generate go tool bpf2go -target amd64,arm64 -cflags "-Wall -Werror -Wno-missing-declarations" -type vma_rec vma vma.bpf.c -- -I../../bpf/include

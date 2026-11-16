@@ -57,6 +57,9 @@ dist:
 		CGO_ENABLED=0 GOOS=linux GOARCH=$$arch $(GO) build -trimpath -ldflags="$(LDFLAGS)" \
 			-o dist/zygarde-linux-$$arch ./cmd/zygarde || exit 1; \
 	done
+	@# Ship the license notices next to the binaries (attach them to releases).
+	@cp LICENSE THIRD_PARTY_LICENSES dist/
+	@mkdir -p dist/LICENSES && cp LICENSES/*.txt dist/LICENSES/
 
 test:
 	$(GO) test ./...

@@ -130,4 +130,6 @@ Besides the clean-kernel matrix and planted fixtures, Zygarde has been run again
 
 ## License
 
-Dual BSD/GPL; see [LICENSE](LICENSE). The vendored libbpf headers are LGPL-2.1 OR BSD-2-Clause.
+Copyright (c) 2025-2026 waldh4ri. Licensed under `GPL-2.0-only OR BSD-2-Clause` (you choose); see [LICENSE](LICENSE) and [LICENSES/](LICENSES). The eBPF programs declare `Dual BSD/GPL` to the kernel.
+
+Third-party code (cilium/ebpf, golang.org/x/sys, the Go runtime, the vendored libbpf headers and kernel type headers) keeps its own license; see [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES), also printed by `zygarde -licenses`. Release binaries are built from the matching git tag.

@@ -1,3 +1,6 @@
+// Copyright (c) 2025-2026 waldh4ri
+// SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+
 // Command fixture attaches benign BPF programs where eBPF rootkits attach
 // theirs, and opens a TCP listener, so the kernel matrix can check that
 // zygarde inventories them and attributes them to this process.

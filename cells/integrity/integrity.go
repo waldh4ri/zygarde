@@ -1,3 +1,6 @@
+// Copyright (c) 2025-2026 waldh4ri
+// SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+
 // Package integrity checks that bpf() itself works honestly for Zygarde
 // before the other Cells rely on it.
 package integrity

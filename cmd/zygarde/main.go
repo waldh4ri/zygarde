@@ -1,3 +1,6 @@
+// Copyright (c) 2025-2026 waldh4ri
+// SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+
 // Command zygarde detects Linux rootkits by comparing what the kernel knows
 // (read with eBPF) with what userspace is shown.
 package main
@@ -13,6 +16,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/waldh4ri/zygarde"
 	"github.com/waldh4ri/zygarde/cells/bpfprog"
 	"github.com/waldh4ri/zygarde/cells/file"
 	"github.com/waldh4ri/zygarde/cells/hooks"
@@ -40,17 +44,18 @@ import (
 var version = "0.4.0"
 
 type options struct {
-	debug      bool
-	json       bool
-	verbose    bool
-	noColor    bool
-	output     string
-	noIsolate  bool
-	list       bool
-	cells      string
-	allowPanic bool
-	settings   core.Settings
-	versionOut bool
+	debug       bool
+	json        bool
+	verbose     bool
+	noColor     bool
+	output      string
+	noIsolate   bool
+	list        bool
+	cells       string
+	allowPanic  bool
+	settings    core.Settings
+	versionOut  bool
+	licensesOut bool
 }
 
 func parseFlags(args []string) (options, error) {
@@ -70,6 +75,7 @@ func parseFlags(args []string) (options, error) {
 	fs.StringVar(&o.settings.BTFPath, "btf", "", "external BTF file for kernels without /sys/kernel/btf/vmlinux")
 	fs.BoolVar(&o.allowPanic, "allow-panic-on-oops", false, "run even though kernel.panic_on_oops=1 (a kernel oops while scanning would then panic and reboot the machine)")
 	fs.BoolVar(&o.versionOut, "version", false, "print the version and exit")
+	fs.BoolVar(&o.licensesOut, "licenses", false, "print the license and third-party notices and exit")
 	return o, fs.Parse(args)
 }
 
@@ -150,6 +156,9 @@ func run() int {
 	switch {
 	case o.versionOut:
 		fmt.Println("zygarde", version)
+		return 0
+	case o.licensesOut:
+		fmt.Print(zygarde.License, "\n", zygarde.ThirdParty)
 		return 0
 	case o.list:
 		for _, c := range cells {

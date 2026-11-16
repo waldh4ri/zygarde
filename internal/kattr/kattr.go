@@ -1,3 +1,6 @@
+// Copyright (c) 2025-2026 waldh4ri
+// SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+
 // Package kattr attributes kernel addresses to the code or data that owns
 // them: the core kernel, a visible module, a BPF program or trampoline, an
 // ftrace trampoline or a kprobe instruction page.

@@ -1,3 +1,6 @@
+// Copyright (c) 2025-2026 waldh4ri
+// SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+
 // Package file detects directory entries hidden from userspace, such as
 // files, directories and /proc process entries filtered out of getdents64().
 package file

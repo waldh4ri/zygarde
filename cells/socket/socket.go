@@ -1,3 +1,6 @@
+// Copyright (c) 2025-2026 waldh4ri
+// SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+
 // Package socket detects TCP, UDP, RAW and AF_PACKET sockets hidden from
 // userspace tools or held by hidden processes.
 package socket

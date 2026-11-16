@@ -1,3 +1,6 @@
+// Copyright (c) 2025-2026 waldh4ri
+// SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+
 // Command report summarizes VM test results as a Markdown matrix and fails if
 // any target has an ERROR, a SUSPICIOUS result or a missed canary. On a clean
 // test VM, every Cell must be OK or SKIPPED.

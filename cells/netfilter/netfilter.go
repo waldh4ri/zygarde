@@ -1,3 +1,6 @@
+// Copyright (c) 2025-2026 waldh4ri
+// SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+
 // Package netfilter inventories netfilter hooks in every network namespace
 // and flags hook functions that belong to no visible module.
 package netfilter

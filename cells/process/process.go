@@ -1,3 +1,6 @@
+// Copyright (c) 2025-2026 waldh4ri
+// SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+
 // Package process detects processes and threads hidden from /proc or the PID
 // table, as well as processes masquerading as kernel threads or running from
 // deleted or memory-backed executables.

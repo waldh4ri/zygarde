@@ -1,3 +1,6 @@
+// Copyright (c) 2025-2026 waldh4ri
+// SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+
 // Package fsutil provides safe, forensic-preserving filesystem and process
 // helpers: opening untrusted paths without following dangerous symlinks or
 // blocking on FIFOs/TTYs (O_NOFOLLOW|O_NONBLOCK|O_NOCTTY), preserving access
