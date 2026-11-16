@@ -11,18 +11,18 @@ SPDX-License-Identifier = "GPL-2.0-only OR BSD-2-Clause"
 path = ["bpf/include/x86/vmlinux.h", "bpf/include/arm64/vmlinux.h"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "Linux kernel contributors"
-SPDX-License-Identifier = "GPL-2.0-only WITH Linux-syscall-note"
+SPDX-License-Identifier = "GPL-2.0-only"
 
 [[annotations]]
 path = ["bpf/include/bpf_helper_defs.h"]
 precedence = "aggregate"
-SPDX-FileCopyrightText = "the libbpf authors"
+SPDX-FileCopyrightText = "2015 The Libbpf Authors"
 SPDX-License-Identifier = "LGPL-2.1-only OR BSD-2-Clause"
 
 [[annotations]]
 path = ["bpf/include/bpf_core_read.h", "bpf/include/bpf_endian.h", "bpf/include/bpf_helpers.h", "bpf/include/bpf_tracing.h"]
 precedence = "aggregate"
-SPDX-FileCopyrightText = "the libbpf authors"
+SPDX-FileCopyrightText = "2015 The Libbpf Authors"
 SPDX-License-Identifier = "LGPL-2.1-only OR BSD-2-Clause"
 
 [[annotations]]
