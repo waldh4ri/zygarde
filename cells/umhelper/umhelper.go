@@ -4,8 +4,6 @@
 // command and cgroup v1 release agents.
 package umhelper
 
-//go:generate go tool bpf2go -target amd64,arm64 -cflags "-Wall -Werror -Wno-missing-declarations" -type kstr umhelper umhelper.bpf.c -- -I../../bpf/include
-
 import (
 	"context"
 	"errors"
@@ -16,19 +14,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cilium/ebpf/link"
 	"golang.org/x/sys/unix"
 
-	"github.com/waldh4ri/zygarde/internal/bpfutil"
 	"github.com/waldh4ri/zygarde/internal/core"
 	"github.com/waldh4ri/zygarde/internal/fsutil"
+	"github.com/waldh4ri/zygarde/internal/kmem"
 	"github.com/waldh4ri/zygarde/internal/pkgdb"
 )
 
-const (
-	maxStrs = 8   // MAX_STRS in umhelper.bpf.c
-	strLen  = 256 // STR_LEN in umhelper.bpf.c
-)
+// strLen is how much of linux_banner, the canary, is read.
+const strLen = 256
 
 // helper is a kernel setting naming a program the kernel runs as root.
 type helper struct {
@@ -172,7 +167,8 @@ func (c *Cell) compareKernel(env *core.Env, rec *core.Recorder, settings []setti
 	}
 	var reads []read
 	if a, ok := ks.Addr(canarySymbol); ok && !img.InText(a, 1) && img.InImage(a, strLen) {
-		reads = append(reads, read{-1, a, strLen})
+		// Stay inside the page: the banner may end just before an unmapped one.
+		reads = append(reads, read{-1, a, min(strLen, uint32(4096-a%4096))})
 	}
 	for i, s := range settings {
 		a, ok := ks.Addr(s.symbol)
@@ -198,79 +194,53 @@ func (c *Cell) compareKernel(env *core.Env, rec *core.Recorder, settings []setti
 		return 0, errors.New("none of the helper variables is in /proc/kallsyms")
 	}
 
-	readAll := func(first bool) ([]umhelperKstr, error) {
-		spec, err := loadUmhelper()
-		if err != nil {
-			return nil, err
-		}
-		if err := bpfutil.SetTarget(env, spec); err != nil {
-			return nil, err
-		}
-		var addrs [maxStrs]uint64
-		var lens [maxStrs]uint32
+	mem, err := kmem.Open(env)
+	if err != nil {
+		return 0, err
+	}
+	defer mem.Close()
+	if id := mem.ProgramID(); id != 0 {
+		rec.Footprint("bpf_prog_id", strconv.FormatUint(uint64(id), 10))
+	}
+	type kstr struct {
+		s  string
+		ok bool
+	}
+	readAll := func() ([]kstr, error) {
+		reqs := make([]kmem.Req, len(reads))
 		for i, r := range reads {
-			addrs[i], lens[i] = r.addr, r.size
+			reqs[i] = kmem.Req{Addr: r.addr, Len: int(r.size)}
 		}
-		for name, v := range map[string]any{"nr_strs": uint32(len(reads)), "addrs": addrs, "lens": lens} {
-			if err := bpfutil.SetVariable(spec, name, v); err != nil {
-				return nil, err
-			}
-		}
-		var objs umhelperObjects
-		if err := bpfutil.Load(env, spec, &objs); err != nil {
+		got, err := mem.Read(reqs)
+		if err != nil {
 			return nil, err
 		}
-		defer objs.Close()
-		if first {
-			if id, err := bpfutil.ProgramID(objs.ReadStrs); err == nil {
-				rec.Footprint("bpf_prog_id", strconv.FormatUint(uint64(id), 10))
-			}
-		}
-		kp, err := link.Kprobe("sys_getuid", objs.ReadStrs, nil)
-		if err != nil {
-			return nil, core.WrapBPF("attach kprobe sys_getuid", err)
-		}
-		defer kp.Close()
-		out := make([]umhelperKstr, len(reads))
-		for attempt := 0; attempt < 3; attempt++ {
-			unix.Getuid()
-			if err := objs.Strs.Lookup(uint32(0), &out[0]); err != nil {
-				return nil, core.WrapBPF("read strings map", err)
-			}
-			if out[0].Fired != 0 {
-				break
-			}
-		}
-		if out[0].Fired == 0 {
-			return nil, errors.New("the kprobe on getuid() never fired")
-		}
-		for i := range reads {
-			if err := objs.Strs.Lookup(uint32(i), &out[i]); err != nil {
-				return nil, core.WrapBPF("read strings map", err)
+		out := make([]kstr, len(got))
+		for i, b := range got {
+			switch {
+			case b == nil:
+			case reads[i].idx < 0: // the canary is checked by its prefix and may be longer than the read
+				out[i].s, out[i].ok = kmem.Prefix(b)
+			default:
+				out[i].s, out[i].ok = kmem.String(b)
 			}
 		}
 		return out, nil
 	}
 
-	got, err := readAll(true)
+	got, err := readAll()
 	if err != nil {
 		return 0, err
 	}
-	str := func(k umhelperKstr) (string, bool) {
-		if k.Err <= 0 {
-			return "", false
-		}
-		return bpfutil.Int8String(k.Str[:]), true
-	}
 	var mismatched []int
 	for i, r := range reads {
-		v, ok := str(got[i])
+		v, ok := got[i].s, got[i].ok
 		if r.idx < 0 {
 			rec.Canary(canarySymbol, "kernel memory read by BPF", ok && strings.HasPrefix(v, "Linux version "))
 			continue
 		}
 		if !ok {
-			rec.Limit("%s could not be read from kernel memory (error %d)", settings[r.idx].symbol, -got[i].Err)
+			rec.Limit("%s could not be read from kernel memory", settings[r.idx].symbol)
 			continue
 		}
 		s := &settings[r.idx]
@@ -284,14 +254,14 @@ func (c *Cell) compareKernel(env *core.Env, rec *core.Recorder, settings []setti
 	}
 
 	// Re-read both views: a value written during the scan is not a lie.
-	again, err := readAll(false)
+	again, err := readAll()
 	if err != nil {
 		return 0, err
 	}
 	n := 0
 	for _, i := range mismatched {
 		s := &settings[reads[i].idx]
-		k2, ok := str(again[i])
+		k2, ok := again[i].s, again[i].ok
 		u2, uok := c.readUser(s.helper)
 		if !ok || !uok || k2 != s.kernel || u2 != s.user || u2 == k2 {
 			continue

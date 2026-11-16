@@ -1,8 +1,6 @@
 // Package syscalltable checks x86_64 sys_call_table entries for hooks.
 package syscalltable
 
-//go:generate go tool bpf2go -target amd64,arm64 -cflags "-Wall -Werror -Wno-missing-declarations" -type table_entry syscalltable syscalltable.bpf.c -- -I../../bpf/include
-
 import (
 	"context"
 	"errors"
@@ -10,15 +8,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/cilium/ebpf/link"
-	"golang.org/x/sys/unix"
-
-	"github.com/waldh4ri/zygarde/internal/bpfutil"
 	"github.com/waldh4ri/zygarde/internal/core"
 	"github.com/waldh4ri/zygarde/internal/kernel"
+	"github.com/waldh4ri/zygarde/internal/kmem"
 )
-
-const maxEntries = 64 // MAX_ENTRIES in syscalltable.bpf.c
 
 // syscall is an x86_64 syscall and the handler symbol it should point to.
 type syscall struct {
@@ -115,75 +108,37 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 		}
 		return core.Skip("none of the checked syscall handlers is in /proc/kallsyms")
 	}
-	if len(checks) > maxEntries {
-		return fmt.Errorf("too many syscalls to check (%d > %d)", len(checks), maxEntries)
-	}
 	if !img.InImage(table, uint64(maxNr+1)*8) {
 		outsideImage(rec, "sys_call_table", table, img)
 		rec.Message("kallsyms places sys_call_table outside the kernel image; the table was not read")
 		return nil
 	}
 
-	spec, err := loadSyscalltable()
+	mem, err := kmem.Open(env)
 	if err != nil {
 		return err
 	}
-	var nrs [maxEntries]uint32
-	for i, c := range checks {
-		nrs[i] = c.nr
-	}
-	if err := bpfutil.SetTarget(env, spec); err != nil {
-		return err
-	}
-	for name, v := range map[string]any{
-		"table_addr": table,
-		"nr_count":   uint32(len(checks)),
-		"nrs":        nrs,
-	} {
-		if err := bpfutil.SetVariable(spec, name, v); err != nil {
-			return err
-		}
-	}
-
-	var objs syscalltableObjects
-	if err := bpfutil.Load(env, spec, &objs); err != nil {
-		return err
-	}
-	defer objs.Close()
-	if id, err := bpfutil.ProgramID(objs.ReadTable); err == nil {
+	defer mem.Close()
+	if id := mem.ProgramID(); id != 0 {
 		rec.Footprint("bpf_prog_id", strconv.FormatUint(uint64(id), 10))
 	}
-
-	kp, err := link.Kprobe("sys_getuid", objs.ReadTable, nil)
+	slots := make([]uint64, len(checks))
+	for i, c := range checks {
+		slots[i] = table + uint64(c.nr)*8
+	}
+	entries, ok, err := kmem.ReadU64s(mem, slots)
 	if err != nil {
-		return core.WrapBPF("attach kprobe sys_getuid", err)
-	}
-	defer kp.Close()
-
-	actual := make([]syscalltableTableEntry, len(checks))
-	for attempt := 0; attempt < 3; attempt++ {
-		unix.Getuid()
-		for i := range checks {
-			if err := objs.Entries.Lookup(uint32(i), &actual[i]); err != nil {
-				return core.WrapBPF("read entries map", err)
-			}
-		}
-		if actual[0].Fired != 0 {
-			break
-		}
-	}
-	if actual[0].Fired == 0 {
-		return fmt.Errorf("the kprobe on getuid() never fired")
+		return err
 	}
 
 	hooked, verified := 0, 0
 	for i, c := range checks {
-		if actual[i].Err != 0 {
-			rec.Limit("Could not read sys_call_table[%d] (%s): errno %d", c.nr, c.name, -actual[i].Err)
+		if !ok[i] {
+			rec.Limit("Could not read sys_call_table[%d] (%s)", c.nr, c.name)
 			continue
 		}
 		verified++
-		if actual[i].Addr == c.expected {
+		if entries[i] == c.expected {
 			continue
 		}
 		hooked++
@@ -192,15 +147,15 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 			"syscall_number":   strconv.Itoa(int(c.nr)),
 			"expected_symbol":  c.symbol,
 			"expected_address": fmt.Sprintf("%#x", c.expected),
-			"actual_address":   fmt.Sprintf("%#x", actual[i].Addr),
+			"actual_address":   fmt.Sprintf("%#x", entries[i]),
 		}
-		if fn, mod, off, ok := ks.LookupModule(actual[i].Addr); ok {
+		if fn, mod, off, ok := ks.LookupModule(entries[i]); ok {
 			details["actual_symbol"] = fmt.Sprintf("%s+%#x [%s]", fn, off, mod)
-		} else if fn, off, ok := ks.Lookup(actual[i].Addr); ok {
+		} else if fn, off, ok := ks.Lookup(entries[i]); ok {
 			details["actual_symbol"] = fmt.Sprintf("%s+%#x", fn, off)
 		}
 		rec.Suspicious(core.Finding{
-			Description: fmt.Sprintf("sys_call_table[%d] (%s) points to %#x instead of %s", c.nr, c.name, actual[i].Addr, c.symbol),
+			Description: fmt.Sprintf("sys_call_table[%d] (%s) points to %#x instead of %s", c.nr, c.name, entries[i], c.symbol),
 			Details:     details,
 			Why: "Each syscall table entry points at the kernel's own handler. A different address sends every " +
 				"call of this syscall through other code first, which can alter or hide its results.",
