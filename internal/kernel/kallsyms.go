@@ -127,6 +127,7 @@ func ParseKallsyms(r io.Reader) (*Kallsyms, error) {
 		modAddrs: make(map[uint64]modSym, 1<<12),
 	}
 	nonZero := false
+	local := map[string]bool{} // names whose kept address is a local symbol
 
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -151,8 +152,17 @@ func ParseKallsyms(r io.Reader) (*Kallsyms, error) {
 			}
 			continue
 		}
-		if _, dup := ks.addrs[fields[2]]; !dup {
+		// A name can be both a local and a global symbol: RHEL kernels have a
+		// local text label "_end" long before the global "_end" that closes the
+		// image. Keep the first global one, else the first one.
+		global := fields[1] != "" && fields[1][0] >= 'A' && fields[1][0] <= 'Z'
+		if _, dup := ks.addrs[fields[2]]; !dup || (global && local[fields[2]]) {
 			ks.addrs[fields[2]] = addr
+			if global {
+				delete(local, fields[2])
+			} else {
+				local[fields[2]] = true
+			}
 		}
 	}
 	if err := sc.Err(); err != nil {

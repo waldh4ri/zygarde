@@ -2,31 +2,23 @@
 // patched to jump elsewhere, without going through ftrace or kprobes.
 package inlinehook
 
-//go:generate go tool bpf2go -target amd64,arm64 -cflags "-Wall -Werror -Wno-missing-declarations" -type func_code inlinehook inlinehook.bpf.c -- -I../../bpf/include
-
 import (
 	"bufio"
 	"context"
-	"errors"
 	"fmt"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/cilium/ebpf/link"
-	"golang.org/x/sys/unix"
-
-	"github.com/waldh4ri/zygarde/internal/bpfutil"
 	"github.com/waldh4ri/zygarde/internal/core"
 	"github.com/waldh4ri/zygarde/internal/fsutil"
 	"github.com/waldh4ri/zygarde/internal/kernel"
+	"github.com/waldh4ri/zygarde/internal/kmem"
 )
 
-const (
-	maxFuncs  = 64 // MAX_FUNCS in inlinehook.bpf.c
-	codeBytes = 24 // CODE_BYTES in inlinehook.bpf.c
-)
+// codeBytes is how much of each function entry is read.
+const codeBytes = 24
 
 // canarySymbol is where the reader's kprobe is attached (sys_getuid).
 const canarySymbol = "__x64_sys_getuid"
@@ -125,9 +117,6 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 		}
 		funcs = append(funcs, function{name, sym, addr})
 	}
-	if len(funcs) > maxFuncs-1 {
-		funcs = funcs[:maxFuncs-1]
-	}
 	if len(funcs) == 0 {
 		if outside > 0 {
 			rec.Message("kallsyms places %d checked function(s) outside the kernel's text", outside)
@@ -148,19 +137,27 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 		funcs = append(funcs, function{canarySymbol, canarySymbol, canaryAddr})
 	}
 
-	code, readErrs, err := readCode(env, rec, funcs)
+	mem, err := kmem.Open(env)
+	if err != nil {
+		return err
+	}
+	defer mem.Close()
+	if id := mem.ProgramID(); id != 0 {
+		rec.Footprint("bpf_prog_id", strconv.FormatUint(uint64(id), 10))
+	}
+	code, err := readCode(mem, funcs)
 	if err != nil {
 		return err
 	}
 	if haveCanary {
 		last := len(funcs) - 1
-		if readErrs[last] == 0 {
+		if code[last] != nil {
 			e := decodeEntry(code[last], canaryAddr)
 			rec.Canary("kprobe on "+canarySymbol, "first instructions read from kernel memory", e.Kind == entryCall || e.Kind == entryInt3)
 		} else {
 			rec.Canary("kprobe on "+canarySymbol, "first instructions read from kernel memory", false)
 		}
-		funcs, code, readErrs = funcs[:last], code[:last], readErrs[:last]
+		funcs, code = funcs[:last], code[:last]
 	}
 
 	traced, filterable, tracedErr := tracefsState()
@@ -175,8 +172,8 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	checked, hooked := 0, 0
 	unknown := []string{}
 	for i, f := range funcs {
-		if readErrs[i] != 0 {
-			rec.Limit("Could not read instructions of %s (%#x): errno %d", f.sym, f.addr, -readErrs[i])
+		if code[i] == nil {
+			rec.Limit("Could not read instructions of %s (%#x)", f.sym, f.addr)
 			continue
 		}
 		e := decodeEntry(code[i], f.addr)
@@ -184,11 +181,14 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 		suspicious, observe, why := judge(e, f, ks, inText, traced, tracedErr == nil, hasFtraceSite)
 		if (suspicious || observe != "") && again == nil {
 			var err2 error
-			if again, _, err2 = readCode(env, nil, funcs); err2 != nil {
+			if again, err2 = readCode(mem, funcs); err2 != nil {
 				return err2
 			}
 		}
 		if suspicious || observe != "" {
+			if again[i] == nil {
+				continue
+			}
 			e2 := decodeEntry(again[i], f.addr)
 			if e2.Kind != e.Kind || e2.Target != e.Target || e2.PostNop != e.PostNop {
 				continue // changed between reads: ftrace at work
@@ -319,66 +319,14 @@ func judge(e entry, f function, ks *kernel.Kallsyms, inText func(uint64) bool, t
 	return false, "", ""
 }
 
-func readCode(env *core.Env, rec *core.Recorder, funcs []function) ([][]byte, []int32, error) {
-	spec, err := loadInlinehook()
-	if err != nil {
-		return nil, nil, err
-	}
-	if err := bpfutil.SetTarget(env, spec); err != nil {
-		return nil, nil, err
-	}
-	var addrs [maxFuncs]uint64
+// readCode reads the first codeBytes of each function; an entry is nil when
+// it could not be read.
+func readCode(mem kmem.Memory, funcs []function) ([][]byte, error) {
+	reqs := make([]kmem.Req, len(funcs))
 	for i, f := range funcs {
-		addrs[i] = f.addr
+		reqs[i] = kmem.Req{Addr: f.addr, Len: codeBytes}
 	}
-	if err := bpfutil.SetVariable(spec, "nr_funcs", uint32(len(funcs))); err != nil {
-		return nil, nil, err
-	}
-	if err := bpfutil.SetVariable(spec, "addrs", addrs); err != nil {
-		return nil, nil, err
-	}
-	var objs inlinehookObjects
-	if err := bpfutil.Load(env, spec, &objs); err != nil {
-		return nil, nil, err
-	}
-	defer objs.Close()
-	if rec != nil {
-		if id, err := bpfutil.ProgramID(objs.ReadCode); err == nil {
-			rec.Footprint("bpf_prog_id", strconv.FormatUint(uint64(id), 10))
-		}
-	}
-
-	kp, err := link.Kprobe("sys_getuid", objs.ReadCode, nil)
-	if err != nil {
-		return nil, nil, core.WrapBPF("attach kprobe sys_getuid", err)
-	}
-	defer kp.Close()
-
-	var first inlinehookFuncCode
-	for attempt := 0; attempt < 3; attempt++ {
-		unix.Getuid()
-		if err := objs.Prologues.Lookup(uint32(0), &first); err != nil {
-			return nil, nil, core.WrapBPF("read prologues map", err)
-		}
-		if first.Fired != 0 {
-			break
-		}
-	}
-	if first.Fired == 0 {
-		return nil, nil, errors.New("the kprobe on getuid() never fired")
-	}
-
-	out := make([][]byte, len(funcs))
-	errs := make([]int32, len(funcs))
-	for i := range funcs {
-		var c inlinehookFuncCode
-		if err := objs.Prologues.Lookup(uint32(i), &c); err != nil {
-			return nil, nil, core.WrapBPF("read prologues map", err)
-		}
-		errs[i] = c.Err
-		out[i] = append([]byte(nil), c.Bytes[:]...)
-	}
-	return out, errs, nil
+	return mem.Read(reqs)
 }
 
 func tracefsState() (traced, filterable map[string]bool, err error) {

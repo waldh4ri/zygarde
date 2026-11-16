@@ -15,7 +15,7 @@
 | `hook_inventory` | dynamic ftrace, tracefs (mounted privately if needed), not lockdown |
 | `inline_hook` | x86_64; Linux 5.2+ (read-only data maps); BTF |
 | `kernel_pointers` | BTF; `iter/task_file`, Linux 5.8+ |
-| `hidden_kernel_module` | none |
+| `hidden_kernel_module` | none for `/proc/modules`, `/sys/module` and module BTF; the kernel-memory views need BTF, `CONFIG_KALLSYMS_ALL`, readable `/proc/kallsyms` and not lockdown `confidentiality` (`mod_tree` also needs `CONFIG_MODULES_TREE_LOOKUP`, set with perf events or tracing) |
 | `usermode_helpers` | none for the `/proc/sys` and `/sys` view; the kernel-memory comparison needs `CONFIG_KALLSYMS_ALL`, readable `/proc/kallsyms` and not lockdown `confidentiality`; the programs are examined only when zygarde shares init's root directory (not from a container) |
 | `kernel_taint` | none |
 | `hidden_process` | BTF; `iter/task`, Linux 5.8+ (`init_task.tasks` walk needs 6.7+, else skipped as a limitation; the mount-tree walk needs global BPF functions, 5.5+, and is a limitation if the verifier rejects it) |
@@ -35,6 +35,7 @@ Kernel facts behind these, verified from source and the VM matrix:
 - The 5.10 verifier rejects some bounded loops, so loops are unrolled in the BPF sources.
 - On 5.10, a TCP listener's `socket->file` reads NULL from `iter/tcp`; the socket inode is read through `socket_alloc.vfs_inode` instead.
 - Redhat kernels backport: Rocky 8 (4.18) has the task and prog iterators and ring buffers; Rocky 9 (5.14) did not get the `x64_sys_call()` change, so the syscall table Cell runs there.
+- Red Hat kernels' `/proc/kallsyms` also has a local text label named `_end` before the global `_end` that closes the image. Duplicate names resolve to the global symbol, otherwise the kernel image range looks out of order and every Cell that reads kernel memory is skipped.
 
 ## Kernel lockdown
 
