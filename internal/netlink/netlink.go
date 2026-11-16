@@ -1,3 +1,6 @@
+// Copyright (c) 2026 waldh4ri
+// SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+
 // Package netlink sends netlink dump requests and parses the replies. It
 // covers the little Zygarde needs (sock_diag, links, qdiscs and tc filters)
 // without a dependency on a full netlink library.

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 waldh4ri
+// SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+
 // Package orphanns detects namespaces that no process belongs to but that
 // something else keeps alive, and says what is inside them.
 //

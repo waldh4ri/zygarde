@@ -1,3 +1,6 @@
+// Copyright (c) 2026 waldh4ri
+// SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+
 // Package hooks inventories kernel functions hooked through ftrace and kprobes,
 // flagging hooks that redirect execution or run code that can't be attributed.
 package hooks

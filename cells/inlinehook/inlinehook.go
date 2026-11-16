@@ -1,3 +1,6 @@
+// Copyright (c) 2026 waldh4ri
+// SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+
 // Package inlinehook detects kernel functions whose first instructions were
 // patched to jump elsewhere, without going through ftrace or kprobes.
 package inlinehook

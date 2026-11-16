@@ -1,3 +1,6 @@
+// Copyright (c) 2026 waldh4ri
+// SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+
 // Package kmsg reads the kernel log from /dev/kmsg and extracts kernel oopses
 // from it.
 //

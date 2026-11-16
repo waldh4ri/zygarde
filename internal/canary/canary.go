@@ -1,3 +1,6 @@
+// Copyright (c) 2026 waldh4ri
+// SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+
 // Package canary plants known objects that Cells must find in every view
 // they compare. If a canary is missing from a view, that view is being
 // filtered and its "clean" answers can't be trusted.

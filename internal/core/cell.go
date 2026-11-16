@@ -1,3 +1,6 @@
+// Copyright (c) 2026 waldh4ri
+// SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+
 // Package core defines the Cell abstraction (a detection module), the
 // per-run Env that Cells share, the Recorder they report through, and the
 // runner that executes them.

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 waldh4ri
+// SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+
 // Package rpmdb reads file checksums from an RPM package database stored as
 // SQLite (rpmdb.sqlite: Fedora 33+, RHEL/Alma/Rocky 9+, openSUSE Tumbleweed).
 //

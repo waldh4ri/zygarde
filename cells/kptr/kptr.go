@@ -1,3 +1,6 @@
+// Copyright (c) 2026 waldh4ri
+// SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+
 // Package kptr checks the function pointers the kernel calls to serve
 // /proc, /proc/net, /sys/module and directory listings: every one must point
 // into the kernel or the module that implements the file, and the kernel

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 waldh4ri
+// SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+
 // Package report holds a scan's results together with the context needed to
 // interpret them later: which host, which kernel, when, and with what tool.
 package report

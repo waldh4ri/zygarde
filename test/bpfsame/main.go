@@ -1,3 +1,6 @@
+// Copyright (c) 2026 waldh4ri
+// SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+
 // Command bpfsame undoes meaningless changes to regenerated BPF objects.
 //
 // clang's BTF emitter numbers some forward declarations in an order that

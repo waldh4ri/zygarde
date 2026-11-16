@@ -1,3 +1,6 @@
+// Copyright (c) 2026 waldh4ri
+// SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+
 // Package umhelper audits the programs the kernel itself runs as root, its
 // usermode helpers: modprobe (module autoloading), the core dump pipe
 // (core_pattern), the hotplug helper (uevent_helper), the orderly poweroff

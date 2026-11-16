@@ -92,3 +92,12 @@ flowchart LR
 ## Release
 
 `version` in `cmd/zygarde/main.go` (overridden by the Makefile with `git describe`) is reported by `--version` and stored in every report. CI builds `dist/` for both architectures and uploads them as an artifact.
+
+### Licensing
+
+Zygarde is `GPL-2.0-only OR BSD-2-Clause` (see [LICENSE](../LICENSE)); the eBPF programs declare `Dual BSD/GPL` to the kernel.
+
+- Every hand-written `.go` file carries a two-line header (`Copyright (c) 2026 waldh4ri` and `SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause`), and every `.bpf.c` file an SPDX tag. `go test .` fails if one is missing. Generated bpf2go files, vendored headers and docs are covered by [REUSE.toml](../REUSE.toml). Do not add lines to `.bpf.c` files just for headers: it shifts the BTF line info and makes `make docker-generate` rewrite the committed objects.
+- Full license texts live in `LICENSES/`. Third-party notices (cilium/ebpf, golang.org/x/sys, the Go runtime, libbpf headers, kernel type headers) are in [THIRD_PARTY_LICENSES](../THIRD_PARTY_LICENSES). Update it when `go.mod` gains or bumps a dependency, or when a new file is vendored.
+- The binaries embed LICENSE and THIRD_PARTY_LICENSES (`zygarde -licenses`), which is what the MIT and BSD licenses require for binary redistribution.
+- When publishing a GitHub release, attach `dist/LICENSE`, `dist/THIRD_PARTY_LICENSES` and `dist/LICENSES/` (`make dist` produces them) next to the binaries, and link the release tag as the corresponding source.
