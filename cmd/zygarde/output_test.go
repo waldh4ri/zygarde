@@ -64,11 +64,14 @@ func TestRenderSuspicious(t *testing.T) {
 		"SUSPICIOUS", "1 finding(s), see below",
 		"FINDINGS", "/usr/lib/.cache exists", "Evidence", "directory=/usr/lib · path=/usr/lib/.cache", "Why", "Rule out",
 		"OK*", "Partly checked (*)", "Not checked on this system",
-		"Exit code 2", "Keep the system running", "Report saved to report.json",
+		"Exit code 2", "Report saved to report.json",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q", want)
 		}
+	}
+	if strings.Contains(out, "NEXT STEPS") {
+		t.Error("output must not print a next-steps section")
 	}
 	if strings.Contains(out, "\033[") {
 		t.Error("colors must be off when disabled")
@@ -77,7 +80,7 @@ func TestRenderSuspicious(t *testing.T) {
 
 func TestRenderClean(t *testing.T) {
 	out := render(t, []core.Result{result("kernel_taint", "Kernel Taint Consistency", core.StatusOK, "Kernel is not tainted")})
-	for _, want := range []string{"CLEAN", "Exit code 0", "can't prove"} {
+	for _, want := range []string{"CLEAN", "Exit code 0"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q", want)
 		}
@@ -106,17 +109,17 @@ func TestKptrStep(t *testing.T) {
 	skipped := result("altered_syscall_table", "Syscall Table Integrity", core.StatusSkipped,
 		"kernel symbols unavailable: /proc/kallsyms addresses are hidden: kernel.kptr_restrict=2 hides kernel addresses from every process, root included")
 	r := &report.Report{Host: report.Host{KptrRestrict: &two}, Results: []core.Result{skipped, result("taint", "Taint", core.StatusOK, "")}}
-	if s := kptrStep(r); !strings.Contains(s, "kernel.kptr_restrict=2 hid kernel addresses from 1 check(s)") || !strings.Contains(s, "sysctl -w kernel.kptr_restrict=2") {
-		t.Errorf("kptrStep = %q", s)
+	if s := kptrHint(r); !strings.Contains(s, "kernel.kptr_restrict=2 hid kernel addresses from 1 check(s)") || !strings.Contains(s, "sysctl -w kernel.kptr_restrict=2") {
+		t.Errorf("kptrHint = %q", s)
 	}
 	r.Host.KptrRestrict = &zero
-	if s := kptrStep(r); s != "" {
-		t.Errorf("kptr_restrict=0 should add no step, got %q", s)
+	if s := kptrHint(r); s != "" {
+		t.Errorf("kptr_restrict=0 should add no hint, got %q", s)
 	}
 	r.Host.KptrRestrict = &two
 	r.Results = r.Results[1:]
-	if s := kptrStep(r); s != "" {
-		t.Errorf("no affected check should add no step, got %q", s)
+	if s := kptrHint(r); s != "" {
+		t.Errorf("no affected check should add no hint, got %q", s)
 	}
 }
 

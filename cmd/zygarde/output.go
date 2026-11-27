@@ -163,7 +163,7 @@ func (p *printer) result(r core.Result) {
 	}
 }
 
-// summary prints findings, coverage, the verdict and what to do next.
+// summary prints findings, coverage and the verdict.
 func (p *printer) summary(r *report.Report, savedTo string) {
 	if p.json {
 		p.writeJSON(r)
@@ -218,6 +218,9 @@ func (p *printer) summary(r *report.Report, savedTo string) {
 			p.wrapped("    - ", res.Name+": "+l, nil)
 		}
 	}
+	if s := kptrHint(r); s != "" {
+		p.wrapped("  ", s, nil)
+	}
 
 	p.section("Verdict")
 	switch r.Verdict {
@@ -235,14 +238,6 @@ func (p *printer) summary(r *report.Report, savedTo string) {
 		p.printf("  %s  no signs of hiding or tampering in the checks that ran. Exit code 0.\n", p.st.green("CLEAN"))
 	}
 
-	p.section("Next steps")
-	steps := nextSteps(r.Verdict)
-	if s := kptrStep(r); s != "" {
-		steps = append(steps, s)
-	}
-	for i, step := range steps {
-		p.wrapped(fmt.Sprintf("  %d. ", i+1), step, nil)
-	}
 	if savedTo != "" {
 		p.printf("\n  Report saved to %s\n", savedTo)
 	}
@@ -326,9 +321,9 @@ func visibleLen(s string) int {
 	return n
 }
 
-// kptrStep explains how to run the checks that kernel.kptr_restrict kept from
+// kptrHint explains how to run the checks that kernel.kptr_restrict kept from
 // reading kernel symbols, or returns "" if none were affected.
-func kptrStep(r *report.Report) string {
+func kptrHint(r *report.Report) string {
 	if r.Host.KptrRestrict == nil || *r.Host.KptrRestrict == 0 {
 		return ""
 	}
@@ -353,28 +348,6 @@ func kptrStep(r *report.Report) string {
 		"To cover them, lower it for the scan and restore it afterwards: "+
 		"sysctl -w kernel.kptr_restrict=1, run Zygarde, then sysctl -w kernel.kptr_restrict=%d. "+
 		"If this host isn't meant to set it, note that a rootkit can raise it to blind scanners.", v, affected, v)
-}
-
-func nextSteps(v report.Verdict) []string {
-	switch v {
-	case report.VerdictSuspicious:
-		return []string{
-			"Keep the system running. Don't reboot, unload modules or kill processes yet: memory-resident evidence and the kernel's taint state would be lost.",
-			"Preserve evidence first: save this report (--output), preserve volatile binaries (--preserve-dir), and capture RAM (e.g. AVML or LiME) before further live commands.",
-			"Analyse the memory image offline, e.g. with Volatility 3, deconflicting scanner_footprint IDs, and check each finding against its \"Rule out\" notes.",
-			"Until the findings are explained, treat credentials and keys used on this host as exposed.",
-		}
-	case report.VerdictIncomplete:
-		return []string{
-			"Some checks could not finish (see Errors). Re-run with -d to see why.",
-			"Results from the checks that completed stand; the failed ones give no assurance either way.",
-		}
-	default:
-		return []string{
-			"Nothing to act on from this scan. A clean result raises the bar for an attacker but can't prove that a kernel-level compromise is absent.",
-			"Order of volatility: if you already suspect a single host, capture memory (AVML/LiME) before running live scanners.",
-		}
-	}
 }
 
 func (p *printer) writeJSON(r *report.Report) {

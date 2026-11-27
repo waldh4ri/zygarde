@@ -34,7 +34,7 @@ Copy the binary to the target host. It needs no installation. Run it from a path
 sudo ./zygarde
 ```
 
-A scan takes a few seconds to about a minute. It prints one line per Cell as it runs, then the findings, coverage, verdict and next steps. See [Usage and reports](usage.md) for how to read them.
+A scan takes a few seconds to about a minute. It prints one line per Cell as it runs, then the findings, coverage and verdict. See [Usage and reports](usage.md) for how to read them.
 
 Common variations:
 
