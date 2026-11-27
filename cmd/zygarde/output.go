@@ -105,7 +105,7 @@ func (p *printer) start(c core.Cell) {
 		return
 	}
 	if p.verbose {
-		p.printf("  %s\n", p.st.dim(fmt.Sprintf("[%d/%d] %s: %s", p.index, p.total, c.Name(), c.Description())))
+		p.printf("  %s\n", p.st.dim(fmt.Sprintf("[%02d/%02d] %s: %s", p.index, p.total, c.Name(), c.Description())))
 	}
 }
 
@@ -114,7 +114,7 @@ func (p *printer) result(r core.Result) {
 	if p.json {
 		return
 	}
-	label := fmt.Sprintf("[%d/%d] %-*s", p.index, p.total, p.nameW, r.Name)
+	label := fmt.Sprintf("[%02d/%02d] %-*s", p.index, p.total, p.nameW, r.Name)
 	text := r.StatusText
 	if r.Status == core.StatusOK && len(r.Limitations) > 0 {
 		text += "*" // partly checked; listed under Coverage
