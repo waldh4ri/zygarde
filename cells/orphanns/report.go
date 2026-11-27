@@ -127,9 +127,8 @@ func (c *Cell) report(ctx context.Context, env *core.Env, rec *core.Recorder, v 
 			total++
 		}
 	}
-	pinned := len(v.pins)
 	if len(keys) == 0 {
-		rec.Message("No orphan namespaces (%d namespaces with processes, %d pinned by mounts or descriptors, %d network namespaces with sockets)", total, pinned, len(v.sockets))
+		rec.Message("No orphan namespaces among %d", total)
 		return
 	}
 

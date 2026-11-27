@@ -76,10 +76,10 @@ func (*Cell) Supported(env *core.Env) error {
 		return err
 	}
 	if env.Lockdown == "confidentiality" {
-		return core.Skip("kernel lockdown (confidentiality) forbids reading kernel memory from BPF")
+		return core.Skip("kernel lockdown (confidentiality)")
 	}
 	if !hasMember(env.BTF, "netns_nf", "hooks_ipv4") {
-		return core.Skip("kernel built without netfilter, or with a netfilter layout older than Linux 4.16")
+		return core.Skip("no netfilter, or a layout before Linux 4.16")
 	}
 	return nil
 }
@@ -386,6 +386,6 @@ func report(rec *core.Recorder, inv *inventory, res *kattr.Resolver) {
 	case len(inv.entries) == 0:
 		rec.Message("No netfilter hooks registered in %d network namespace(s)", len(inv.namespaces))
 	default:
-		rec.Message("%d netfilter hook(s) in %d network namespace(s), all attributed to the kernel, visible modules or BPF", len(inv.entries), len(inv.namespaces))
+		rec.Message("%d hooks in %d netns, all attributed", len(inv.entries), len(inv.namespaces))
 	}
 }

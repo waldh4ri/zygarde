@@ -206,7 +206,7 @@ func (c *Cell) declaredDigests(rec *core.Recorder, wanted map[string]bool) (dige
 		}
 		return out, owners, "rpm"
 	}
-	rec.Limit("Mapped system libraries were not verified against package checksums: no dpkg or SQLite rpm database found (Berkeley DB rpm databases are not supported)")
+	rec.Limit("System libraries not verified against package checksums: no dpkg or SQLite rpm database (Berkeley DB unsupported)")
 	return nil, nil, ""
 }
 

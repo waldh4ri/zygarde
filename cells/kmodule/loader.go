@@ -92,16 +92,16 @@ func (c *Cell) readLoaderView() (loaderView, error) {
 // the files behind, and reading them oopses the kernel.
 func (c *Cell) checkLoaderAllocations(rec *core.Recorder, moduleMemory bool) int {
 	if !onePerModule(c.release, moduleMemory) {
-		rec.Limit("Module memory in /proc/vmallocinfo was not compared with /proc/modules: kernel %s gives each module several allocations or carves them from a shared cache", c.release)
+		rec.Limit("/proc/vmallocinfo not compared with /proc/modules: kernel %s splits or shares module memory", c.release)
 		return 0
 	}
 	v, err := c.readLoaderView()
 	if err != nil {
-		rec.Limit("Module memory in /proc/vmallocinfo was not compared with /proc/modules: %v", err)
+		rec.Limit("/proc/vmallocinfo not compared with /proc/modules: %v", err)
 		return 0
 	}
 	if v.areas == 0 {
-		rec.Limit("Module memory in /proc/vmallocinfo was not compared with /proc/modules: this kernel shows no per-module allocations")
+		rec.Limit("/proc/vmallocinfo not compared with /proc/modules: no per-module allocations shown")
 		return 0
 	}
 	if v.excess() == 0 {

@@ -96,6 +96,7 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 	}
 
 	suspicious := 0
+	kernelRead := false
 	if c.root == "" {
 		n, err := c.compareKernel(env, rec, settings)
 		if err != nil {
@@ -104,6 +105,7 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 			}
 			rec.Limit("The kernel's own copy of the usermode helpers was not read: %v", err)
 		}
+		kernelRead = err == nil
 		suspicious += n
 	}
 
@@ -123,10 +125,13 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 	}
 	suspicious += c.checkReleaseAgents(rec, examine)
 
-	if suspicious > 0 {
+	switch {
+	case suspicious > 0:
 		rec.Message("%d suspicious usermode helper(s)", suspicious)
-	} else {
-		rec.Message("Usermode helpers are consistent with kernel memory and point to root-controlled programs")
+	case kernelRead:
+		rec.Message("Helpers match kernel, root-controlled")
+	default:
+		rec.Message("Helpers are root-controlled")
 	}
 	return nil
 }
@@ -150,7 +155,7 @@ func program(name, value string) string {
 // procfs/sysfs value differs. It fills the kernel side of settings.
 func (c *Cell) compareKernel(env *core.Env, rec *core.Recorder, settings []setting) (int, error) {
 	if env.Lockdown == "confidentiality" {
-		return 0, errors.New("kernel lockdown (confidentiality) forbids reading kernel memory from BPF")
+		return 0, errors.New("kernel lockdown (confidentiality)")
 	}
 	ks, err := env.Kallsyms()
 	if err != nil {
@@ -375,7 +380,7 @@ func (c *Cell) examiner(rec *core.Recorder) func(prog, source, trigger string, e
 		}
 		if !sameRoot {
 			if !limited {
-				rec.Limit("Usermode helper programs not examined: zygarde does not share the root directory of init, from which the kernel runs them (a container)")
+				rec.Limit("Helper programs not examined: zygarde does not share init's root directory (a container)")
 				limited = true
 			}
 			rec.Observe(fmt.Sprintf("The kernel runs %s as root through %s (file not examined)", prog, source), d)

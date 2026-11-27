@@ -46,7 +46,7 @@ func (*Cell) Supported(env *core.Env) error {
 		return err
 	}
 	if env.Lockdown == "confidentiality" {
-		return core.Skip("kernel lockdown (confidentiality) forbids reading kernel memory from BPF")
+		return core.Skip("kernel lockdown (confidentiality)")
 	}
 	self, err := os.Readlink("/proc/self")
 	if err != nil {
@@ -243,10 +243,9 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 		return err
 	}
 
-	ran := 0
 	if sched != nil {
 		self := before.procs[uint32(os.Getpid())]
-		ran, err = sched.check(rec, before, after, self.GlobalTgid, reportedUnlinked)
+		_, err = sched.check(rec, before, after, self.GlobalTgid, reportedUnlinked)
 		if err != nil {
 			return err
 		}
@@ -295,10 +294,8 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 		rec.Message("%d hidden process(es) or task(s)", hidden)
 	case disguised > 0:
 		rec.Message("No hidden processes; %d disguised process(es)", disguised)
-	case sched != nil:
-		rec.Message("No hidden processes (%d kernel processes, %d /proc entries, %d threads seen running)", len(before.procs), len(listed), ran)
 	default:
-		rec.Message("No hidden processes (%d kernel processes, %d /proc entries)", len(before.procs), len(listed))
+		rec.Message("No hidden processes (%d checked)", len(before.procs))
 	}
 	return nil
 }
@@ -422,11 +419,11 @@ func startScheduler(env *core.Env, spec *ebpf.CollectionSpec, rec *core.Recorder
 		return nil, nil
 	}
 	if _, err := env.BTF.AnyTypeByName("btf_trace_sched_switch"); err != nil {
-		rec.Limit("Scheduler view not run: the kernel lacks BTF-typed tracepoints (Linux 5.5+), so tasks removed from the PID table can't be detected")
+		rec.Limit("Scheduler view not run (no BTF-typed tracepoints, Linux 5.5+): tasks unlinked from the PID table go unseen")
 		return nil, nil
 	}
 	if init, err := bpfutil.InInitPIDNS(); err != nil || !init {
-		rec.Limit("Scheduler view not run: zygarde is not in the initial PID namespace (e.g. inside a container), so tasks removed from the PID table can't be detected")
+		rec.Limit("Scheduler view not run (not in the initial PID namespace): tasks unlinked from the PID table go unseen")
 		return nil, nil
 	}
 	s := &scheduler{}

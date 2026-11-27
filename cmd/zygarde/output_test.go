@@ -218,6 +218,34 @@ func TestKptrCoverage(t *testing.T) {
 	}
 }
 
+// Lockdown is grouped like kptr_restrict, in its own block.
+func TestLockdownCoverage(t *testing.T) {
+	lock := "kernel lockdown (confidentiality)"
+	inline := result("inline_hook", "Inline Hook Detection", core.StatusSkipped, lock)
+	hooks := result("userhooks", "Userspace Hook Detection", core.StatusOK, "")
+	hooks.Limitations = []string{"Executable mappings not compared with the kernel's: " + lock}
+	var buf bytes.Buffer
+	p := newPrinter(&buf, false, false, false, 100)
+	rep := &report.Report{}
+	rep.Finish([]core.Result{inline, hooks})
+	p.summary(rep, "")
+	out := buf.String()
+	t.Log("\n" + out)
+	for _, want := range []string{
+		"Kernel lockdown (confidentiality) blocks reading kernel memory:",
+		"- Not checked: Inline Hook Detection",
+		"- Partly checked (*): Userspace Hook Detection",
+		"boot without lockdown=confidentiality",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("coverage lacks %q", want)
+		}
+	}
+	if strings.Contains(out, "Not checked on this system") || strings.Contains(out, "mappings not compared") {
+		t.Error("lockdown causes must not also be listed one by one")
+	}
+}
+
 func TestSymbolsUnavailableSkips(t *testing.T) {
 	if st, _ := core.Classify(nil, core.SymbolsUnavailable(kernel.HiddenAddressesError())); st != core.StatusSkipped {
 		t.Errorf("hidden kallsyms addresses: status %v, want SKIPPED", st)

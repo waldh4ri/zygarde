@@ -68,7 +68,7 @@ func (*Cell) Supported(env *core.Env) error {
 		return core.Skip("only implemented for x86_64")
 	}
 	if env.Lockdown == "confidentiality" {
-		return core.Skip("kernel lockdown (confidentiality) forbids reading kernel memory from BPF")
+		return core.Skip("kernel lockdown (confidentiality)")
 	}
 	ks, err := env.Kallsyms()
 	if err != nil {
@@ -243,9 +243,9 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	case hooked > 0:
 		rec.Message("%d of %d checked functions are inline-hooked", hooked, checked)
 	case outside > 0:
-		rec.Message("No inline hooks in %d checked functions; kallsyms places %d outside the kernel's text", checked, outside)
+		rec.Message("No inline hooks in %d functions (%d outside text)", checked, outside)
 	default:
-		rec.Message("No inline hooks in %d checked functions", checked)
+		rec.Message("No inline hooks in %d functions", checked)
 	}
 	return nil
 }

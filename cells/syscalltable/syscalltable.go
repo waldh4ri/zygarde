@@ -50,7 +50,7 @@ func (*Cell) Supported(env *core.Env) error {
 		return core.Skip("only implemented for x86_64")
 	}
 	if env.Lockdown == "confidentiality" {
-		return core.Skip("kernel lockdown (confidentiality) forbids reading kernel memory from BPF")
+		return core.Skip("kernel lockdown (confidentiality)")
 	}
 	ks, err := env.Kallsyms()
 	if err != nil {
@@ -60,10 +60,10 @@ func (*Cell) Supported(env *core.Env) error {
 		return fmt.Errorf("reading /proc/kallsyms: %w", err)
 	}
 	if ks.Has("x64_sys_call") {
-		return core.Skip("this kernel dispatches syscalls through x64_sys_call(); sys_call_table is not used")
+		return core.Skip("sys_call_table unused (x64_sys_call())")
 	}
 	if !ks.Has("sys_call_table") {
-		return core.Skip("sys_call_table is not in /proc/kallsyms (kernel built without CONFIG_KALLSYMS_ALL)")
+		return core.Skip("needs CONFIG_KALLSYMS_ALL (no sys_call_table)")
 	}
 	return nil
 }
@@ -79,7 +79,7 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 		return core.Skip("kernel image range unavailable: %v", err)
 	}
 	if !img.HasData {
-		return core.Skip("the end of the kernel image (_end) is not in /proc/kallsyms")
+		return core.Skip("_end not in /proc/kallsyms")
 	}
 
 	type check struct {
@@ -109,7 +109,7 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 			rec.Message("kallsyms places %d syscall handler(s) outside the kernel image", outside)
 			return nil
 		}
-		return core.Skip("none of the checked syscall handlers is in /proc/kallsyms")
+		return core.Skip("no checked handler in /proc/kallsyms")
 	}
 	if !img.InImage(table, uint64(maxNr+1)*8) {
 		outsideImage(rec, "sys_call_table", table, img)
@@ -171,9 +171,9 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	case hooked > 0:
 		rec.Message("%d of %d checked syscall table entries are hooked", hooked, verified)
 	case outside > 0:
-		rec.Message("All %d checked syscall table entries are intact; kallsyms places %d handler(s) outside the kernel image", verified, outside)
+		rec.Message("All %d entries intact (%d outside image)", verified, outside)
 	default:
-		rec.Message("All %d checked syscall table entries are intact", verified)
+		rec.Message("All %d syscall table entries intact", verified)
 	}
 	return nil
 }

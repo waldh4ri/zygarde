@@ -53,7 +53,7 @@ func (*Cell) Description() string {
 
 func (*Cell) Supported(env *core.Env) error {
 	if env.Lockdown == "confidentiality" {
-		return core.Skip("kernel lockdown (confidentiality) forbids access to tracefs")
+		return core.Skip("kernel lockdown (confidentiality)")
 	}
 	return nil
 }
@@ -69,7 +69,7 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 	defer cleanup()
 	path := filepath.Join(dir, "enabled_functions")
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-		return core.Skip("kernel built without dynamic ftrace (no enabled_functions)")
+		return core.Skip("no dynamic ftrace (enabled_functions)")
 	}
 
 	target, kind, closeCanary := plantCanary(env, rec, canaryTarget(dir))
@@ -121,7 +121,7 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 	case hooked == 0:
 		rec.Message("No kernel functions are hooked through ftrace")
 	default:
-		rec.Message("%d hooked function(s), all attributed to known mechanisms", hooked)
+		rec.Message("%d hooked function(s), all attributed", hooked)
 	}
 	return nil
 }

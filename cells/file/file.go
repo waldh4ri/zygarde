@@ -55,7 +55,7 @@ func (*Cell) Supported(env *core.Env) error {
 		return err
 	}
 	if env.Lockdown == "confidentiality" {
-		return core.Skip("kernel lockdown (confidentiality) forbids reading kernel memory from BPF")
+		return core.Skip("kernel lockdown (confidentiality)")
 	}
 	return nil
 }
@@ -204,13 +204,13 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 
 	switch {
 	case hidden > 0 && stashed > 0:
-		rec.Message("%d hidden directory entries and %d executable dot-entries in system directories (%d directories)", hidden, stashed, listed)
+		rec.Message("%d hidden entries, %d dot-executables in %d directories", hidden, stashed, listed)
 	case hidden > 0:
 		rec.Message("%d hidden directory entries in %d directories", hidden, listed)
 	case stashed > 0:
-		rec.Message("No filtered entries; %d executable dot-entries in system directories (%d directories)", stashed, listed)
+		rec.Message("No hidden entries; %d dot-executables", stashed)
 	default:
-		rec.Message("No hidden entries in %d directories (including /proc)", listed)
+		rec.Message("No hidden entries in %d directories", listed)
 	}
 	return nil
 }

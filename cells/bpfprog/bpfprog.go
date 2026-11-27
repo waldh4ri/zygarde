@@ -206,7 +206,7 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	case n > 0:
 		rec.Message("%d suspicious BPF program(s) or attachment(s) (%s)", n, counts)
 	default:
-		rec.Message("No hidden BPF programs (%s)", counts)
+		rec.Message("No hidden BPF programs (%d checked)", len(before))
 	}
 	return nil
 }

@@ -178,7 +178,7 @@ func (e *Env) RequireBTFType(name, feature string) error {
 // to the legacy bpf_probe_read(), which lockdown denies too.
 func (e *Env) RequireUserMemoryReads() error {
 	if e.Lockdown == "confidentiality" {
-		return Skip("kernel lockdown (confidentiality): cilium/ebpf downgrades bpf_probe_read_user() to bpf_probe_read(), which lockdown forbids")
+		return Skip("kernel lockdown (confidentiality)") // see above: user reads are denied too
 	}
 	return nil
 }
