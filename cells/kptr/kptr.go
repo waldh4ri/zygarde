@@ -105,7 +105,7 @@ func (*Cell) Supported(env *core.Env) error {
 		return err
 	}
 	if env.Lockdown == "confidentiality" {
-		return core.Skip("kernel lockdown (confidentiality) forbids reading kernel memory from BPF")
+		return core.Skip("kernel lockdown (confidentiality)")
 	}
 	return nil
 }
@@ -191,7 +191,7 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 	if ch.suspicious > 0 {
 		rec.Message("%d suspicious pointer(s) among %d checked in %d operation tables", ch.suspicious, ch.pointers, ch.tables)
 	} else {
-		rec.Message("%d pointers in %d operation tables of %d files point into the kernel or the module implementing them", ch.pointers, ch.tables, len(files)-missing)
+		rec.Message("%d pointers in %d tables, none foreign", ch.pointers, ch.tables)
 	}
 	return nil
 }

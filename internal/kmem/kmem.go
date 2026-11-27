@@ -58,7 +58,7 @@ type Reader struct {
 // Open loads and attaches the reader. Callers must Close it.
 func Open(env *core.Env) (*Reader, error) {
 	if env.Lockdown == "confidentiality" {
-		return nil, errors.New("kernel lockdown (confidentiality) forbids reading kernel memory from BPF")
+		return nil, errors.New("kernel lockdown (confidentiality)")
 	}
 	spec, err := loadKmem()
 	if err != nil {

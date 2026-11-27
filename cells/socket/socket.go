@@ -234,9 +234,9 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 	case sniffers > 0:
 		rec.Message("%d unrecognised packet sniffer(s); /proc/net and netlink agree on %d sockets", sniffers, len(first.proc))
 	case len(first.compared) == 0:
-		rec.Message("%d sockets in /proc/net; netlink sock_diag is unavailable, so only their owners were checked", len(first.proc))
+		rec.Message("%d sockets, owners only (no sock_diag)", len(first.proc))
 	default:
-		rec.Message("/proc/net and netlink agree on %d sockets", len(first.proc))
+		rec.Message("No hidden sockets (%d checked)", len(first.proc))
 	}
 	return nil
 }

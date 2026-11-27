@@ -109,6 +109,6 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 		byID.Close()
 	}
 
-	rec.Message("bpf() works normally (%d programs, %d maps enumerated)", len(progIDs), len(mapIDs))
+	rec.Message("bpf() works (%d programs, %d maps)", len(progIDs), len(mapIDs))
 	return nil
 }

@@ -131,8 +131,18 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 	boot := c.checkAutoload(rec)
 	switch {
 	case kr.hidden > 0 || kr.dangling > 0:
-		rec.Message("%d hidden kernel module(s) (%d seen only in kernel memory), %d module(s) with sysfs files over freed attributes, %d suspicious boot-time module configuration(s)",
-			len(found)+kr.hidden, kr.hidden, kr.dangling, boot)
+		// Only the counts that are not zero.
+		var parts []string
+		if n := len(found) + kr.hidden; n > 0 {
+			parts = append(parts, fmt.Sprintf("%d hidden kernel module(s)", n))
+		}
+		if kr.dangling > 0 {
+			parts = append(parts, fmt.Sprintf("%d with sysfs files over freed attributes", kr.dangling))
+		}
+		if boot > 0 {
+			parts = append(parts, fmt.Sprintf("%d suspicious boot-time configuration(s)", boot))
+		}
+		rec.Message("%s", strings.Join(parts, ", "))
 	case loader > 0 && len(found) == 0:
 		rec.Message("%d module-loader allocation(s) belong to no listed module (a module hiding from every view)", loader)
 	case len(found) > 0 && boot > 0:

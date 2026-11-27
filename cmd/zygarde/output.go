@@ -197,11 +197,12 @@ func (p *printer) summary(r *report.Report, savedTo string) {
 
 	p.section("Coverage")
 	p.printf("  %d of %d checks completed.\n", completed, len(r.Results))
-	var kptrSkipped, kptrPartial []string
+	causeSkipped := make([][]string, len(causes))
+	causePartial := make([][]string, len(causes))
 	header := false
 	for _, res := range skipped {
-		if kptrCaused(res.Message) {
-			kptrSkipped = append(kptrSkipped, res.Name)
+		if i := causeOf(res.Message); i >= 0 {
+			causeSkipped[i] = append(causeSkipped[i], res.Name)
 			continue
 		}
 		if !header {
@@ -212,10 +213,11 @@ func (p *printer) summary(r *report.Report, savedTo string) {
 	}
 	header = false
 	for _, res := range r.Results {
-		limited := false
 		for _, l := range res.Limitations {
-			if kptrCaused(l) {
-				limited = true
+			if i := causeOf(l); i >= 0 {
+				if !slices.Contains(causePartial[i], res.Name) {
+					causePartial[i] = append(causePartial[i], res.Name)
+				}
 				continue
 			}
 			if !header {
@@ -224,11 +226,10 @@ func (p *printer) summary(r *report.Report, savedTo string) {
 			}
 			p.wrapped("    - ", res.Name+": "+l, nil)
 		}
-		if limited {
-			kptrPartial = append(kptrPartial, res.Name)
-		}
 	}
-	p.kptrCoverage(r, kptrSkipped, kptrPartial)
+	for i, c := range causes {
+		p.causeCoverage(r, c, causeSkipped[i], causePartial[i])
+	}
 
 	p.section("Verdict")
 	switch r.Verdict {
@@ -467,40 +468,58 @@ func visibleLen(s string) int {
 	return n
 }
 
-// kptrCaused reports whether a skip reason or limitation comes from
-// kernel.kptr_restrict hiding kernel addresses.
-func kptrCaused(s string) bool { return strings.Contains(s, "kptr_restrict") }
+// A cause is a system setting that skips or limits several checks at once.
+// COVERAGE names those checks together with how to cover them, instead of
+// every line repeating the cause.
+type cause struct {
+	match   string                                    // in the skip reason or limitation
+	explain func(r *report.Report) (string, []string) // heading, how to cover them
+}
 
-// kptrCoverage names the checks kernel.kptr_restrict skipped or limited, once,
-// with how to cover them, instead of every line repeating the cause.
-func (p *printer) kptrCoverage(r *report.Report, skipped, partial []string) {
+var causes = []cause{
+	{"kptr_restrict", func(r *report.Report) (string, []string) {
+		v := -1
+		if r.Host.KptrRestrict != nil {
+			v = *r.Host.KptrRestrict
+		}
+		switch v {
+		case 2:
+			return "kernel.kptr_restrict=2 hides kernel addresses, even from root:", []string{
+				"To cover them: sysctl -w kernel.kptr_restrict=1, run Zygarde, then set it back to 2.",
+				"If this host isn't meant to set it, a rootkit may have raised it to blind scanners.",
+			}
+		case 1:
+			return "kernel.kptr_restrict=1 hides kernel addresses from processes without CAP_SYSLOG:",
+				[]string{"To cover them, run Zygarde as root with CAP_SYSLOG."}
+		}
+		return "Kernel addresses were hidden:", nil
+	}},
+	{"lockdown (confidentiality)", func(*report.Report) (string, []string) {
+		return "Kernel lockdown (confidentiality) blocks reading kernel memory:",
+			[]string{"Lockdown can't be lowered at runtime: boot without lockdown=confidentiality to cover them."}
+	}},
+}
+
+// causeOf returns the index in causes of what a skip reason or limitation
+// comes from, or -1.
+func causeOf(s string) int {
+	return slices.IndexFunc(causes, func(c cause) bool { return strings.Contains(s, c.match) })
+}
+
+func (p *printer) causeCoverage(r *report.Report, c cause, skipped, partial []string) {
 	if len(skipped)+len(partial) == 0 {
 		return
 	}
-	v := -1
-	if r.Host.KptrRestrict != nil {
-		v = *r.Host.KptrRestrict
-	}
-	switch v {
-	case 2:
-		p.printf("  kernel.kptr_restrict=2 hides kernel addresses, even from root:\n")
-	case 1:
-		p.printf("  kernel.kptr_restrict=1 hides kernel addresses from processes without CAP_SYSLOG:\n")
-	default:
-		p.printf("  Kernel addresses were hidden:\n")
-	}
+	heading, fix := c.explain(r)
+	p.printf("  %s\n", heading)
 	if len(skipped) > 0 {
 		p.wrapped("    - Not checked: ", strings.Join(skipped, ", "), nil)
 	}
 	if len(partial) > 0 {
 		p.wrapped("    - Partly checked (*): ", strings.Join(partial, ", "), nil)
 	}
-	switch v {
-	case 2:
-		p.wrapped("    ", "To cover them: sysctl -w kernel.kptr_restrict=1, run Zygarde, then set it back to 2.", nil)
-		p.wrapped("    ", "If this host isn't meant to set it, a rootkit may have raised it to blind scanners.", nil)
-	case 1:
-		p.wrapped("    ", "To cover them, run Zygarde as root with CAP_SYSLOG.", nil)
+	for _, f := range fix {
+		p.wrapped("    ", f, nil)
 	}
 }
 

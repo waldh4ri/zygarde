@@ -78,7 +78,7 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 	if suspicious > 0 {
 		rec.Message("%d dynamic linker or memory injection point(s)", suspicious)
 	} else {
-		rec.Message("No preloaded libraries, unusual library directories, injected or modified system libraries")
+		rec.Message("No preloaded or tampered libraries")
 	}
 	return nil
 }

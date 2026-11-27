@@ -102,7 +102,7 @@ func (c *Cell) compareMappings(ctx context.Context, env *core.Env, rec *core.Rec
 		return 0, nil
 	}
 	if env.Lockdown == "confidentiality" {
-		rec.Limit("Executable mappings not compared with the kernel's: kernel lockdown (confidentiality) forbids reading kernel memory from BPF")
+		rec.Limit("Executable mappings not compared with the kernel's: kernel lockdown (confidentiality)")
 		return 0, nil
 	}
 	if self, err := os.Readlink(filepath.Join(c.proc, "self")); err != nil || self != strconv.Itoa(os.Getpid()) {
