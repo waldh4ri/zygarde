@@ -142,10 +142,15 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 	case boot > 0:
 		rec.Message("No hidden modules; %d suspicious boot-time module configuration(s)", boot)
 	case kr.ran:
-		rec.Message("All %d loaded modules are consistent across /proc/modules, /sys/module, module BTF and kernel memory "+
-			"(module list %d, module kobjects %d, mod_tree %d)", len(v.proc), kr.listed, kr.kobjects, kr.tree)
+		n := len(v.proc)
+		if kr.listed == n && kr.kobjects == n && kr.tree == n {
+			rec.Message("All %d modules match in every view", n)
+		} else {
+			rec.Message("All %d modules match in every view (kernel memory: list %d, kobjects %d, mod_tree %d)",
+				n, kr.listed, kr.kobjects, kr.tree)
+		}
 	default:
-		rec.Message("All %d loaded modules are consistent across /proc/modules, /sys/module and module BTF", len(v.proc))
+		rec.Message("All %d modules match in /proc, /sys, BTF", len(v.proc))
 	}
 	return nil
 }

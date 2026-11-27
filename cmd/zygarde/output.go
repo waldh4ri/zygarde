@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"unicode/utf8"
@@ -105,7 +106,7 @@ func (p *printer) start(c core.Cell) {
 		return
 	}
 	if p.verbose {
-		p.printf("  %s\n", p.st.dim(fmt.Sprintf("[%d/%d] %s: %s", p.index, p.total, c.Name(), c.Description())))
+		p.printf("  %s\n", p.st.dim(fmt.Sprintf("[%02d/%02d] %s: %s", p.index, p.total, c.Name(), c.Description())))
 	}
 }
 
@@ -114,7 +115,7 @@ func (p *printer) result(r core.Result) {
 	if p.json {
 		return
 	}
-	label := fmt.Sprintf("[%d/%d] %-*s", p.index, p.total, p.nameW, r.Name)
+	label := fmt.Sprintf("[%02d/%02d] %-*s", p.index, p.total, p.nameW, r.Name)
 	text := r.StatusText
 	if r.Status == core.StatusOK && len(r.Limitations) > 0 {
 		text += "*" // partly checked; listed under Coverage
@@ -163,7 +164,7 @@ func (p *printer) result(r core.Result) {
 	}
 }
 
-// summary prints findings, coverage, the verdict and what to do next.
+// summary prints findings, coverage and the verdict.
 func (p *printer) summary(r *report.Report, savedTo string) {
 	if p.json {
 		p.writeJSON(r)
@@ -172,13 +173,7 @@ func (p *printer) summary(r *report.Report, savedTo string) {
 
 	if r.Findings > 0 {
 		p.section("Findings")
-		n := 0
-		for _, res := range r.Results {
-			for _, f := range res.Findings {
-				n++
-				p.finding(n, res.Name, f)
-			}
-		}
+		p.findings(r)
 	}
 
 	var errs, skipped []core.Result
@@ -202,22 +197,38 @@ func (p *printer) summary(r *report.Report, savedTo string) {
 
 	p.section("Coverage")
 	p.printf("  %d of %d checks completed.\n", completed, len(r.Results))
-	if len(skipped) > 0 {
-		p.printf("  Not checked on this system:\n")
-		for _, res := range skipped {
-			p.wrapped("    - ", res.Name+": "+res.Message, nil)
+	var kptrSkipped, kptrPartial []string
+	header := false
+	for _, res := range skipped {
+		if kptrCaused(res.Message) {
+			kptrSkipped = append(kptrSkipped, res.Name)
+			continue
 		}
+		if !header {
+			p.printf("  Not checked on this system:\n")
+			header = true
+		}
+		p.wrapped("    - ", res.Name+": "+res.Message, nil)
 	}
-	partial := false
+	header = false
 	for _, res := range r.Results {
+		limited := false
 		for _, l := range res.Limitations {
-			if !partial {
+			if kptrCaused(l) {
+				limited = true
+				continue
+			}
+			if !header {
 				p.printf("  Partly checked (*):\n")
-				partial = true
+				header = true
 			}
 			p.wrapped("    - ", res.Name+": "+l, nil)
 		}
+		if limited {
+			kptrPartial = append(kptrPartial, res.Name)
+		}
 	}
+	p.kptrCoverage(r, kptrSkipped, kptrPartial)
 
 	p.section("Verdict")
 	switch r.Verdict {
@@ -235,35 +246,165 @@ func (p *printer) summary(r *report.Report, savedTo string) {
 		p.printf("  %s  no signs of hiding or tampering in the checks that ran. Exit code 0.\n", p.st.green("CLEAN"))
 	}
 
-	p.section("Next steps")
-	steps := nextSteps(r.Verdict)
-	if s := kptrStep(r); s != "" {
-		steps = append(steps, s)
-	}
-	for i, step := range steps {
-		p.wrapped(fmt.Sprintf("  %d. ", i+1), step, nil)
-	}
 	if savedTo != "" {
 		p.printf("\n  Report saved to %s\n", savedTo)
 	}
 }
 
-func (p *printer) finding(n int, cell string, f core.Finding) {
-	p.printf("\n  %s %s\n", p.st.yellow(fmt.Sprintf("%d.", n)), p.st.bold(cell))
-	p.wrapped("     ", f.Description, nil)
-	if len(f.Details) > 0 {
-		var ev []string
-		for _, k := range slices.Sorted(maps.Keys(f.Details)) {
-			ev = append(ev, k+"="+f.Details[k])
+// findings prints one table row per finding, then what each kind of finding
+// means and how to rule it out, once for all the rows it applies to.
+func (p *printer) findings(r *report.Report) {
+	type note struct {
+		cell, why, benign string
+		rows              []int
+	}
+	var rows [][]string
+	var notes []*note
+	for _, res := range r.Results {
+		for _, f := range res.Findings {
+			n := len(rows) + 1
+			var ev []string
+			for _, k := range slices.Sorted(maps.Keys(f.Details)) {
+				ev = append(ev, k+"="+f.Details[k])
+			}
+			rows = append(rows, []string{strconv.Itoa(n), res.Name, f.Description, strings.Join(ev, "\n")})
+			if f.Why == "" && f.Benign == "" {
+				continue
+			}
+			i := slices.IndexFunc(notes, func(x *note) bool { return x.cell == res.Name && x.why == f.Why && x.benign == f.Benign })
+			if i < 0 {
+				notes = append(notes, &note{cell: res.Name, why: f.Why, benign: f.Benign})
+				i = len(notes) - 1
+			}
+			notes[i].rows = append(notes[i].rows, n)
 		}
-		p.labelled("Evidence", strings.Join(ev, " · "))
 	}
-	if f.Why != "" {
-		p.labelled("Why", f.Why)
+
+	p.printf("\n")
+	p.table([]string{"#", "Check", "Finding", "Evidence"}, rows)
+	for _, n := range notes {
+		p.printf("\n  %s %s\n", p.st.yellow(numberRanges(n.rows)+"."), p.st.bold(n.cell))
+		if n.why != "" {
+			p.labelled("Why", n.why)
+		}
+		if n.benign != "" {
+			p.labelled("Rule out", n.benign)
+		}
 	}
-	if f.Benign != "" {
-		p.labelled("Rule out", f.Benign)
+}
+
+// table prints a bordered table that fits the output width. The first column
+// and the second (capped) take their content's width; the third and fourth
+// share the rest 3:2. Cells wrap at spaces, and words too long for their
+// column (paths) break after a slash where possible.
+func (p *printer) table(head []string, rows [][]string) {
+	w := make([]int, len(head))
+	for i, h := range head {
+		w[i] = utf8.RuneCountInString(h)
 	}
+	for _, row := range rows {
+		for i := range 2 {
+			w[i] = max(w[i], utf8.RuneCountInString(row[i]))
+		}
+	}
+	w[1] = min(w[1], 16)
+	free := p.width - 2 - 3*len(w) - 1 - w[0] - w[1] // indent, "│ " … " │" borders
+	w[3] = max(free*2/5, 12)
+	w[2] = max(free-w[3], 16)
+
+	rule := func(l, m, r string) {
+		parts := make([]string, len(w))
+		for i, n := range w {
+			parts[i] = strings.Repeat("─", n+2)
+		}
+		p.printf("  %s\n", p.st.dim(l+strings.Join(parts, m)+r))
+	}
+	line := func(cells []string, paint func(string) string) {
+		wrapped := make([][]string, len(w))
+		height := 1
+		for i, c := range cells {
+			wrapped[i] = wrapCell(c, w[i])
+			height = max(height, len(wrapped[i]))
+		}
+		bar := p.st.dim("│")
+		for l := range height {
+			var b strings.Builder
+			b.WriteString("  " + bar)
+			for i := range w {
+				text := ""
+				if l < len(wrapped[i]) {
+					text = wrapped[i][l]
+				}
+				text += strings.Repeat(" ", w[i]-utf8.RuneCountInString(text))
+				if paint != nil {
+					text = paint(text)
+				}
+				b.WriteString(" " + text + " " + bar)
+			}
+			p.printf("%s\n", b.String())
+		}
+	}
+
+	rule("┌", "┬", "┐")
+	line(head, p.st.bold)
+	for _, row := range rows {
+		rule("├", "┼", "┤")
+		line(row, nil)
+	}
+	rule("└", "┴", "┘")
+}
+
+// wrapCell wraps text into lines of at most width runes. Newlines in text
+// start new lines.
+func wrapCell(text string, width int) []string {
+	var out []string
+	for _, para := range strings.Split(text, "\n") {
+		line := ""
+		for _, word := range strings.Fields(para) {
+			for utf8.RuneCountInString(word) > width {
+				if line != "" {
+					out, line = append(out, line), ""
+				}
+				r := []rune(word)
+				cut := width
+				if i := strings.LastIndex(string(r[:width]), "/"); i > 0 {
+					cut = utf8.RuneCountInString(string(r[:width])[:i+1])
+				}
+				out = append(out, string(r[:cut]))
+				word = string(r[cut:])
+			}
+			switch {
+			case line == "":
+				line = word
+			case utf8.RuneCountInString(line)+1+utf8.RuneCountInString(word) <= width:
+				line += " " + word
+			default:
+				out, line = append(out, line), word
+			}
+		}
+		if line != "" || len(out) == 0 {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+// numberRanges writes ascending finding numbers compactly: 1-3, 5.
+func numberRanges(ns []int) string {
+	var parts []string
+	for i := 0; i < len(ns); {
+		j := i
+		for j+1 < len(ns) && ns[j+1] == ns[j]+1 {
+			j++
+		}
+		if j > i {
+			parts = append(parts, fmt.Sprintf("%d-%d", ns[i], ns[j]))
+		} else {
+			parts = append(parts, strconv.Itoa(ns[i]))
+		}
+		i = j + 1
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (p *printer) labelled(label, text string) {
@@ -326,54 +467,40 @@ func visibleLen(s string) int {
 	return n
 }
 
-// kptrStep explains how to run the checks that kernel.kptr_restrict kept from
-// reading kernel symbols, or returns "" if none were affected.
-func kptrStep(r *report.Report) string {
-	if r.Host.KptrRestrict == nil || *r.Host.KptrRestrict == 0 {
-		return ""
-	}
-	affected := 0
-	for _, res := range r.Results {
-		hit := strings.Contains(res.Message, "kptr_restrict") || strings.Contains(res.Error, "kptr_restrict")
-		for _, l := range res.Limitations {
-			hit = hit || strings.Contains(l, "kptr_restrict")
-		}
-		if hit {
-			affected++
-		}
-	}
-	if affected == 0 {
-		return ""
-	}
-	v := *r.Host.KptrRestrict
-	if v == 1 {
-		return fmt.Sprintf("kernel.kptr_restrict=1 hid kernel addresses from %d check(s) because Zygarde lacked CAP_SYSLOG. Run it as root with CAP_SYSLOG to cover them.", affected)
-	}
-	return fmt.Sprintf("kernel.kptr_restrict=%d hid kernel addresses from %d check(s), even as root. "+
-		"To cover them, lower it for the scan and restore it afterwards: "+
-		"sysctl -w kernel.kptr_restrict=1, run Zygarde, then sysctl -w kernel.kptr_restrict=%d. "+
-		"If this host isn't meant to set it, note that a rootkit can raise it to blind scanners.", v, affected, v)
-}
+// kptrCaused reports whether a skip reason or limitation comes from
+// kernel.kptr_restrict hiding kernel addresses.
+func kptrCaused(s string) bool { return strings.Contains(s, "kptr_restrict") }
 
-func nextSteps(v report.Verdict) []string {
+// kptrCoverage names the checks kernel.kptr_restrict skipped or limited, once,
+// with how to cover them, instead of every line repeating the cause.
+func (p *printer) kptrCoverage(r *report.Report, skipped, partial []string) {
+	if len(skipped)+len(partial) == 0 {
+		return
+	}
+	v := -1
+	if r.Host.KptrRestrict != nil {
+		v = *r.Host.KptrRestrict
+	}
 	switch v {
-	case report.VerdictSuspicious:
-		return []string{
-			"Keep the system running. Don't reboot, unload modules or kill processes yet: memory-resident evidence and the kernel's taint state would be lost.",
-			"Preserve evidence first: save this report (--output), preserve volatile binaries (--preserve-dir), and capture RAM (e.g. AVML or LiME) before further live commands.",
-			"Analyse the memory image offline, e.g. with Volatility 3, deconflicting scanner_footprint IDs, and check each finding against its \"Rule out\" notes.",
-			"Until the findings are explained, treat credentials and keys used on this host as exposed.",
-		}
-	case report.VerdictIncomplete:
-		return []string{
-			"Some checks could not finish (see Errors). Re-run with -d to see why.",
-			"Results from the checks that completed stand; the failed ones give no assurance either way.",
-		}
+	case 2:
+		p.printf("  kernel.kptr_restrict=2 hides kernel addresses, even from root:\n")
+	case 1:
+		p.printf("  kernel.kptr_restrict=1 hides kernel addresses from processes without CAP_SYSLOG:\n")
 	default:
-		return []string{
-			"Nothing to act on from this scan. A clean result raises the bar for an attacker but can't prove that a kernel-level compromise is absent.",
-			"Order of volatility: if you already suspect a single host, capture memory (AVML/LiME) before running live scanners.",
-		}
+		p.printf("  Kernel addresses were hidden:\n")
+	}
+	if len(skipped) > 0 {
+		p.wrapped("    - Not checked: ", strings.Join(skipped, ", "), nil)
+	}
+	if len(partial) > 0 {
+		p.wrapped("    - Partly checked (*): ", strings.Join(partial, ", "), nil)
+	}
+	switch v {
+	case 2:
+		p.wrapped("    ", "To cover them: sysctl -w kernel.kptr_restrict=1, run Zygarde, then set it back to 2.", nil)
+		p.wrapped("    ", "If this host isn't meant to set it, a rootkit may have raised it to blind scanners.", nil)
+	case 1:
+		p.wrapped("    ", "To cover them, run Zygarde as root with CAP_SYSLOG.", nil)
 	}
 }
 

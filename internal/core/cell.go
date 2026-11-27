@@ -53,9 +53,18 @@ func Skip(format string, args ...any) error {
 // not a failure of the check. Other errors are returned unchanged.
 func SymbolsUnavailable(err error) error {
 	if errors.Is(err, kernel.ErrAddressesHidden) {
-		return Skip("kernel symbols unavailable: %v", err)
+		return Skip("%v", err)
 	}
 	return err
+}
+
+// SkipSymbols skips a Cell that cannot run without kernel symbols. Hidden
+// addresses explain themselves; other errors get the context.
+func SkipSymbols(err error) error {
+	if errors.Is(err, kernel.ErrAddressesHidden) {
+		return Skip("%v", err)
+	}
+	return Skip("kernel symbols unavailable: %v", err)
 }
 
 // BPFError wraps a failed bpf() operation (load, attach, enumerate...).

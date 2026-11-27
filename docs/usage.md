@@ -48,9 +48,9 @@ SKIPPED is not a failure: Cells check for the BTF types and features they need (
 
 1. **Header**: host name, distribution, kernel, architecture, BTF, lockdown mode, time.
 2. **One line per Cell** as it completes, with status and duration. A `*` marks a Cell that ran only partly.
-3. **Findings**: for each, *what* was observed, the *evidence*, *why* it points to tampering, and which innocent explanation to *rule out* first.
+3. **Findings**: a table with one numbered row per finding (the Cell, *what* was observed, the *evidence*), then for each kind of finding *why* it points to tampering and which innocent explanation to *rule out* first.
 4. **Coverage**: Cells that did not run, and the parts of other Cells that could not (limitations). A clean verdict covers only what ran.
-5. **Verdict** (`clean`, `suspicious`, `incomplete`) and **next steps**. For a suspicious result the advice is to preserve evidence before touching the host.
+5. **Verdict** (`clean`, `suspicious`, `incomplete`) and the exit code.
 
 ### How to triage a SUSPICIOUS finding
 

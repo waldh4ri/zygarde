@@ -28,6 +28,23 @@ func TestParsePreload(t *testing.T) {
 	}
 }
 
+func TestHiddenComponent(t *testing.T) {
+	for p, want := range map[string]bool{
+		"/usr/lib/x86_64-linux-gnu": false,
+		"/root/.x":                  true,
+		"/usr/lib/.x/sub":           true,
+		"/a/./b/../c":               false,
+		"/app/node_modules/.pnpm/bcrypt@6.0.0/node_modules/bcrypt/prebuilds/linux-x64": false,
+		"/app/.pnpm/x":                      true, // only pnpm's store under node_modules
+		"/root/.x/node_modules/.pnpm/y":     true, // another dot-directory still counts
+		"/app/node_modules/.pnpm/y/.hidden": true,
+	} {
+		if got := hiddenComponent(p); got != want {
+			t.Errorf("hiddenComponent(%q) = %v, want %v", p, got, want)
+		}
+	}
+}
+
 func TestParseEnviron(t *testing.T) {
 	env := ParseEnviron([]byte("PATH=/bin\x00LD_PRELOAD=/x.so\x00EMPTY=\x00junk\x00"))
 	if env["LD_PRELOAD"] != "/x.so" || env["PATH"] != "/bin" || len(env) != 3 {

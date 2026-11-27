@@ -516,11 +516,17 @@ func (c *Cell) hiddenFromListing(p string) (bool, error) {
 
 func under(p, dir string) bool { return p == dir || strings.HasPrefix(p, dir+"/") }
 
+// hiddenComponent reports whether a path component is a dot-directory.
+// node_modules/.pnpm is pnpm's package store, where every native addon of a
+// pnpm project lives: it hides nothing that node_modules itself would not.
 func hiddenComponent(p string) bool {
+	prev := ""
 	for _, part := range strings.Split(filepath.ToSlash(p), "/") {
-		if strings.HasPrefix(part, ".") && part != "." && part != ".." {
+		if strings.HasPrefix(part, ".") && part != "." && part != ".." &&
+			!(part == ".pnpm" && prev == "node_modules") {
 			return true
 		}
+		prev = part
 	}
 	return false
 }

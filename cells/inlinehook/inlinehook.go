@@ -72,7 +72,7 @@ func (*Cell) Supported(env *core.Env) error {
 	}
 	ks, err := env.Kallsyms()
 	if err != nil {
-		return core.Skip("kernel symbols unavailable: %v", err)
+		return core.SkipSymbols(err)
 	}
 	for _, s := range []string{"_stext", "_etext"} {
 		if !ks.Has(s) {

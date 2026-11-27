@@ -68,7 +68,7 @@ func resolveHelpers(insns asm.Instructions, ks *kernel.Kallsyms, callBase uint64
 func auditHelpers(rec *core.Recorder, env *core.Env, progs map[uint32]bpfprogProgInfo, selfID uint32, attach map[uint32][]attachment) {
 	ks, err := env.Kallsyms()
 	if err != nil {
-		rec.Limit("Capabilities of loaded BPF programs not audited: kernel symbols unavailable (%v)", err)
+		rec.Limit("Capabilities of loaded BPF programs not audited: %v", err)
 		return
 	}
 	callBase, ok := ks.Addr("__bpf_call_base")

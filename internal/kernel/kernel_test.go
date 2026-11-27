@@ -145,7 +145,7 @@ func TestImage(t *testing.T) {
 }
 
 func TestHiddenReason(t *testing.T) {
-	if r := hiddenReason(2); !strings.Contains(r, "kernel.kptr_restrict=2") || !strings.Contains(r, "root") {
+	if r := hiddenReason(2); r != "kptr_restrict=2" {
 		t.Errorf("kptr_restrict=2: %q", r)
 	}
 	if r := hiddenReason(1); !strings.Contains(r, "CAP_SYSLOG") {
