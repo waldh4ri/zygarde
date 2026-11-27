@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"unicode/utf8"
@@ -172,13 +173,7 @@ func (p *printer) summary(r *report.Report, savedTo string) {
 
 	if r.Findings > 0 {
 		p.section("Findings")
-		n := 0
-		for _, res := range r.Results {
-			for _, f := range res.Findings {
-				n++
-				p.finding(n, res.Name, f)
-			}
-		}
+		p.findings(r)
 	}
 
 	var errs, skipped []core.Result
@@ -243,22 +238,160 @@ func (p *printer) summary(r *report.Report, savedTo string) {
 	}
 }
 
-func (p *printer) finding(n int, cell string, f core.Finding) {
-	p.printf("\n  %s %s\n", p.st.yellow(fmt.Sprintf("%d.", n)), p.st.bold(cell))
-	p.wrapped("     ", f.Description, nil)
-	if len(f.Details) > 0 {
-		var ev []string
-		for _, k := range slices.Sorted(maps.Keys(f.Details)) {
-			ev = append(ev, k+"="+f.Details[k])
+// findings prints one table row per finding, then what each kind of finding
+// means and how to rule it out, once for all the rows it applies to.
+func (p *printer) findings(r *report.Report) {
+	type note struct {
+		cell, why, benign string
+		rows              []int
+	}
+	var rows [][]string
+	var notes []*note
+	for _, res := range r.Results {
+		for _, f := range res.Findings {
+			n := len(rows) + 1
+			var ev []string
+			for _, k := range slices.Sorted(maps.Keys(f.Details)) {
+				ev = append(ev, k+"="+f.Details[k])
+			}
+			rows = append(rows, []string{strconv.Itoa(n), res.Name, f.Description, strings.Join(ev, "\n")})
+			if f.Why == "" && f.Benign == "" {
+				continue
+			}
+			i := slices.IndexFunc(notes, func(x *note) bool { return x.cell == res.Name && x.why == f.Why && x.benign == f.Benign })
+			if i < 0 {
+				notes = append(notes, &note{cell: res.Name, why: f.Why, benign: f.Benign})
+				i = len(notes) - 1
+			}
+			notes[i].rows = append(notes[i].rows, n)
 		}
-		p.labelled("Evidence", strings.Join(ev, " · "))
 	}
-	if f.Why != "" {
-		p.labelled("Why", f.Why)
+
+	p.printf("\n")
+	p.table([]string{"#", "Check", "Finding", "Evidence"}, rows)
+	for _, n := range notes {
+		p.printf("\n  %s %s\n", p.st.yellow(numberRanges(n.rows)+"."), p.st.bold(n.cell))
+		if n.why != "" {
+			p.labelled("Why", n.why)
+		}
+		if n.benign != "" {
+			p.labelled("Rule out", n.benign)
+		}
 	}
-	if f.Benign != "" {
-		p.labelled("Rule out", f.Benign)
+}
+
+// table prints a bordered table that fits the output width. The first column
+// and the second (capped) take their content's width; the third and fourth
+// share the rest 3:2. Cells wrap at spaces, and words too long for their
+// column (paths) break after a slash where possible.
+func (p *printer) table(head []string, rows [][]string) {
+	w := make([]int, len(head))
+	for i, h := range head {
+		w[i] = utf8.RuneCountInString(h)
 	}
+	for _, row := range rows {
+		for i := range 2 {
+			w[i] = max(w[i], utf8.RuneCountInString(row[i]))
+		}
+	}
+	w[1] = min(w[1], 16)
+	free := p.width - 2 - 3*len(w) - 1 - w[0] - w[1] // indent, "│ " … " │" borders
+	w[3] = max(free*2/5, 12)
+	w[2] = max(free-w[3], 16)
+
+	rule := func(l, m, r string) {
+		parts := make([]string, len(w))
+		for i, n := range w {
+			parts[i] = strings.Repeat("─", n+2)
+		}
+		p.printf("  %s\n", p.st.dim(l+strings.Join(parts, m)+r))
+	}
+	line := func(cells []string, paint func(string) string) {
+		wrapped := make([][]string, len(w))
+		height := 1
+		for i, c := range cells {
+			wrapped[i] = wrapCell(c, w[i])
+			height = max(height, len(wrapped[i]))
+		}
+		bar := p.st.dim("│")
+		for l := range height {
+			var b strings.Builder
+			b.WriteString("  " + bar)
+			for i := range w {
+				text := ""
+				if l < len(wrapped[i]) {
+					text = wrapped[i][l]
+				}
+				text += strings.Repeat(" ", w[i]-utf8.RuneCountInString(text))
+				if paint != nil {
+					text = paint(text)
+				}
+				b.WriteString(" " + text + " " + bar)
+			}
+			p.printf("%s\n", b.String())
+		}
+	}
+
+	rule("┌", "┬", "┐")
+	line(head, p.st.bold)
+	for _, row := range rows {
+		rule("├", "┼", "┤")
+		line(row, nil)
+	}
+	rule("└", "┴", "┘")
+}
+
+// wrapCell wraps text into lines of at most width runes. Newlines in text
+// start new lines.
+func wrapCell(text string, width int) []string {
+	var out []string
+	for _, para := range strings.Split(text, "\n") {
+		line := ""
+		for _, word := range strings.Fields(para) {
+			for utf8.RuneCountInString(word) > width {
+				if line != "" {
+					out, line = append(out, line), ""
+				}
+				r := []rune(word)
+				cut := width
+				if i := strings.LastIndex(string(r[:width]), "/"); i > 0 {
+					cut = utf8.RuneCountInString(string(r[:width])[:i+1])
+				}
+				out = append(out, string(r[:cut]))
+				word = string(r[cut:])
+			}
+			switch {
+			case line == "":
+				line = word
+			case utf8.RuneCountInString(line)+1+utf8.RuneCountInString(word) <= width:
+				line += " " + word
+			default:
+				out, line = append(out, line), word
+			}
+		}
+		if line != "" || len(out) == 0 {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+// numberRanges writes ascending finding numbers compactly: 1-3, 5.
+func numberRanges(ns []int) string {
+	var parts []string
+	for i := 0; i < len(ns); {
+		j := i
+		for j+1 < len(ns) && ns[j+1] == ns[j]+1 {
+			j++
+		}
+		if j > i {
+			parts = append(parts, fmt.Sprintf("%d-%d", ns[i], ns[j]))
+		} else {
+			parts = append(parts, strconv.Itoa(ns[i]))
+		}
+		i = j + 1
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (p *printer) labelled(label, text string) {

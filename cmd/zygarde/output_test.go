@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/waldh4ri/zygarde/internal/core"
 	"github.com/waldh4ri/zygarde/internal/kernel"
@@ -62,7 +63,7 @@ func TestRenderSuspicious(t *testing.T) {
 	for _, want := range []string{
 		"web-01", "Ubuntu 24.04.5 LTS",
 		"SUSPICIOUS", "1 finding(s), see below",
-		"FINDINGS", "/usr/lib/.cache exists", "Evidence", "directory=/usr/lib · path=/usr/lib/.cache", "Why", "Rule out",
+		"FINDINGS", "/usr/lib/.cache exists", "Evidence", "directory=/usr/lib", "path=/usr/lib/.cache", "Why", "Rule out",
 		"OK*", "Partly checked (*)", "Not checked on this system",
 		"Exit code 2", "Report saved to report.json",
 	} {
@@ -87,6 +88,79 @@ func TestRenderClean(t *testing.T) {
 	}
 	if strings.Contains(out, "FINDINGS") {
 		t.Error("clean report must not have a findings section")
+	}
+}
+
+// Findings of one kind share a single Why/Rule out note, and every table line
+// has the same width, within the output width, even with long paths.
+func TestFindingsTable(t *testing.T) {
+	lib := "/app/node_modules/.pnpm/bcrypt@6.0.0/node_modules/bcrypt/prebuilds/linux-x64/bcrypt.glibc.node"
+	hooks := result("userhooks", "Userspace Hook Detection", core.StatusSuspicious, "")
+	for _, l := range []string{lib, lib + "2", lib + "3"} {
+		hooks.Findings = append(hooks.Findings, core.Finding{
+			Description: "Executable library " + l + " (mapped from a hidden directory) is mapped into 1 process(es)",
+			Details:     map[string]string{"library": l, "pids": "545826"},
+			Why:         "Inspecting /proc/<pid>/maps found executable code mapped from a hidden location.",
+			Benign:      "JIT or FFI runtimes.",
+		})
+	}
+	for _, width := range []int{100, 80} {
+		var buf bytes.Buffer
+		p := newPrinter(&buf, false, false, false, width)
+		rep := &report.Report{}
+		rep.Finish([]core.Result{hooks})
+		p.findings(rep)
+		out := buf.String()
+		t.Log("\n" + out)
+		if n := strings.Count(out, "Why"); n != 1 {
+			t.Errorf("width %d: Why printed %d times, want once", width, n)
+		}
+		if !strings.Contains(out, "1-3. Userspace Hook Detection") {
+			t.Errorf("width %d: note does not name findings 1-3", width)
+		}
+		tableW := 0
+		for _, line := range strings.Split(out, "\n") {
+			if !strings.HasPrefix(line, "  ┌") && !strings.HasPrefix(line, "  │") &&
+				!strings.HasPrefix(line, "  ├") && !strings.HasPrefix(line, "  └") {
+				continue
+			}
+			n := utf8.RuneCountInString(line)
+			if tableW == 0 {
+				tableW = n
+			}
+			if n != tableW || n > width {
+				t.Errorf("width %d: table line is %d wide (table %d): %q", width, n, tableW, line)
+			}
+		}
+		if tableW == 0 {
+			t.Fatalf("width %d: no table printed", width)
+		}
+	}
+}
+
+func TestWrapCell(t *testing.T) {
+	for _, tc := range []struct {
+		text  string
+		width int
+		want  []string
+	}{
+		{"a bb ccc", 4, []string{"a bb", "ccc"}},
+		{"k=1\nk=2", 10, []string{"k=1", "k=2"}},
+		{"/usr/lib/x86_64/libfoo.so", 12, []string{"/usr/lib/", "x86_64/", "libfoo.so"}},
+		{"abcdefghij", 4, []string{"abcd", "efgh", "ij"}},
+		{"", 5, []string{""}},
+	} {
+		if got := wrapCell(tc.text, tc.width); strings.Join(got, "|") != strings.Join(tc.want, "|") {
+			t.Errorf("wrapCell(%q, %d) = %q, want %q", tc.text, tc.width, got, tc.want)
+		}
+	}
+}
+
+func TestNumberRanges(t *testing.T) {
+	for want, ns := range map[string][]int{"1": {1}, "1-3": {1, 2, 3}, "1-2, 4, 6-7": {1, 2, 4, 6, 7}} {
+		if got := numberRanges(ns); got != want {
+			t.Errorf("numberRanges(%v) = %q, want %q", ns, got, want)
+		}
 	}
 }
 
