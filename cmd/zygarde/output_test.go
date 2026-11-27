@@ -178,22 +178,43 @@ func TestWrapped(t *testing.T) {
 	}
 }
 
-func TestKptrStep(t *testing.T) {
-	two, zero := 2, 0
-	skipped := result("altered_syscall_table", "Syscall Table Integrity", core.StatusSkipped,
-		"kernel symbols unavailable: /proc/kallsyms addresses are hidden: kernel.kptr_restrict=2 hides kernel addresses from every process, root included")
-	r := &report.Report{Host: report.Host{KptrRestrict: &two}, Results: []core.Result{skipped, result("taint", "Taint", core.StatusOK, "")}}
-	if s := kptrHint(r); !strings.Contains(s, "kernel.kptr_restrict=2 hid kernel addresses from 1 check(s)") || !strings.Contains(s, "sysctl -w kernel.kptr_restrict=2") {
-		t.Errorf("kptrHint = %q", s)
+// Checks that kptr_restrict skipped or limited are named once, with the fix;
+// other skips and limitations keep their own lines.
+func TestKptrCoverage(t *testing.T) {
+	hidden := "kernel addresses hidden (kptr_restrict=2)"
+	inline := result("inline_hook", "Inline Hook Detection", core.StatusSkipped, hidden)
+	netf := result("netfilter", "Netfilter Hook Inventory", core.StatusSkipped, hidden)
+	sct := result("altered_syscall_table", "Syscall Table Integrity", core.StatusSkipped, "this kernel dispatches syscalls through x64_sys_call()")
+	mods := result("hidden_kernel_module", "Hidden Kernel Module Detection", core.StatusOK, "")
+	mods.Limitations = []string{"Kernel memory views of the modules were not compared: " + hidden, "Module memory in /proc/vmallocinfo was not compared"}
+	render := func(v *int, results ...core.Result) string {
+		var buf bytes.Buffer
+		p := newPrinter(&buf, false, false, false, 100)
+		rep := &report.Report{Host: report.Host{KptrRestrict: v}}
+		rep.Finish(results)
+		p.summary(rep, "")
+		t.Log("\n" + buf.String())
+		return buf.String()
 	}
-	r.Host.KptrRestrict = &zero
-	if s := kptrHint(r); s != "" {
-		t.Errorf("kptr_restrict=0 should add no hint, got %q", s)
+	two := 2
+	out := render(&two, inline, sct, netf, mods)
+	for _, want := range []string{
+		"kernel.kptr_restrict=2 hides kernel addresses, even from root:",
+		"- Not checked: Inline Hook Detection, Netfilter Hook Inventory",
+		"- Partly checked (*): Hidden Kernel Module Detection",
+		"To cover them: sysctl -w kernel.kptr_restrict=1, run Zygarde, then set it back to 2.",
+		"Syscall Table Integrity: this kernel dispatches",
+		"Hidden Kernel Module Detection: Module memory in /proc/vmallocinfo",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("coverage lacks %q", want)
+		}
 	}
-	r.Host.KptrRestrict = &two
-	r.Results = r.Results[1:]
-	if s := kptrHint(r); s != "" {
-		t.Errorf("no affected check should add no hint, got %q", s)
+	if strings.Contains(out, hidden) {
+		t.Error("coverage repeats the kptr_restrict reason per check")
+	}
+	if out := render(&two, sct); strings.Contains(out, "kptr_restrict") {
+		t.Error("no affected check should print the kptr_restrict block")
 	}
 }
 

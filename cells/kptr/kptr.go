@@ -120,7 +120,7 @@ type opened struct {
 func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	res, err := kattr.Load()
 	if err != nil {
-		return core.Skip("kernel symbols unavailable: %v", err)
+		return core.SkipSymbols(err)
 	}
 	if !res.Precise() {
 		rec.Limit("/proc/vmallocinfo unreadable: module ownership inferred from symbol distances, and tables outside known memory are only observations")

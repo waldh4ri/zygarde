@@ -48,7 +48,7 @@ The report header shows the lockdown mode; Coverage lists what it excluded.
 
 ## Other environment effects
 
-- **`kernel.kptr_restrict`** (and missing privileges): when `/proc/kallsyms` reports zero addresses, Cells that need symbols report SKIPPED ("kernel symbols unavailable"), with the reason read from the sysctl.
+- **`kernel.kptr_restrict`** (and missing privileges): when `/proc/kallsyms` reports zero addresses, Cells that need symbols report SKIPPED (`kernel addresses hidden (kptr_restrict=2)`), and COVERAGE names them together with how to cover them.
 - **No tracefs** (containers): syscall tracing uses `tp_btf` and works; `hook_inventory` mounts tracefs privately when possible.
 - **Containers**: need `--privileged` (and `--pid=host` to see the host). Cells translate PIDs, so they also work inside a PID namespace.
 - **SELinux / AppArmor**: a confined profile can deny `bpf()`; that is reported (see [Architecture](architecture.md#the-cell-contract)).

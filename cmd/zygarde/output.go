@@ -197,25 +197,38 @@ func (p *printer) summary(r *report.Report, savedTo string) {
 
 	p.section("Coverage")
 	p.printf("  %d of %d checks completed.\n", completed, len(r.Results))
-	if len(skipped) > 0 {
-		p.printf("  Not checked on this system:\n")
-		for _, res := range skipped {
-			p.wrapped("    - ", res.Name+": "+res.Message, nil)
+	var kptrSkipped, kptrPartial []string
+	header := false
+	for _, res := range skipped {
+		if kptrCaused(res.Message) {
+			kptrSkipped = append(kptrSkipped, res.Name)
+			continue
 		}
+		if !header {
+			p.printf("  Not checked on this system:\n")
+			header = true
+		}
+		p.wrapped("    - ", res.Name+": "+res.Message, nil)
 	}
-	partial := false
+	header = false
 	for _, res := range r.Results {
+		limited := false
 		for _, l := range res.Limitations {
-			if !partial {
+			if kptrCaused(l) {
+				limited = true
+				continue
+			}
+			if !header {
 				p.printf("  Partly checked (*):\n")
-				partial = true
+				header = true
 			}
 			p.wrapped("    - ", res.Name+": "+l, nil)
 		}
+		if limited {
+			kptrPartial = append(kptrPartial, res.Name)
+		}
 	}
-	if s := kptrHint(r); s != "" {
-		p.wrapped("  ", s, nil)
-	}
+	p.kptrCoverage(r, kptrSkipped, kptrPartial)
 
 	p.section("Verdict")
 	switch r.Verdict {
@@ -454,33 +467,41 @@ func visibleLen(s string) int {
 	return n
 }
 
-// kptrHint explains how to run the checks that kernel.kptr_restrict kept from
-// reading kernel symbols, or returns "" if none were affected.
-func kptrHint(r *report.Report) string {
-	if r.Host.KptrRestrict == nil || *r.Host.KptrRestrict == 0 {
-		return ""
+// kptrCaused reports whether a skip reason or limitation comes from
+// kernel.kptr_restrict hiding kernel addresses.
+func kptrCaused(s string) bool { return strings.Contains(s, "kptr_restrict") }
+
+// kptrCoverage names the checks kernel.kptr_restrict skipped or limited, once,
+// with how to cover them, instead of every line repeating the cause.
+func (p *printer) kptrCoverage(r *report.Report, skipped, partial []string) {
+	if len(skipped)+len(partial) == 0 {
+		return
 	}
-	affected := 0
-	for _, res := range r.Results {
-		hit := strings.Contains(res.Message, "kptr_restrict") || strings.Contains(res.Error, "kptr_restrict")
-		for _, l := range res.Limitations {
-			hit = hit || strings.Contains(l, "kptr_restrict")
-		}
-		if hit {
-			affected++
-		}
+	v := -1
+	if r.Host.KptrRestrict != nil {
+		v = *r.Host.KptrRestrict
 	}
-	if affected == 0 {
-		return ""
+	switch v {
+	case 2:
+		p.printf("  kernel.kptr_restrict=2 hides kernel addresses, even from root:\n")
+	case 1:
+		p.printf("  kernel.kptr_restrict=1 hides kernel addresses from processes without CAP_SYSLOG:\n")
+	default:
+		p.printf("  Kernel addresses were hidden:\n")
 	}
-	v := *r.Host.KptrRestrict
-	if v == 1 {
-		return fmt.Sprintf("kernel.kptr_restrict=1 hid kernel addresses from %d check(s) because Zygarde lacked CAP_SYSLOG. Run it as root with CAP_SYSLOG to cover them.", affected)
+	if len(skipped) > 0 {
+		p.wrapped("    - Not checked: ", strings.Join(skipped, ", "), nil)
 	}
-	return fmt.Sprintf("kernel.kptr_restrict=%d hid kernel addresses from %d check(s), even as root. "+
-		"To cover them, lower it for the scan and restore it afterwards: "+
-		"sysctl -w kernel.kptr_restrict=1, run Zygarde, then sysctl -w kernel.kptr_restrict=%d. "+
-		"If this host isn't meant to set it, note that a rootkit can raise it to blind scanners.", v, affected, v)
+	if len(partial) > 0 {
+		p.wrapped("    - Partly checked (*): ", strings.Join(partial, ", "), nil)
+	}
+	switch v {
+	case 2:
+		p.wrapped("    ", "To cover them: sysctl -w kernel.kptr_restrict=1, run Zygarde, then set it back to 2.", nil)
+		p.wrapped("    ", "If this host isn't meant to set it, a rootkit may have raised it to blind scanners.", nil)
+	case 1:
+		p.wrapped("    ", "To cover them, run Zygarde as root with CAP_SYSLOG.", nil)
+	}
 }
 
 func (p *printer) writeJSON(r *report.Report) {

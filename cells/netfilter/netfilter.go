@@ -112,7 +112,7 @@ func (o *iterObjs) Close() {
 func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	res, err := kattr.Load()
 	if err != nil {
-		return core.Skip("kernel symbols unavailable: %v", err)
+		return core.SkipSymbols(err)
 	}
 	selfNS, err := netnsInode()
 	if err != nil {
