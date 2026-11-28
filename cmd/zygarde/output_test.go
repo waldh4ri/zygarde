@@ -438,3 +438,67 @@ func TestHeaderBTF(t *testing.T) {
 		}
 	}
 }
+
+// -q keeps the BTF notice when BTF is missing (it explains skipped checks),
+// and drops it once BTFHub provided verified BTF.
+func TestQuietBTFHint(t *testing.T) {
+	for _, c := range []struct {
+		b    *report.BTFHub
+		want string // "" = no notice
+	}{
+		{&report.BTFHub{Path: "ubuntu/20.04/x86_64/5.4.0-72-generic.btf.tar.xz"}, "Run with --btfhub to fetch ubuntu/20.04/x86_64/5.4.0-72-generic.btf.tar.xz"},
+		{&report.BTFHub{Requested: true, Error: "BTFHub publishes no BTF for this kernel"}, "not fetched from BTFHub"},
+		{&report.BTFHub{Requested: true, Verified: true, Path: "x"}, ""},
+		{nil, ""},
+	} {
+		var buf bytes.Buffer
+		p := newPrinter(&buf, false, levelQuiet, style{}, 250)
+		rep := &report.Report{Host: report.Host{BTFSource: "none", BTFHub: c.b}}
+		rep.Finish([]core.Result{result("kernel_taint", "Kernel Taint Consistency", core.StatusOK, "")})
+		p.summary(rep, "")
+		out := buf.String()
+		switch {
+		case c.want == "" && strings.Contains(out, "BTF "):
+			t.Errorf("%+v: unexpected BTF notice:\n%s", c.b, out)
+		case c.want != "" && !strings.Contains(out, c.want):
+			t.Errorf("%+v: -q output lacks %q:\n%s", c.b, c.want, out)
+		}
+	}
+}
+
+// Checks skipped for lack of BTF are named once, with how to provide it:
+// --btfhub when BTFHub has the kernel, --btf otherwise.
+func TestNoBTFCoverage(t *testing.T) {
+	sct := result("altered_syscall_table", "Syscall Table Integrity", core.StatusSkipped, core.NoBTF)
+	inline := result("inline_hook", "Inline Hook Detection", core.StatusSkipped, core.NoBTF)
+	mods := result("hidden_kernel_module", "Hidden Kernel Module Detection", core.StatusOK, "")
+	mods.Limitations = []string{"Kernel memory views of the modules were not compared: " + core.NoBTF}
+	for _, c := range []struct {
+		hub  *report.BTFHub
+		want string
+	}{
+		{&report.BTFHub{Path: "ubuntu/20.04/x86_64/5.4.0-72-generic.btf.tar.xz"}, "run with --btfhub (BTFHub has this kernel)"},
+		{&report.BTFHub{Requested: true, Error: "x"}, "BTFHub could not provide it"},
+		{nil, "give BTF with --btf <file>"},
+	} {
+		var buf bytes.Buffer
+		p := newPrinter(&buf, false, levelNormal, style{}, 200)
+		rep := &report.Report{Host: report.Host{BTFSource: "none", BTFHub: c.hub}}
+		rep.Finish([]core.Result{sct, inline, mods})
+		p.summary(rep, "")
+		out := buf.String()
+		for _, w := range []string{
+			"This kernel was built without BTF, which these checks need:",
+			"- Not checked: Syscall Table Integrity, Inline Hook Detection",
+			"- Partly checked (*): Hidden Kernel Module Detection",
+			c.want,
+		} {
+			if !strings.Contains(out, w) {
+				t.Errorf("%+v: coverage lacks %q:\n%s", c.hub, w, out)
+			}
+		}
+		if strings.Count(out, core.NoBTF) != 0 {
+			t.Errorf("%+v: the reason is repeated per check:\n%s", c.hub, out)
+		}
+	}
+}

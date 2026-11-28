@@ -604,7 +604,7 @@ func (c *Cell) checkKernelViews(env *core.Env, rec *core.Recorder, reported map[
 		rec.Limit("Kernel memory views of the modules were not compared: "+format, a...)
 	}
 	if env.BTF == nil {
-		limit("kernel BTF unavailable")
+		limit(core.NoBTF)
 		return res
 	}
 	l, err := newModLayout(env.BTF)

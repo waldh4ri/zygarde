@@ -151,10 +151,14 @@ func (e *Env) FormatBootOffset(ns uint64) string {
 	return e.BootTime.Add(time.Duration(ns)).UTC().Format(time.RFC3339)
 }
 
+// NoBTF is the skip reason of Cells that need BTF on a kernel without it.
+// COVERAGE groups them under it, with how to provide BTF.
+const NoBTF = "no kernel BTF"
+
 // RequireBTF returns a Skip error if kernel BTF is unavailable.
 func (e *Env) RequireBTF() error {
 	if e.BTF == nil {
-		return Skip("kernel BTF unavailable (%v); a BTF-enabled kernel or --btf is required", e.BTFErr)
+		return Skip(NoBTF)
 	}
 	return nil
 }

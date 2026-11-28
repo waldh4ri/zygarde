@@ -41,7 +41,7 @@ import (
 
 // version is the release number; builds from git override it with
 // -ldflags "-X main.version=..." (see the Makefile).
-var version = "0.4.0"
+var version = "0.5.0"
 
 type options struct {
 	debug       bool

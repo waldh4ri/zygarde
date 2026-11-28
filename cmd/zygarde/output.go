@@ -162,26 +162,31 @@ func (p *printer) header(r *report.Report, cells []core.Cell) {
 	p.printf("  %s %s\n", label("Host"), p.st.bold(h.Hostname))
 	p.printf("  %s %s · Linux %s · %s\n", label("System"), h.Distro, h.Kernel, h.Arch)
 	p.printf("  %s BTF %s · lockdown %s%s\n", label("Kernel"), btf, lockdown, kptr)
-	if b := h.BTFHub; b != nil {
-		yellow := func(s string) string { return p.st.fg(cYellow, s) }
-		lead := "  " + label("BTF") + " "
-		switch {
-		case b.Verified:
-			p.wrapSegs(lead, seg{"BTFHub " + b.Path + ",", nil},
-				seg{"verified against GitHub's git blob hash " + b.GitBlobSHA1, p.st.dim})
-		case b.Requested:
-			p.wrapSegs(lead, seg{"not fetched from BTFHub: " + b.Error + ".", yellow},
-				seg{"Checks that need BTF are skipped; --btf <file> provides it.", p.st.dim})
-		case b.Path != "":
-			// The hint: this kernel lacks BTF, and BTFHub publishes a path for it.
-			p.wrapSegs(lead, seg{"this kernel ships none, so checks that need it are skipped.", yellow},
-				seg{"Run with --btfhub to fetch " + b.Path + " from BTFHub, or give one with --btf <file>.", nil})
-		default:
-			p.wrapSegs(lead, seg{"this kernel ships none, so checks that need it are skipped.", yellow},
-				seg{"Give one with --btf <file> (BTFHub has no BTF for this distribution).", nil})
-		}
+	if h.BTFHub != nil {
+		p.btfNote("  "+label("BTF")+" ", h.BTFHub)
 	}
 	p.printf("  %s %s\n\n", label("Started"), r.StartedAt.Format("2006-01-02 15:04:05 MST"))
+}
+
+// btfNote says where BTF came from on a kernel without its own, or, when it
+// is missing, what that costs and how to provide it (the --btfhub hint).
+func (p *printer) btfNote(lead string, b *report.BTFHub) {
+	yellow := func(s string) string { return p.st.fg(cYellow, s) }
+	switch {
+	case b.Verified:
+		p.wrapSegs(lead, seg{"BTFHub " + b.Path + ",", nil},
+			seg{"verified against GitHub's git blob hash " + b.GitBlobSHA1, p.st.dim})
+	case b.Requested:
+		p.wrapSegs(lead, seg{"not fetched from BTFHub: " + b.Error + ".", yellow},
+			seg{"Checks that need BTF are skipped; --btf <file> provides it.", p.st.dim})
+	case b.Path != "":
+		// The hint: this kernel lacks BTF, and BTFHub publishes a path for it.
+		p.wrapSegs(lead, seg{"this kernel ships none, so checks that need it are skipped.", yellow},
+			seg{"Run with --btfhub to fetch " + b.Path + " from BTFHub, or give one with --btf <file>.", nil})
+	default:
+		p.wrapSegs(lead, seg{"this kernel ships none, so checks that need it are skipped.", yellow},
+			seg{"Give one with --btf <file> (BTFHub has no BTF for this distribution).", nil})
+	}
 }
 
 func (p *printer) start(c core.Cell) {
@@ -361,6 +366,11 @@ func (p *printer) verdict(r *report.Report, errs int) {
 // per failed check, and how much of the scan completed.
 func (p *printer) quietSummary(r *report.Report, errs []core.Result, completed int, savedTo string) {
 	p.verdict(r, len(errs))
+	// -q has no header: keep the BTF notice when BTF is missing, since it
+	// explains skipped checks and how to cover them (--btfhub, --btf).
+	if b := r.Host.BTFHub; b != nil && !b.Verified {
+		p.btfNote("  "+p.st.dim("BTF")+" ", b)
+	}
 	n := 0
 	for _, res := range r.Results {
 		for _, f := range res.Findings {
@@ -442,6 +452,9 @@ var secondaryEvidence = map[string]bool{
 	"cgroup": true, "sha256": true, "exe_sha256": true,
 	"struct_module": true, "expected_address": true, "syscall_number": true,
 	"start_id": true,
+	// Inline Hook Detection's raw decode: the finding's sentence names the
+	// function and the call target; target_symbol stays.
+	"bytes": true, "offset": true, "entry": true,
 }
 
 // keyEvidence reports whether detail k of f belongs in the default report:
@@ -708,6 +721,16 @@ var causes = []cause{
 				[]string{"To cover them, run Zygarde as root with CAP_SYSLOG."}
 		}
 		return "Kernel addresses were hidden:", nil
+	}},
+	{core.NoBTF, func(r *report.Report) (string, []string) {
+		const heading = "This kernel was built without BTF, which these checks need:"
+		switch b := r.Host.BTFHub; {
+		case b != nil && b.Requested:
+			return heading, []string{"BTFHub could not provide it (see BTF above): give it with --btf <file>."}
+		case b != nil && b.Path != "":
+			return heading, []string{"To cover them: run with --btfhub (BTFHub has this kernel), or give BTF with --btf <file>."}
+		}
+		return heading, []string{"To cover them: give BTF with --btf <file> (from BTFHub or pahole)."}
 	}},
 	{"lockdown (confidentiality)", func(*report.Report) (string, []string) {
 		return "Kernel lockdown (confidentiality) blocks reading kernel memory:",

@@ -19,9 +19,16 @@ import (
 )
 
 // Load loads the objects of spec referenced by the fields of objs (a
-// bpf2go-generated *xxxObjects), using the shared options from env.
+// bpf2go-generated *xxxObjects), using the shared options from env. On a
+// kernel without BTF, objects that need CO-RE relocations can't load: that
+// is a SKIPPED Cell with a short reason, not a raw loader error. Objects
+// without relocations still load there.
 func Load(env *core.Env, spec *ebpf.CollectionSpec, objs any) error {
-	return core.WrapBPF("load BPF objects", spec.LoadAndAssign(objs, env.CollectionOptions()))
+	err := spec.LoadAndAssign(objs, env.CollectionOptions())
+	if err != nil && env.BTF == nil && errors.Is(err, ebpf.ErrNotSupported) {
+		return env.RequireBTF()
+	}
+	return core.WrapBPF("load BPF objects", err)
 }
 
 // SetVariable sets a `const volatile` global in spec before loading.
