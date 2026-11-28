@@ -218,8 +218,22 @@ func checkMasquerade(env *core.Env, rec *core.Recorder, procs map[uint32]process
 					desc = fmt.Sprintf("Process %d (%s) runs from a deleted executable: %s", pid, comm, exe)
 				}
 				susp := suspiciousExe(t.Euid, exe, loc)
+				umd := kernelUMD(exe, t.Ppid)
+				if umd && knownUMD[cmdline] {
+					// A usermode driver the kernel itself ships (bpfilter):
+					// worth listing, not suspicious.
+					susp = false
+					desc = fmt.Sprintf("Kernel usermode driver %d (%s) runs from an in-memory blob", pid, cmdline)
+				}
 				d := details(susp)
 				d["location"] = loc
+				benign := "Software updated in place outside the package manager, installers running from /tmp, " +
+					"or container runtimes (e.g. runc) briefly executing from a memfd."
+				if umd {
+					benign = "A kernel usermode driver: the kernel runs these from an in-memory blob as children of " +
+						"kthreadd (ppid 2), which shows as \"/ (deleted)\". The kernel's own (bpfilter_umh) are listed as " +
+						"observations; any other one was started by a kernel module, so check which."
+				}
 				if susp {
 					rec.Suspicious(core.Finding{
 						Description: desc,
@@ -227,8 +241,7 @@ func checkMasquerade(env *core.Env, rec *core.Recorder, procs map[uint32]process
 						Why: "A process whose program lives only in memory (memfd), was deleted from a temporary or " +
 							"memory-backed directory after starting, or runs as root from an unusual path leaves " +
 							"little on disk to inspect: a common way to run fileless implants. The binary can still be recovered from /proc/<pid>/exe.",
-						Benign: "Software updated in place outside the package manager, installers running from /tmp, " +
-							"or container runtimes (e.g. runc) briefly executing from a memfd.",
+						Benign: benign,
 					})
 				} else {
 					rec.Observe(desc, d)
@@ -257,6 +270,17 @@ func checkMasquerade(env *core.Env, rec *core.Recorder, procs map[uint32]process
 	}
 	return nil
 }
+
+// kernelUMD reports a kernel usermode driver: a process the kernel started
+// from an in-memory blob (fork_usermode_blob, umd_load_blob), whose
+// executable reads "/ (deleted)" and whose parent is kthreadd (PID 2). A
+// user process can't make itself a child of kthreadd.
+func kernelUMD(exe string, ppid uint32) bool {
+	return exe == "/ (deleted)" && ppid == 2
+}
+
+// knownUMD are the usermode drivers in mainline Linux, by command line.
+var knownUMD = map[string]bool{"bpfilter_umh": true}
 
 func firstNonEmpty(a, b string) string {
 	if a != "" {

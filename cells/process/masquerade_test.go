@@ -84,3 +84,25 @@ func TestPadded(t *testing.T) {
 		}
 	}
 }
+
+// Kernel usermode drivers run from an in-memory blob as children of
+// kthreadd; only the kernel's own are excused, by name.
+func TestKernelUMD(t *testing.T) {
+	for _, c := range []struct {
+		exe    string
+		ppid   uint32
+		cmd    string
+		umd    bool
+		excuse bool
+	}{
+		{"/ (deleted)", 2, "bpfilter_umh", true, true},
+		{"/ (deleted)", 2, "gtwk_helper", true, false}, // a module's own driver: still reported
+		{"/ (deleted)", 1, "bpfilter_umh", false, false},
+		{"/tmp/x (deleted)", 2, "bpfilter_umh", false, false},
+	} {
+		umd := kernelUMD(c.exe, c.ppid)
+		if umd != c.umd || (umd && knownUMD[c.cmd]) != c.excuse {
+			t.Errorf("%+v: umd %v, excused %v", c, umd, umd && knownUMD[c.cmd])
+		}
+	}
+}
