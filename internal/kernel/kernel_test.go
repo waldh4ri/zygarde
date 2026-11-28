@@ -42,6 +42,44 @@ ffffffff81234999 T __x64_sys_read
 	}
 }
 
+// A hidden module loaded right after a visible one (gojiberi after
+// netlink_diag): its code is within 64 KiB of the neighbour's last symbol but
+// outside the neighbour's extent, so it must not be attributed to it.
+func TestLookupModuleExtents(t *testing.T) {
+	ks, err := ParseKallsyms(strings.NewReader(`ffffffff81000000 T _stext
+ffffffffc0ae8000 t netlink_diag_dump	[netlink_diag]
+ffffffffc0ae9040 d __this_module	[netlink_diag]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ext, err := ParseModuleExtents(strings.NewReader(
+		"netlink_diag 16384 0 - Live 0xffffffffc0ae8000\n" +
+			"hiddenaddr 4096 0 - Live 0x0000000000000000\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e := ext["netlink_diag"]; e.Base != 0xffffffffc0ae8000 || e.Size != 16384 {
+		t.Fatalf("extent = %+v", e)
+	}
+	if _, ok := ext["hiddenaddr"]; ok {
+		t.Error("a module with a hidden (zero) address must have no extent")
+	}
+	inside, hidden := uint64(0xffffffffc0ae8010), uint64(0xffffffffc0aec000)
+
+	// Without extents, the distance rule alone attributes both.
+	if _, mod, _, ok := ks.LookupModule(hidden); !ok || mod != "netlink_diag" {
+		t.Fatalf("without extents: %q, %v", mod, ok)
+	}
+	ks.SetModuleExtents(ext)
+	if fn, mod, off, ok := ks.LookupModule(inside); !ok || fn != "netlink_diag_dump" || mod != "netlink_diag" || off != 0x10 {
+		t.Errorf("inside the extent: %q, %q, %#x, %v", fn, mod, off, ok)
+	}
+	if fn, mod, _, ok := ks.LookupModule(hidden); ok {
+		t.Errorf("past netlink_diag's extent: attributed to %s [%s], want unresolved", fn, mod)
+	}
+}
+
 func TestParseKallsymsHidden(t *testing.T) {
 	_, err := ParseKallsyms(strings.NewReader("0000000000000000 T _stext\n0000000000000000 D sys_call_table\n"))
 	if !errors.Is(err, ErrAddressesHidden) {

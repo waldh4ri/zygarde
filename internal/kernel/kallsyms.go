@@ -23,6 +23,42 @@ type Kallsyms struct {
 	sorted    []symbol          // built on first Lookup() call
 	modAddrs  map[uint64]modSym // address -> module symbol (exact match)
 	modSorted []modSym          // built on first LookupModule() call
+	modExt    map[string]ModuleExtent
+}
+
+// ModuleExtent is where /proc/modules places a loaded module: the base of
+// its code and the size of its memory.
+type ModuleExtent struct{ Base, Size uint64 }
+
+// Contains reports whether addr is in [Base, Base+Size). Since Linux 6.4 a
+// module's data and read-only data are separate allocations outside this
+// range, so it bounds code addresses only.
+func (e ModuleExtent) Contains(addr uint64) bool {
+	return e.Base != 0 && addr >= e.Base && addr-e.Base < e.Size
+}
+
+// SetModuleExtents restricts LookupModule to addresses inside the extent of
+// the module it names. LoadKallsyms sets them from /proc/modules.
+func (k *Kallsyms) SetModuleExtents(ext map[string]ModuleExtent) { k.modExt = ext }
+
+// ParseModuleExtents parses /proc/modules ("name size refcnt used_by state
+// address"). Modules whose address is hidden (0) are left out.
+func ParseModuleExtents(r io.Reader) (map[string]ModuleExtent, error) {
+	out := map[string]ModuleExtent{}
+	sc := bufio.NewScanner(r)
+	for sc.Scan() {
+		f := strings.Fields(sc.Text())
+		if len(f) < 6 {
+			continue
+		}
+		size, err1 := strconv.ParseUint(f[1], 10, 64)
+		base, err2 := strconv.ParseUint(strings.TrimPrefix(f[5], "0x"), 16, 64)
+		if err1 != nil || err2 != nil || base == 0 {
+			continue
+		}
+		out[f[0]] = ModuleExtent{Base: base, Size: size}
+	}
+	return out, sc.Err()
 }
 
 type modSym struct {
@@ -55,9 +91,12 @@ func (k *Kallsyms) ModuleFunc(addr uint64) (name, module string, ok bool) {
 	return ms.name, ms.module, true
 }
 
-// LookupModule resolves addr to the nearest visible module symbol at or below
-// addr within maxModSymOffset (64 KiB). A module that hid itself with list_del
-// disappears from /proc/kallsyms, so its addresses do not resolve here.
+// LookupModule resolves a code address to the nearest visible module symbol
+// at or below it within maxModSymOffset (64 KiB). A module that hid itself
+// with list_del disappears from /proc/kallsyms, so its addresses do not
+// resolve here. With module extents set, the address must also lie inside
+// the extent of the module it names: a hidden module loaded right after a
+// visible one would otherwise be attributed to its neighbour.
 func (k *Kallsyms) LookupModule(addr uint64) (name, module string, offset uint64, ok bool) {
 	const maxModSymOffset = 64 * 1024
 	if len(k.modAddrs) == 0 {
@@ -81,6 +120,9 @@ func (k *Kallsyms) LookupModule(addr uint64) (name, module string, offset uint64
 	}
 	ms := k.modSorted[i-1]
 	if addr-ms.addr > maxModSymOffset {
+		return "", "", 0, false
+	}
+	if ext, known := k.modExt[ms.module]; known && !ext.Contains(addr) {
 		return "", "", 0, false
 	}
 	return ms.name, ms.module, addr - ms.addr, true
@@ -122,7 +164,17 @@ func LoadKallsyms() (*Kallsyms, error) {
 	if errors.Is(err, ErrAddressesHidden) {
 		return nil, HiddenAddressesError()
 	}
-	return ks, err
+	if err != nil {
+		return nil, err
+	}
+	// Best effort: without extents LookupModule falls back to distances.
+	if m, err := os.Open("/proc/modules"); err == nil {
+		if ext, err := ParseModuleExtents(m); err == nil {
+			ks.SetModuleExtents(ext)
+		}
+		m.Close()
+	}
+	return ks, nil
 }
 
 // ParseKallsyms parses kallsyms-formatted text: "address type name [module]".
