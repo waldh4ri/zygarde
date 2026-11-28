@@ -121,7 +121,7 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 			for _, h := range table.Holders(fdowner.Socket, cn.inode) {
 				held = held || h.TGID == self
 			}
-			rec.Canary(cn.label+" held by zygarde", "process file tables (task_file iterator)", held)
+			rec.Canary(cn.label+" held by zygarde", "process file tables ("+table.View+")", held)
 		}
 	}
 

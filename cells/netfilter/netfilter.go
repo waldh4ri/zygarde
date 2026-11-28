@@ -22,6 +22,7 @@ import (
 	"github.com/waldh4ri/zygarde/internal/bpfutil"
 	"github.com/waldh4ri/zygarde/internal/core"
 	"github.com/waldh4ri/zygarde/internal/kattr"
+	"github.com/waldh4ri/zygarde/internal/ktask"
 )
 
 // As in netfilter.bpf.c.
@@ -72,8 +73,11 @@ func (*Cell) Description() string {
 }
 
 func (*Cell) Supported(env *core.Env) error {
-	if err := env.RequireBTFType("bpf_iter__task", "the BPF task iterator (Linux 5.8+)"); err != nil {
-		return err
+	if ktask.Use(env, "bpf_iter__task") {
+		// No task iterator (before Linux 5.8): read the namespaces from kernel memory.
+		if err := memorySupported(env); err != nil {
+			return err
+		}
 	}
 	if env.Lockdown == "confidentiality" {
 		return core.Skip("kernel lockdown (confidentiality)")
@@ -126,27 +130,37 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 	planted, closeCanary := plantCanary(env, rec, spec)
 	defer closeCanary()
 
-	var objs iterObjs
-	if err := bpfutil.Load(env, spec, &objs); err != nil {
-		return err
-	}
-	defer objs.Close()
-	data, err := bpfutil.ReadIter(objs.DumpHooks)
-	closeCanary() // the canary only needs to exist while the hooks are read
-	if err != nil {
-		return err
-	}
-	recs, err := bpfutil.Decode[netfilterNfRec](data)
-	if err != nil {
-		return err
-	}
-	var dropped uint64
-	if err := objs.Stats.Lookup(uint32(0), &dropped); err == nil && dropped > 0 {
-		rec.Limit("%d network namespace(s) not checked: more than 4096 namespaces", dropped)
+	var recs []netfilterNfRec
+	view := "BPF task iterator"
+	if ktask.Use(env, "bpf_iter__task") {
+		view = "network namespaces of tasks (memory)"
+		recs, err = memoryRecords(env, rec)
+		closeCanary()
+		if err != nil {
+			return err
+		}
+	} else {
+		var objs iterObjs
+		if err := bpfutil.Load(env, spec, &objs); err != nil {
+			return err
+		}
+		defer objs.Close()
+		data, err := bpfutil.ReadIter(objs.DumpHooks)
+		closeCanary() // the canary only needs to exist while the hooks are read
+		if err != nil {
+			return err
+		}
+		if recs, err = bpfutil.Decode[netfilterNfRec](data); err != nil {
+			return err
+		}
+		var dropped uint64
+		if err := objs.Stats.Lookup(uint32(0), &dropped); err == nil && dropped > 0 {
+			rec.Limit("%d network namespace(s) not checked: more than 4096 namespaces", dropped)
+		}
 	}
 
 	inv := analyse(recs, res)
-	rec.Canary("zygarde's network namespace", "BPF task iterator", inv.namespaces[selfNS])
+	rec.Canary("zygarde's network namespace", view, inv.namespaces[selfNS])
 	if planted {
 		rec.Canary("BPF netfilter link on IPv4 LOCAL_OUT", "hooks read from struct net", inv.bpfLocalOut[selfNS])
 	}

@@ -5,73 +5,32 @@ package process
 
 import (
 	"fmt"
-	"os"
 	"strconv"
 
 	"github.com/waldh4ri/zygarde/internal/bpfutil"
 	"github.com/waldh4ri/zygarde/internal/core"
-	"github.com/waldh4ri/zygarde/internal/kmem"
 	"github.com/waldh4ri/zygarde/internal/ktask"
 )
 
 // The kernel memory view (internal/ktask) replaces the BPF task iterator on
-// kernels without one (before Linux 5.8). ZYGARDE_TASK_VIEW=memory forces it
-// on newer kernels, to compare both views.
-const taskViewEnv = "ZYGARDE_TASK_VIEW"
+// kernels without one (before Linux 5.8); ktask.ForceEnv forces it.
+func useMemoryView(env *core.Env) bool { return ktask.Use(env, "bpf_iter__task") }
 
-func useMemoryView(env *core.Env) bool {
-	return os.Getenv(taskViewEnv) == "memory" || !core.HasBTFType(env.BTF, "bpf_iter__task")
-}
-
-// memViewSupported says whether the memory view can run: it needs BTF (for
-// the offsets) and the initial PID namespace (it reads init-namespace IDs,
-// which /proc then shows). It finds init_task from its own task, so it needs
-// no kernel symbols.
 func memViewSupported(env *core.Env) error {
-	if err := env.RequireBTF(); err != nil {
-		return err
-	}
-	if _, err := ktask.NewLayout(env.BTF); err != nil {
-		return core.Skip("the kernel's BTF lacks task fields the memory view needs: %v", err)
-	}
-	if init, err := bpfutil.InInitPIDNS(); err != nil || !init {
-		return core.Skip("no BPF task iterator (Linux 5.8+), and the kernel memory view needs the initial PID namespace")
-	}
-	return nil
+	return ktask.Supported(env, "BPF task iterator (Linux 5.8+)")
 }
 
 // memView reads task snapshots from kernel memory.
-type memView struct {
-	mem      *kmem.Reader
-	layout   ktask.Layout
-	initTask uint64
-}
+type memView struct{ src *ktask.Source }
 
 func openMemView(env *core.Env, rec *core.Recorder) (*memView, error) {
-	layout, err := ktask.NewLayout(env.BTF)
+	src, err := ktask.Open(env, rec)
 	if err != nil {
 		return nil, err
 	}
-	mem, err := kmem.Open(env)
-	if err != nil {
-		return nil, err
-	}
-	if id := mem.ProgramID(); id != 0 {
-		rec.Footprint("bpf_prog_id", strconv.FormatUint(uint64(id), 10))
-	}
-	// init_task is the root of zygarde's own real_parent chain. That needs
-	// no /proc/kallsyms data symbols (CONFIG_KALLSYMS_ALL), and where
-	// kallsyms does list init_task the two must agree.
-	self, err := mem.CurrentTask()
-	if err == nil {
-		var initTask uint64
-		if initTask, err = ktask.FindInitTask(mem, layout, self); err == nil {
-			checkInitTaskSymbol(env, rec, initTask)
-			return &memView{mem: mem, layout: layout, initTask: initTask}, nil
-		}
-	}
-	mem.Close()
-	return nil, fmt.Errorf("finding init_task: %w", err)
+	// Where kallsyms lists init_task, it must be the root ktask found.
+	checkInitTaskSymbol(env, rec, src.InitTask)
+	return &memView{src: src}, nil
 }
 
 // checkInitTaskSymbol compares the root of the process tree with the address
@@ -94,13 +53,13 @@ func checkInitTaskSymbol(env *core.Env, rec *core.Recorder, root uint64) {
 	})
 }
 
-func (v *memView) Close() { v.mem.Close() }
+func (v *memView) Close() { v.src.Close() }
 
 // snapshot reads the kernel's tasks and returns them as the iterator would
 // (init-namespace IDs, which are zygarde's), with the processes found on
 // only one of the two structures walked.
 func (v *memView) snapshot() (snapshot, error) {
-	view, err := ktask.Snapshot(v.mem, v.layout, v.initTask)
+	view, err := v.src.Snapshot()
 	if err != nil {
 		return snapshot{}, err
 	}

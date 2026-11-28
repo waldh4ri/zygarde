@@ -8,17 +8,17 @@ Cells run in the order below (`allCells` in `cmd/zygarde/main.go`). Select some 
 | 2 | [`altered_syscall_table`](#altered_syscall_table) | rewritten `sys_call_table` entries | 15 s | x86_64, `CONFIG_KALLSYMS_ALL`, a kernel that dispatches through the table |
 | 3 | [`hook_inventory`](#hook_inventory) | ftrace and kprobe hooks | 30 s | dynamic ftrace, tracefs |
 | 4 | [`inline_hook`](#inline_hook) | patched function prologues | 15 s | x86_64, Linux 5.2+ |
-| 5 | [`kernel_pointers`](#kernel_pointers) | swapped function pointers in `/proc`, `/sys` and VFS tables | 30 s | BTF, Linux 5.8+ |
+| 5 | [`kernel_pointers`](#kernel_pointers) | swapped function pointers in `/proc`, `/sys` and VFS tables | 30 s | BTF |
 | 6 | [`hidden_kernel_module`](#hidden_kernel_module) | unlinked modules, boot persistence | 15 s | - |
 | 7 | [`usermode_helpers`](#usermode_helpers) | modprobe, core dump pipe and other programs the kernel runs as root, pointed elsewhere or hidden | 15 s | - (kernel-memory view: `CONFIG_KALLSYMS_ALL`) |
 | 8 | [`kernel_taint`](#kernel_taint) | taint without a visible module | 15 s | - |
 | 9 | [`hidden_process`](#hidden_process) | processes hidden from `/proc`, disguised processes, hidden or fileless tracers | 30 s | BTF (before 5.8: kernel symbols) |
 | 10 | [`hidden_file`](#hidden_file) | directory entries filtered from `getdents64` | 60 s | BTF, Linux 5.8+ |
 | 11 | [`hidden_ebpf_program`](#hidden_ebpf_program) | hidden or dangerous eBPF programs | 30 s | BTF, Linux 5.9+ |
-| 12 | [`hidden_socket`](#hidden_socket) | sockets hidden from `netstat`/`ss`, packet sniffers | 30 s | - (iterators and owners: BTF, Linux 5.8+) |
-| 13 | [`netfilter_hooks`](#netfilter_hooks) | magic-packet netfilter hooks | 30 s | BTF, Linux 5.8+, netfilter |
+| 12 | [`hidden_socket`](#hidden_socket) | sockets hidden from `netstat`/`ss`, packet sniffers | 30 s | - (iterators: BTF, Linux 5.8+; owners: BTF) |
+| 13 | [`netfilter_hooks`](#netfilter_hooks) | magic-packet netfilter hooks | 30 s | BTF, netfilter |
 | 14 | [`userspace_hooks`](#userspace_hooks) | `LD_PRELOAD`-style hooks, trojaned libraries, mappings hidden from `maps`, in-memory ELF images | 30 s | - (mapping comparison: BTF, Linux 5.12+) |
-| 15 | [`orphan_namespace`](#orphan_namespace) | namespaces without a process that hold listeners, mounts or devices | 30 s | BTF, Linux 5.8+ |
+| 15 | [`orphan_namespace`](#orphan_namespace) | namespaces without a process that hold listeners, mounts or devices | 30 s | BTF |
 
 Each Cell either compares two views (kernel vs userspace) or checks an invariant. The tables show both views; "-" means there is no second view.
 
@@ -126,6 +126,7 @@ The kernel itself starts some programs as root, outside any session: `modprobe` 
 ## hidden_process
 
 - **Kernel view**: three independent sources, taken before and after reading `/proc`: the BPF `iter/task` iterator (every thread), the `init_task.tasks` walk through the open-coded `bpf_iter_task_new` kfunc (Linux 6.7+), and `sched_switch` sampling.
+- **Kernels without BPF iterators (before 5.8)**: `kernel_pointers`, `netfilter_hooks`, `orphan_namespace` and the socket ownership of `hidden_socket` read the same data from kernel memory (`internal/ktask`): every task's file table (`files->fdt`, only descriptors set in `open_fds`, then each file's `f_op`, `private_data` and inode) and namespaces (`nsproxy`, `cred->user_ns`, the PID namespace of `thread_pid`). Kinds of open files are recognised by the `file_operations` of zygarde's own descriptors, as with the iterator.
 - **Kernels without the task iterator (before 5.8)**: the tasks are read from kernel memory instead (`internal/ktask`), with offsets from BTF (the kernel's, or `--btf`/`--btfhub`), two independent ways: the global task list (`init_task.tasks`) and the process tree (every thread's `children` list, from `init_task`), each process's threads coming from `signal->thread_head`. No kernel enumeration code runs, so hooks on `getdents`, `/proc` readdir or the PID lookup don't hide anything from it. A process present on only one of the two structures, in both snapshots, is reported as unlinked from the other. The mount-tree check is skipped there (it needs the iterator). `ZYGARDE_TASK_VIEW=memory` forces this view on newer kernels, to compare both.
 - **Userspace view**: `/proc` process listing and `/proc/<pid>/task` thread listings.
 - PIDs are translated into Zygarde's PID namespace (so it works inside containers) and matched by `start_time`, so PIDs reused mid-scan do not count.

@@ -49,6 +49,8 @@ type Layout struct {
 	realParent, parent, cred, start, state uint64
 	stateSize, commSize                    uint64
 	uid, euid, gid                         uint64 // in struct cred (kuid_t/kgid_t .val)
+	files, nsproxy                         uint64 // task_struct pointers, for Files and Namespaces
+	threadPid                              uint64 // task_struct.thread_pid (Linux 4.19+; 0: absent)
 }
 
 // NewLayout reads the offsets from BTF. It fails when a member is missing,
@@ -72,11 +74,14 @@ func NewLayout(spec *btf.Spec) (Layout, error) {
 		{"thread_node", &l.threadNode}, {"signal", &l.signal},
 		{"pid", &l.pid}, {"tgid", &l.tgid}, {"flags", &l.flags}, {"mm", &l.mm},
 		{"ptrace", &l.ptrace}, {"real_parent", &l.realParent}, {"parent", &l.parent},
-		{"cred", &l.cred},
+		{"cred", &l.cred}, {"files", &l.files}, {"nsproxy", &l.nsproxy},
 	} {
 		get("task_struct", f.path, f.dst)
 	}
 	get("signal_struct", "thread_head", &l.threadHead)
+	if f, err := kmem.Lookup(spec, "task_struct", "thread_pid"); err == nil {
+		l.threadPid = f.Offset
+	}
 	get("cred", "uid.val", &l.uid)
 	get("cred", "euid.val", &l.euid)
 	get("cred", "gid.val", &l.gid)
@@ -120,6 +125,9 @@ type Task struct {
 	Ptraced       bool
 	TracerPID     uint32 // when ptraced: the tracing thread
 	TracerTGID    uint32
+
+	// Pointers for Files and Namespaces (0 when the task has exited them).
+	Files, NSProxy, Cred, ThreadPid uint64
 }
 
 // View is one snapshot of the kernel's tasks.
@@ -244,6 +252,7 @@ func read(m kmem.Memory, l Layout, tasks map[uint64]uint64, out map[uint64]*Task
 		{l.pid, 4}, {l.tgid, 4}, {l.comm, l.commSize}, {l.flags, 4}, {l.mm, 8},
 		{l.ptrace, 4}, {l.realParent, 8}, {l.parent, 8}, {l.cred, 8},
 		{l.start, 8}, {l.state, min(l.stateSize, 8)},
+		{l.files, 8}, {l.nsproxy, 8}, {l.threadPid, 8},
 	}
 	addrs := make([]uint64, 0, len(tasks))
 	for a := range tasks {
@@ -274,6 +283,10 @@ func read(m kmem.Memory, l Layout, tasks map[uint64]uint64, out map[uint64]*Task
 			StartBoottime: kmem.U64(b[9]),
 		}
 		copy(t.Comm[:], b[2])
+		t.Files, t.NSProxy, t.Cred = kmem.U64(b[11]), kmem.U64(b[12]), kmem.U64(b[8])
+		if l.threadPid != 0 {
+			t.ThreadPid = kmem.U64(b[13])
+		}
 		if s := b[10]; len(s) >= 4 {
 			t.State = kmem.U32(s)
 		}
