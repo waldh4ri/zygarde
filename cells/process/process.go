@@ -27,7 +27,8 @@ import (
 	"github.com/waldh4ri/zygarde/internal/fsutil"
 )
 
-// Cell compares the kernel's task views (BPF task iterator, init_task.tasks
+// Cell compares the kernel's task views (BPF task iterator, or kernel memory
+// before Linux 5.8: the task list and the process tree; init_task.tasks
 // kfunc walk on Linux 6.7+, and scheduler tracepoints) with /proc.
 type Cell struct{}
 
@@ -38,12 +39,15 @@ func (*Cell) ID() string             { return "hidden_process" }
 func (*Cell) Name() string           { return "Hidden Process Detection" }
 func (*Cell) Timeout() time.Duration { return 30 * time.Second }
 func (*Cell) Description() string {
-	return "Compares kernel task views (BPF task iterator, init_task.tasks and scheduler) with /proc processes and threads, flags processes hidden by a mount over their /proc entry, disguised or fileless processes, and ptrace tracers that /proc hides or that run from fileless executables"
+	return "Compares kernel task views (BPF task iterator, or before Linux 5.8 the task list and process tree read from kernel memory; init_task.tasks and scheduler) with /proc processes and threads, flags processes hidden by a mount over their /proc entry, disguised or fileless processes, and ptrace tracers that /proc hides or that run from fileless executables"
 }
 
 func (*Cell) Supported(env *core.Env) error {
-	if err := env.RequireBTFType("bpf_iter__task", "the BPF task iterator (Linux 5.8+)"); err != nil {
-		return err
+	if useMemoryView(env) {
+		// No task iterator (before Linux 5.8): read the tasks from kernel memory.
+		if err := memViewSupported(env); err != nil {
+			return err
+		}
 	}
 	if env.Lockdown == "confidentiality" {
 		return core.Skip("kernel lockdown (confidentiality)")
@@ -66,21 +70,43 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	if err != nil {
 		return err
 	}
-	var iter struct {
-		DumpTask *ebpf.Program `ebpf:"dump_task"`
-	}
-	if err := bpfutil.Load(env, spec, &iter); err != nil {
-		return err
-	}
-	defer iter.DumpTask.Close()
-	mounts, mountErr := loadMountView(env, spec)
-	if mountErr != nil {
-		rec.Limit("The kernel's mount tree was not read (the BPF mount iterator did not load): %v", mountErr)
+
+	// The kernel's tasks come from the BPF task iterator, or from kernel
+	// memory (the task list and the process tree) when there is none.
+	var tasks func() (snapshot, error)
+	view := "BPF task iterator"
+	memory := useMemoryView(env)
+	if memory {
+		mv, err := openMemView(env, rec)
+		if err != nil {
+			return err
+		}
+		defer mv.Close()
+		tasks, view = mv.snapshot, "kernel task list (memory)"
 	} else {
-		defer mounts.Close()
+		var iter struct {
+			DumpTask *ebpf.Program `ebpf:"dump_task"`
+		}
+		if err := bpfutil.Load(env, spec, &iter); err != nil {
+			return err
+		}
+		defer iter.DumpTask.Close()
+		if id, err := bpfutil.ProgramID(iter.DumpTask); err == nil {
+			rec.Footprint("bpf_prog_id", strconv.FormatUint(uint64(id), 10))
+		}
+		tasks = func() (snapshot, error) { return kernelTasks(iter.DumpTask) }
 	}
-	if id, err := bpfutil.ProgramID(iter.DumpTask); err == nil {
-		rec.Footprint("bpf_prog_id", strconv.FormatUint(uint64(id), 10))
+
+	var mounts *mountView
+	var mountErr error
+	if core.HasBTFType(env.BTF, "bpf_iter__task") {
+		if mounts, mountErr = loadMountView(env, spec); mountErr != nil {
+			rec.Limit("The kernel's mount tree was not read (the BPF mount iterator did not load): %v", mountErr)
+		} else {
+			defer mounts.Close()
+		}
+	} else {
+		rec.Limit("Mounts over /proc/<pid> not checked: reading the mount tree needs the BPF task iterator (Linux 5.8+)")
 	}
 
 	sched, err := startScheduler(env, spec, rec)
@@ -98,7 +124,7 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	rec.Footprint("canary_pid", strconv.FormatUint(uint64(canaryPID), 10))
 
 	initBefore, haveInitWalk := snapshotInitTaskList(env, rec)
-	before, err := kernelTasks(iter.DumpTask)
+	before, err := tasks()
 	if err != nil {
 		return err
 	}
@@ -116,7 +142,7 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 		}
 		sched.stopSampling() // keep tracking exits until the last snapshot
 	}
-	after, err := kernelTasks(iter.DumpTask)
+	after, err := tasks()
 	if err != nil {
 		return err
 	}
@@ -129,7 +155,12 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 
 	name := fmt.Sprintf("process %d", canaryPID)
 	_, inKernel := before.procs[canaryPID]
-	rec.Canary(name, "BPF task iterator", inKernel)
+	rec.Canary(name, view, inKernel)
+	if memory {
+		// The canary is a child of zygarde: it must be in the process tree too.
+		_, onList := before.listOnly[canaryPID]
+		rec.Canary(name, "process tree (memory)", inKernel && !onList)
+	}
 	rec.Canary(name, "/proc directory listing", listed[canaryPID])
 	if haveInitWalk {
 		if cInfo, ok := before.procs[canaryPID]; ok {
@@ -189,7 +220,7 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 		if err != nil || freshSet[tid] {
 			continue
 		}
-		if a2, stillAfter := readSingleThreadCheck(iter.DumpTask, tid); !stillAfter || a2.StartBoottime != t.StartBoottime {
+		if a2, stillAfter := readSingleThreadCheck(tasks, tid); !stillAfter || a2.StartBoottime != t.StartBoottime {
 			continue
 		}
 		comm := bpfutil.Int8String(t.Comm[:])
@@ -233,6 +264,10 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 		}
 	}
 
+	if memory {
+		checkUnlinked(rec, before, after)
+	}
+
 	taskComm := func(pid uint32) (string, bool) {
 		if t, ok := before.procs[pid]; ok {
 			return bpfutil.Int8String(t.Comm[:]), true
@@ -262,7 +297,7 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 		}
 	}
 	alive := func() (map[uint32]uint64, error) {
-		now, err := kernelTasks(iter.DumpTask)
+		now, err := tasks()
 		if err != nil {
 			return nil, err
 		}
@@ -279,7 +314,7 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 
 	// Tracers attached to processes, from the kernel's task list.
 	if err := checkPtrace(rec, before, after, listed, map[uint32]bool{uint32(os.Getpid()): true, canaryPID: true}, func() (snapshot, error) {
-		return kernelTasks(iter.DumpTask)
+		return tasks()
 	}); err != nil {
 		return err
 	}
@@ -300,11 +335,14 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 	return nil
 }
 
-// snapshot is one pass of the task iterator.
+// snapshot is one pass over the kernel's tasks (iterator or memory).
 type snapshot struct {
 	procs     map[uint32]processTaskInfo // by TGID in zygarde's namespace, leader preferred
 	nsThreads map[uint32]processTaskInfo // by TID in zygarde's namespace
 	threads   map[uint32]bool            // init-namespace thread IDs
+	// Memory view only: processes found on one of the two structures walked.
+	listOnly map[uint32]processTaskInfo // on init_task.tasks, not in the process tree
+	treeOnly map[uint32]processTaskInfo // in the process tree, not on init_task.tasks
 }
 
 func kernelTasks(prog *ebpf.Program) (snapshot, error) {
@@ -336,8 +374,8 @@ func kernelTasks(prog *ebpf.Program) (snapshot, error) {
 	return s, nil
 }
 
-func readSingleThreadCheck(prog *ebpf.Program, tid uint32) (processTaskInfo, bool) {
-	s, err := kernelTasks(prog)
+func readSingleThreadCheck(tasks func() (snapshot, error), tid uint32) (processTaskInfo, bool) {
+	s, err := tasks()
 	if err != nil {
 		return processTaskInfo{}, false
 	}

@@ -33,7 +33,7 @@ The BTF goes to a private temporary directory and is removed after the scan. The
 | `hidden_kernel_module` | none for `/proc/modules`, `/sys/module` and module BTF; the kernel-memory views need BTF, `CONFIG_KALLSYMS_ALL`, readable `/proc/kallsyms` and not lockdown `confidentiality` (`mod_tree` also needs `CONFIG_MODULES_TREE_LOOKUP`, set with perf events or tracing) |
 | `usermode_helpers` | none for the `/proc/sys` and `/sys` view; the kernel-memory comparison needs `CONFIG_KALLSYMS_ALL`, readable `/proc/kallsyms` and not lockdown `confidentiality`; the programs are examined only when zygarde shares init's root directory (not from a container) |
 | `kernel_taint` | none |
-| `hidden_process` | BTF; `iter/task`, Linux 5.8+ (`init_task.tasks` walk needs 6.7+, else skipped as a limitation; the mount-tree walk needs global BPF functions, 5.5+, and is a limitation if the verifier rejects it) |
+| `hidden_process` | BTF. With `iter/task` (Linux 5.8+), or before 5.8 a walk of the task list and process tree in kernel memory, which needs kernel symbols (`init_task`) and the initial PID namespace (`init_task.tasks` kfunc walk needs 6.7+, else skipped as a limitation; the mount-tree walk needs global BPF functions, 5.5+, and is a limitation if the verifier rejects it) |
 | `hidden_file` | BTF; Linux 5.8+ |
 | `hidden_ebpf_program` | BTF; `iter/bpf_prog`, Linux 5.9+ |
 | `hidden_socket` | none for the `/proc/net` and `sock_diag` views; BTF and Linux 5.8+ for the iterators and ownership check |
