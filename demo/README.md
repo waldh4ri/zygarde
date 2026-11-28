@@ -1,6 +1,6 @@
 # Demos
 
-Each recording runs a real sample on a disposable VM, which is reset right after. Every demo opens with the date, the distribution and the kernel, shows the sample's SHA-256, and loads it on camera. Zygarde's output is unedited; only the pace is slowed so it can be read.
+The detection demos run a real sample on a disposable VM, which is reset right after: each opens with the date, the distribution and the kernel, shows the sample's SHA-256, and loads it on camera. Zygarde's output is unedited; only the pace is slowed so it can be read.
 
 ## gojiberi: a kernel rootkit nobody detects yet
 
@@ -36,7 +36,7 @@ Debian 11, kernel 5.10.
 
 ## Kernels without BTF, and `--btfhub`
 
-Some distribution kernels are built without BTF, which eBPF CO-RE needs. Zygarde says which checks that costs and where the kernel's BTF can be found. With `--btfhub` it downloads that BTF from the BTFHub archive, verifies it against the hash GitHub publishes, and runs the checks the kernel supports. No sample in this one.
+Some distribution kernels are built without BTF, which eBPF CO-RE needs. Zygarde says which checks that costs and where the kernel's BTF can be found. With `--btfhub` it downloads that BTF from the BTFHub archive, verifies it against the hash GitHub publishes, and runs the checks the kernel supports. This demo runs on a clean host, with no malware: it shows the feature, not a detection.
 
 Ubuntu 20.04, kernel 5.4.0-72-generic.
 
