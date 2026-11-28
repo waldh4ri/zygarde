@@ -22,6 +22,7 @@ import (
 	"github.com/waldh4ri/zygarde/internal/bpfutil"
 	"github.com/waldh4ri/zygarde/internal/core"
 	"github.com/waldh4ri/zygarde/internal/kattr"
+	"github.com/waldh4ri/zygarde/internal/ktask"
 )
 
 // Flags, as in kptr.bpf.c.
@@ -101,8 +102,11 @@ func (*Cell) Description() string {
 }
 
 func (*Cell) Supported(env *core.Env) error {
-	if err := env.RequireBTFType("bpf_iter__task_file", "the BPF task file iterator (Linux 5.8+)"); err != nil {
-		return err
+	if ktask.Use(env, "bpf_iter__task_file") {
+		// No task_file iterator (before Linux 5.8): read zygarde's files from kernel memory.
+		if err := memorySupported(env); err != nil {
+			return err
+		}
 	}
 	if env.Lockdown == "confidentiality" {
 		return core.Skip("kernel lockdown (confidentiality)")
@@ -150,6 +154,11 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 		return fmt.Errorf("none of the files to check could be opened")
 	}
 
+	read, view := read, "BPF task_file iterator"
+	if ktask.Use(env, "bpf_iter__task_file") {
+		read = func(env *core.Env) ([]kptrOpsRec, error) { return memoryRead(env, rec) }
+		view = "zygarde's file table (memory)"
+	}
 	recs, err := read(env)
 	if err != nil {
 		return err
@@ -166,7 +175,7 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 			missing++
 		}
 	}
-	rec.Canary(fmt.Sprintf("%d descriptors opened by zygarde", len(files)), "BPF task_file iterator", missing == 0)
+	rec.Canary(fmt.Sprintf("%d descriptors opened by zygarde", len(files)), view, missing == 0)
 
 	ch := &checker{res: res, rec: rec}
 	for _, f := range files {

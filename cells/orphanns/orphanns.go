@@ -28,6 +28,7 @@ import (
 	"github.com/waldh4ri/zygarde/internal/bpfutil"
 	"github.com/waldh4ri/zygarde/internal/core"
 	"github.com/waldh4ri/zygarde/internal/fdowner"
+	"github.com/waldh4ri/zygarde/internal/ktask"
 )
 
 // Cell compares the namespaces the kernel's tasks live in with the namespaces
@@ -47,8 +48,14 @@ func (*Cell) Description() string {
 }
 
 func (*Cell) Supported(env *core.Env) error {
-	if err := env.RequireBTFType("bpf_iter__task", "the BPF task iterator (Linux 5.8+)"); err != nil {
-		return err
+	if ktask.Use(env, "bpf_iter__task") {
+		// No task iterator (before Linux 5.8): read the namespaces from kernel memory.
+		if err := ktask.Supported(env, "BPF task iterator (Linux 5.8+)"); err != nil {
+			return err
+		}
+		if _, err := ktask.NewNSLayout(env.BTF); err != nil {
+			return core.Skip("the kernel's BTF lacks namespace fields the memory view needs: %v", err)
+		}
 	}
 	if err := fdowner.Supported(env); err != nil {
 		return err
@@ -86,19 +93,34 @@ type view struct {
 }
 
 func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
-	spec, err := loadOrphanns()
-	if err != nil {
-		return err
-	}
-	var objs struct {
-		Dump *ebpf.Program `ebpf:"dump_ns"`
-	}
-	if err := bpfutil.Load(env, spec, &objs); err != nil {
-		return err
-	}
-	defer objs.Dump.Close()
-	if id, err := bpfutil.ProgramID(objs.Dump); err == nil {
-		rec.Footprint("bpf_prog_id", strconv.FormatUint(uint64(id), 10))
+	var readNS func() (map[nsKey][]member, error)
+	if ktask.Use(env, "bpf_iter__task") {
+		src, err := ktask.Open(env, rec)
+		if err != nil {
+			return err
+		}
+		defer src.Close()
+		nsl, err := ktask.NewNSLayout(env.BTF)
+		if err != nil {
+			return err
+		}
+		readNS = func() (map[nsKey][]member, error) { return memoryMembers(src, nsl) }
+	} else {
+		spec, err := loadOrphanns()
+		if err != nil {
+			return err
+		}
+		var objs struct {
+			Dump *ebpf.Program `ebpf:"dump_ns"`
+		}
+		if err := bpfutil.Load(env, spec, &objs); err != nil {
+			return err
+		}
+		defer objs.Dump.Close()
+		if id, err := bpfutil.ProgramID(objs.Dump); err == nil {
+			rec.Footprint("bpf_prog_id", strconv.FormatUint(uint64(id), 10))
+		}
+		readNS = func() (map[nsKey][]member, error) { return readMembers(objs.Dump) }
 	}
 
 	// Canary: a namespace kept alive only by a socket of ours. The check below
@@ -111,7 +133,7 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 		rec.Footprint("canary_netns", strconv.FormatUint(canary.netns, 10))
 	}
 
-	v, err := c.read(env, objs.Dump, rec)
+	v, err := c.read(env, readNS, rec)
 	if err != nil {
 		return err
 	}
@@ -124,7 +146,7 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 		case <-ctx.Done():
 			return ctx.Err()
 		}
-		if v2, err := c.read(env, objs.Dump, rec); err == nil {
+		if v2, err := c.read(env, readNS, rec); err == nil {
 			cand = intersect(cand, orphans(v2, c.referenced(v2)))
 		}
 	}
@@ -139,8 +161,8 @@ func (c *Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error
 }
 
 // read takes one reading of members, pins and socket namespaces.
-func (c *Cell) read(env *core.Env, prog *ebpf.Program, rec *core.Recorder) (*view, error) {
-	members, err := readMembers(prog)
+func (c *Cell) read(env *core.Env, readNS func() (map[nsKey][]member, error), rec *core.Recorder) (*view, error) {
+	members, err := readNS()
 	if err != nil {
 		return nil, err
 	}
@@ -171,6 +193,11 @@ func readMembers(prog *ebpf.Program) (map[nsKey][]member, error) {
 	if err != nil {
 		return nil, err
 	}
+	return members(recs), nil
+}
+
+// members groups task records by namespace: the processes in each.
+func members(recs []orphannsNsRec) map[nsKey][]member {
 	type slot struct {
 		key  nsKey
 		tgid uint32
@@ -197,7 +224,7 @@ func readMembers(prog *ebpf.Program) (map[nsKey][]member, error) {
 			out[ns] = append(out[ns], member{tgid: r.Tgid, comm: comm, tasks: 1})
 		}
 	}
-	return out, nil
+	return out
 }
 
 // referenced returns the namespaces that are alive because a live one needs

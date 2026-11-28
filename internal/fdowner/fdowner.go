@@ -24,6 +24,7 @@ import (
 	"github.com/waldh4ri/zygarde/internal/bpfutil"
 	"github.com/waldh4ri/zygarde/internal/core"
 	"github.com/waldh4ri/zygarde/internal/fsutil"
+	"github.com/waldh4ri/zygarde/internal/ktask"
 )
 
 // Kind is the type of object a descriptor refers to.
@@ -80,14 +81,18 @@ type Table struct {
 	// Learned lists the kinds the scan could recognise; a kind is missing if
 	// zygarde could not create an object of that kind to learn it from.
 	Learned map[Kind]bool
+	// View says where the descriptors were read: the task_file iterator, or
+	// kernel memory on kernels without it.
+	View string
 
 	index map[object]map[uint32]string // built on first Holders() call
 }
 
-// Supported returns a Skip error if the kernel can't run the file iterator.
+// Supported returns a Skip error if the descriptors can't be read: with the
+// task_file iterator, or else from kernel memory (internal/ktask).
 func Supported(env *core.Env) error {
-	if err := env.RequireBTFType("bpf_iter__task_file", "the BPF task file iterator (Linux 5.8+)"); err != nil {
-		return err
+	if ktask.Use(env, "bpf_iter__task_file") {
+		return memorySupported(env)
 	}
 	if env.Lockdown == "confidentiality" {
 		return core.Skip("kernel lockdown (confidentiality)")
@@ -97,6 +102,9 @@ func Supported(env *core.Env) error {
 
 // Snapshot walks every process's file table once.
 func Snapshot(env *core.Env) (*Table, error) {
+	if ktask.Use(env, "bpf_iter__task_file") {
+		return memorySnapshot(env)
+	}
 	spec, err := loadFdowner()
 	if err != nil {
 		return nil, err
@@ -134,7 +142,7 @@ func Snapshot(env *core.Env) (*Table, error) {
 	if err != nil {
 		return nil, err
 	}
-	t := &Table{Learned: map[Kind]bool{}}
+	t := &Table{Learned: map[Kind]bool{}, View: "task_file iterator"}
 	for _, r := range own {
 		k, ok := known[int(r.Fd)]
 		if !ok || r.Fop == 0 {

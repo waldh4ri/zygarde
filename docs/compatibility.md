@@ -29,17 +29,17 @@ The BTF goes to a private temporary directory and is removed after the scan. The
 | `altered_syscall_table` | x86_64; `CONFIG_KALLSYMS_ALL`; readable `/proc/kallsyms`; a kernel that still dispatches via `sys_call_table` (before 6.9, or not yet backported: 6.8.5, 6.6.26, 6.1.85, 5.15.154) |
 | `hook_inventory` | dynamic ftrace, tracefs (mounted privately if needed), not lockdown |
 | `inline_hook` | x86_64; Linux 5.2+ (read-only data maps); BTF |
-| `kernel_pointers` | BTF; `iter/task_file`, Linux 5.8+ |
+| `kernel_pointers` | BTF. With `iter/task_file` (Linux 5.8+), or before 5.8 zygarde's own file table read from kernel memory (initial PID namespace) |
 | `hidden_kernel_module` | none for `/proc/modules`, `/sys/module` and module BTF; the kernel-memory views need BTF, `CONFIG_KALLSYMS_ALL`, readable `/proc/kallsyms` and not lockdown `confidentiality` (`mod_tree` also needs `CONFIG_MODULES_TREE_LOOKUP`, set with perf events or tracing) |
 | `usermode_helpers` | none for the `/proc/sys` and `/sys` view; the kernel-memory comparison needs `CONFIG_KALLSYMS_ALL`, readable `/proc/kallsyms` and not lockdown `confidentiality`; the programs are examined only when zygarde shares init's root directory (not from a container) |
 | `kernel_taint` | none |
 | `hidden_process` | BTF. With `iter/task` (Linux 5.8+), or before 5.8 a walk of the task list and process tree in kernel memory, which needs kernel symbols (`init_task`) and the initial PID namespace (`init_task.tasks` kfunc walk needs 6.7+, else skipped as a limitation; the mount-tree walk needs global BPF functions, 5.5+, and is a limitation if the verifier rejects it) |
 | `hidden_file` | BTF; Linux 5.8+ |
 | `hidden_ebpf_program` | BTF; `iter/bpf_prog`, Linux 5.9+ |
-| `hidden_socket` | none for the `/proc/net` and `sock_diag` views; BTF and Linux 5.8+ for the iterators and ownership check |
-| `netfilter_hooks` | BTF; Linux 5.8+; netfilter. The canary BPF netfilter link needs 6.4+ |
+| `hidden_socket` | none for the `/proc/net` and `sock_diag` views; BTF and Linux 5.8+ for the iterators; BTF for the ownership check (from kernel memory before 5.8) |
+| `netfilter_hooks` | BTF; netfilter. Namespaces through `iter/task` (Linux 5.8+), or before 5.8 from kernel memory (initial PID namespace). The canary BPF netfilter link needs 6.4+ |
 | `userspace_hooks` | none; the comparison with the kernel's executable mappings needs BTF and `iter/task_vma`, Linux 5.12+ (RHEL 8's 4.18 has it). Package checks need dpkg or a SQLite rpm database |
-| `orphan_namespace` | BTF; `iter/task` and `iter/task_file`, Linux 5.8+. Entering a network namespace held only by a socket needs `pidfd_getfd` (5.6+), otherwise its contents are not listed |
+| `orphan_namespace` | BTF. With `iter/task` and `iter/task_file` (Linux 5.8+), or before 5.8 from kernel memory (initial PID namespace). Entering a network namespace held only by a socket needs `pidfd_getfd` (5.6+), otherwise its contents are not listed |
 
 Kernel facts behind these, verified from source and the VM matrix:
 
