@@ -165,8 +165,34 @@ func (e *Env) RequireBTFType(name, feature string) error {
 	if err := e.RequireBTF(); err != nil {
 		return err
 	}
-	if _, err := e.BTF.AnyTypeByName(name); err != nil {
+	if !HasBTFType(e.BTF, name) {
 		return Skip("kernel lacks %s (no %q in BTF)", feature, name)
+	}
+	return nil
+}
+
+// HasBTFType reports whether spec defines a type named name. BTF generated
+// outside the kernel (BTFHub, pahole) can hold duplicate definitions of one
+// type, which AnyTypeByName reports as an error rather than a match.
+func HasBTFType(spec *btf.Spec, name string) bool {
+	if spec == nil {
+		return false
+	}
+	ts, err := spec.AnyTypesByName(name)
+	return err == nil && len(ts) > 0
+}
+
+// BTFStruct returns the first struct named name in spec, or nil, tolerating
+// duplicate definitions like HasBTFType.
+func BTFStruct(spec *btf.Spec, name string) *btf.Struct {
+	if spec == nil {
+		return nil
+	}
+	ts, _ := spec.AnyTypesByName(name)
+	for _, t := range ts {
+		if s, ok := t.(*btf.Struct); ok {
+			return s
+		}
 	}
 	return nil
 }

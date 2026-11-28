@@ -60,7 +60,7 @@ func SetTarget(env *core.Env, spec *ebpf.CollectionSpec) error {
 	// Without bpf_get_ns_current_pid_tgid() (Linux 5.7+, its struct
 	// bpf_pidns_info is in BTF), is_target() compares init-namespace PIDs.
 	if st.Ino != initPIDNSInode && env.BTF != nil {
-		if _, err := env.BTF.AnyTypeByName("bpf_pidns_info"); err != nil {
+		if !core.HasBTFType(env.BTF, "bpf_pidns_info") {
 			return core.Skip("kernel lacks bpf_get_ns_current_pid_tgid() (Linux 5.7+) and zygarde is not in the initial PID namespace")
 		}
 	}

@@ -13,6 +13,7 @@ import (
 	"github.com/cilium/ebpf/btf"
 
 	"github.com/waldh4ri/zygarde/internal/btfhub"
+	"github.com/waldh4ri/zygarde/internal/core"
 	"github.com/waldh4ri/zygarde/internal/kernel"
 	"github.com/waldh4ri/zygarde/internal/report"
 )
@@ -79,7 +80,7 @@ func checkKernelBTF(path string) error {
 	if err != nil {
 		return fmt.Errorf("downloaded file is not valid BTF: %w", err)
 	}
-	if _, err := spec.AnyTypeByName("task_struct"); err != nil {
+	if !core.HasBTFType(spec, "task_struct") {
 		return errors.New("downloaded BTF does not describe a kernel (no task_struct)")
 	}
 	return nil

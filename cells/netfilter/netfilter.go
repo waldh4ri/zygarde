@@ -85,8 +85,8 @@ func (*Cell) Supported(env *core.Env) error {
 }
 
 func hasMember(spec *btf.Spec, typ, member string) bool {
-	var s *btf.Struct
-	if err := spec.TypeByName(typ, &s); err != nil {
+	s := core.BTFStruct(spec, typ)
+	if s == nil {
 		return false
 	}
 	for _, m := range s.Members {
@@ -162,7 +162,7 @@ func plantCanary(env *core.Env, rec *core.Recorder, spec *ebpf.CollectionSpec) (
 	if env.BTF == nil {
 		return false, nop
 	}
-	if _, err := env.BTF.AnyTypeByName("bpf_nf_ctx"); err != nil {
+	if !core.HasBTFType(env.BTF, "bpf_nf_ctx") {
 		rec.Limit("No canary hook: BPF netfilter programs need Linux 6.4+")
 		return false, nop
 	}
