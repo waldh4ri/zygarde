@@ -20,7 +20,7 @@ Ubuntu 26.04, kernel 7.0.
 
 ## rkhunter vs Zygarde on BPFDoor
 
-rkhunter scans the clean host, BPFDoor starts, and rkhunter scans again: its output is identical to the baseline. Zygarde, on the same host, reports the implant. (chkrootkit 0.58b is not shown: its BPFDoor check does flag this build.)
+rkhunter scans the clean host, BPFDoor starts, and rkhunter scans again: its output is identical to the baseline. Zygarde, on the same host, reports the implant.
 
 Ubuntu 26.04, kernel 7.0, rkhunter 1.4.6.
 
