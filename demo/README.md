@@ -36,7 +36,7 @@ Debian 11, kernel 5.10.
 
 ## Kernels without BTF, and `--btfhub`
 
-Some distribution kernels are built without BTF, which eBPF CO-RE needs. Zygarde says which checks that costs and where the kernel's BTF can be found. With `--btfhub` it downloads that BTF from the BTFHub archive, verifies it against the hash GitHub publishes, and runs the checks the kernel supports. This demo runs on a clean host, with no malware: it shows the feature, not a detection.
+Some distribution kernels are built without BTF, which eBPF CO-RE needs. Zygarde says which checks that costs and where the kernel's BTF can be found. With `--btfhub` it downloads that BTF from the BTFHub archive, verifies it against the hash GitHub publishes, and runs the checks the kernel supports.
 
 Ubuntu 20.04, kernel 5.4.0-72-generic.
 
