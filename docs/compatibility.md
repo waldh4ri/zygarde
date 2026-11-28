@@ -4,7 +4,22 @@
 
 - Linux, x86_64 or arm64, root privileges (see [Getting started](getting-started.md#requirements)).
 - Linux 5.8+ with BTF (`CONFIG_DEBUG_INFO_BTF=y`) for most Cells.
-- Cells probe for the kernel features they need, checking BTF **types** rather than version numbers so distribution backports are honoured, and report SKIPPED with a reason when something is missing. `--btf <file>` supplies external BTF for kernels without `/sys/kernel/btf/vmlinux`.
+- Cells probe for the kernel features they need, checking BTF **types** rather than version numbers so distribution backports are honoured, and report SKIPPED with a reason when something is missing. `--btf <file>` supplies external BTF for kernels without `/sys/kernel/btf/vmlinux`, and `--btfhub` downloads it (see [Kernels without BTF](#kernels-without-btf)).
+
+## Kernels without BTF
+
+Kernels built without `CONFIG_DEBUG_INFO_BTF` (Ubuntu 20.04's 5.4, CentOS/RHEL 7 and 8, Debian 10, Amazon Linux 2...) give CO-RE nothing to relocate against, so the Cells that need BTF report SKIPPED. The header then says so, and whether the [BTFHub archive](https://github.com/aquasecurity/btfhub-archive) publishes this kernel's BTF. Two ways to cover them:
+
+- `--btf <file>`: a BTF file you obtained yourself (for example from BTFHub, or generated with `pahole` from the kernel's debug symbols).
+- `--btfhub`: Zygarde downloads it. Off by default, because it touches the network: the download is listed in the report's `scanner_footprint`.
+
+`--btfhub` maps `/etc/os-release` (`ID`, `VERSION_ID`), `uname -r` and the architecture to `<distro>/<version>/<arch>/<release>.btf.tar.xz`, for the distributions BTFHub covers (`ubuntu`, `debian`, `fedora`, `centos`, `rhel`, `ol`, `amzn`, `sles`; exact IDs only, since BTF describes one kernel build). Before the BTF is used:
+
+- **Source:** HTTPS only, on GitHub hosts only (`api.github.com`, `github.com`, `raw.githubusercontent.com` and GitHub's download hosts), checked again after every redirect, TLS 1.2 or later.
+- **Integrity:** the file's size and git blob hash are read from the GitHub contents API, then recomputed over the downloaded bytes; any mismatch refuses the file. If the API cannot be reached (it allows 60 unauthenticated requests per hour per address), nothing can vouch for the file and it is not used. This guards against truncated, corrupted or substituted downloads, not against GitHub itself serving other content; the hash is git's SHA-1, the only digest BTFHub publishes.
+- **Format:** the xz magic, a regular tar entry named exactly `<release>.btf`, size caps, a BTF header (magic `0xeB9F`, version 1) whose sections fit in the file, a full BTF parse, and a `task_struct` type.
+
+The BTF goes to a private temporary directory and is removed after the scan. The report records the archive path, download URL, git blob hash, the archive's SHA-256 and `verified`, or why the fetch failed, under `host.btfhub`.
 
 ## Per-Cell kernel requirements
 
@@ -48,7 +63,7 @@ The report header shows the lockdown mode; Coverage lists what it excluded.
 
 ## Other environment effects
 
-- **`kernel.kptr_restrict`** (and missing privileges): when `/proc/kallsyms` reports zero addresses, Cells that need symbols report SKIPPED (`kernel addresses hidden (kptr_restrict=2)`), and COVERAGE names them together with how to cover them.
+- **`kernel.kptr_restrict`** (and missing privileges): when `/proc/kallsyms` reports zero addresses, Cells that need symbols report SKIPPED (`kernel addresses hidden (kptr_restrict=2)`), and COVERAGE names them together with how to cover them. To scan such a host, lower the setting to `1` for the duration of the scan: see [Hosts with `kernel.kptr_restrict=2`](getting-started.md#hosts-with-kernelkptr_restrict2).
 - **No tracefs** (containers): syscall tracing uses `tp_btf` and works; `hook_inventory` mounts tracefs privately when possible.
 - **Containers**: need `--privileged` (and `--pid=host` to see the host). Cells translate PIDs, so they also work inside a PID namespace.
 - **SELinux / AppArmor**: a confined profile can deny `bpf()`; that is reported (see [Architecture](architecture.md#the-cell-contract)).

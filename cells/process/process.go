@@ -349,7 +349,7 @@ func snapshotInitTaskList(env *core.Env, rec *core.Recorder) (map[uint32]process
 	if env.BTF == nil {
 		return nil, false
 	}
-	if _, err := env.BTF.AnyTypeByName("bpf_iter_task_new"); err != nil {
+	if !core.HasBTFType(env.BTF, "bpf_iter_task_new") {
 		return nil, false
 	}
 	if init, err := bpfutil.InInitPIDNS(); err != nil || !init {
@@ -418,7 +418,7 @@ func startScheduler(env *core.Env, spec *ebpf.CollectionSpec, rec *core.Recorder
 	if env.BTF == nil {
 		return nil, nil
 	}
-	if _, err := env.BTF.AnyTypeByName("btf_trace_sched_switch"); err != nil {
+	if !core.HasBTFType(env.BTF, "btf_trace_sched_switch") {
 		rec.Limit("Scheduler view not run (no BTF-typed tracepoints, Linux 5.5+): tasks unlinked from the PID table go unseen")
 		return nil, nil
 	}

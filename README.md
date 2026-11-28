@@ -34,12 +34,13 @@ flowchart LR
 
 ## Quick start
 
-Needs Linux 5.8+ with BTF and root (`CAP_BPF`/`CAP_SYS_ADMIN`).
+Needs Linux 5.8+ with BTF and root (`CAP_BPF`/`CAP_SYS_ADMIN`). Kernels without BTF can use `--btf <file>`, or `--btfhub` to download it from BTFHub.
 
 ```bash
 make build                                       # ./zygarde (Go only, no clang needed)
 sudo ./zygarde                                   # run all checks, human-readable report
-sudo ./zygarde -v                                # also explain each check, show observations and canaries
+sudo ./zygarde -v                                # also explain each check, show observations, canaries, all evidence
+sudo ./zygarde -q                                # verdict and one line per finding
 sudo ./zygarde --cells hidden_process,hidden_file
 sudo ./zygarde -o report.json --preserve-dir ./evidence
 ./zygarde --list                                 # the checks

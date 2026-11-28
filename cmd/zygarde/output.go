@@ -22,20 +22,61 @@ import (
 	"github.com/waldh4ri/zygarde/internal/report"
 )
 
+// Verbosity levels of the text report. The JSON report is always complete.
+const (
+	levelQuiet   = -1 // -q: verdict and one line per finding
+	levelNormal  = 0  // per-check lines, findings with their key evidence, coverage
+	levelVerbose = 1  // -v: check descriptions, observations, canaries, every evidence field
+	levelDebug   = 2  // -vv: also debug logs on stderr
+)
+
+// A color is a soft pastel shade (Catppuccin Mocha), in 24-bit RGB with the
+// closest xterm-256 index for terminals without truecolor.
+type color struct {
+	r, g, b uint8
+	x256    uint8
+}
+
+var (
+	cGreen  = color{166, 227, 161, 151}
+	cYellow = color{249, 226, 175, 223}
+	cPink   = color{243, 139, 168, 211}
+	cPeach  = color{250, 179, 135, 216}
+	cBlue   = color{137, 180, 250, 111}
+	cMauve  = color{203, 166, 247, 183}
+	cTeal   = color{148, 226, 213, 116}
+	cGrey   = color{127, 132, 156, 245}
+	cBase   = color{30, 30, 46, 235} // text on a colored badge
+)
+
 // style applies ANSI colors when enabled.
-type style struct{ on bool }
+type style struct{ on, truecolor bool }
+
+func (s style) code(c color, layer int) string { // layer 38: foreground, 48: background
+	if s.truecolor {
+		return fmt.Sprintf("%d;2;%d;%d;%d", layer, c.r, c.g, c.b)
+	}
+	return fmt.Sprintf("%d;5;%d", layer, c.x256)
+}
 
 func (s style) wrap(code, text string) string {
-	if !s.on {
+	if !s.on || text == "" {
 		return text
 	}
 	return "\033[" + code + "m" + text + "\033[0m"
 }
-func (s style) bold(t string) string   { return s.wrap("1", t) }
-func (s style) dim(t string) string    { return s.wrap("2", t) }
-func (s style) red(t string) string    { return s.wrap("1;31", t) }
-func (s style) yellow(t string) string { return s.wrap("1;33", t) }
-func (s style) green(t string) string  { return s.wrap("32", t) }
+func (s style) fg(c color, t string) string     { return s.wrap(s.code(c, 38), t) }
+func (s style) strong(c color, t string) string { return s.wrap("1;"+s.code(c, 38), t) }
+func (s style) bold(t string) string            { return s.wrap("1", t) }
+func (s style) dim(t string) string             { return s.fg(cGrey, t) }
+
+// badge prints text as a colored label: " CLEAN " on a pastel background.
+func (s style) badge(c color, t string) string {
+	if !s.on {
+		return t
+	}
+	return s.wrap("1;"+s.code(cBase, 38)+";"+s.code(c, 48), " "+t+" ")
+}
 
 // colorEnabled follows the usual conventions: only on a terminal, never with
 // NO_COLOR set (https://no-color.org) or --no-color.
@@ -46,21 +87,30 @@ func colorEnabled(f *os.File, flagOff bool) bool {
 	return isTerminal(f)
 }
 
-// printer renders a scan for a person at a terminal, or only JSON at the end.
-type printer struct {
-	w       io.Writer
-	json    bool
-	verbose bool
-	st      style
-	index   int
-	total   int
-	nameW   int
-	width   int
+// truecolor reports whether the terminal advertises 24-bit color.
+func truecolor() bool {
+	c := os.Getenv("COLORTERM")
+	return c == "truecolor" || c == "24bit"
 }
 
-func newPrinter(w io.Writer, jsonMode, verbose, color bool, width int) *printer {
-	return &printer{w: w, json: jsonMode, verbose: verbose, st: style{on: color}, width: width}
+// printer renders a scan for a person at a terminal, or only JSON at the end.
+type printer struct {
+	w     io.Writer
+	json  bool
+	level int
+	st    style
+	index int
+	total int
+	nameW int
+	width int
 }
+
+func newPrinter(w io.Writer, jsonMode bool, level int, st style, width int) *printer {
+	return &printer{w: w, json: jsonMode, level: level, st: st, width: width}
+}
+
+func (p *printer) verbose() bool { return p.level >= levelVerbose }
+func (p *printer) quiet() bool   { return p.level <= levelQuiet }
 
 func (p *printer) printf(format string, args ...any) { fmt.Fprintf(p.w, format, args...) }
 
@@ -81,87 +131,128 @@ func (p *printer) header(r *report.Report, cells []core.Cell) {
 	for _, c := range cells {
 		p.nameW = max(p.nameW, utf8.RuneCountInString(c.Name()))
 	}
-	if p.json {
+	if p.json || p.quiet() {
 		return
 	}
 	h := r.Host
-	btf := "no"
-	if h.BTF {
-		btf = "yes"
+	// Settings that limit what Zygarde can see stand out; the rest stays plain.
+	btf := "yes"
+	switch h.BTFSource {
+	case "btfhub":
+		btf = "from BTFHub"
+	case "file":
+		btf = "from --btf"
+	case "none":
+		btf = p.st.fg(cYellow, "no")
 	}
-	p.printf("%s %s\n\n", p.st.bold("zygarde "+version), p.st.dim("· eBPF rootkit triage for Linux"))
-	p.printf("  %-9s %s\n", "Host", h.Hostname)
-	p.printf("  %-9s %s · Linux %s · %s\n", "System", h.Distro, h.Kernel, h.Arch)
+	lockdown := h.Lockdown
+	if lockdown == "confidentiality" {
+		lockdown = p.st.fg(cYellow, lockdown)
+	}
 	kptr := ""
 	if h.KptrRestrict != nil {
-		kptr = fmt.Sprintf(" · kptr_restrict %d", *h.KptrRestrict)
+		v := strconv.Itoa(*h.KptrRestrict)
+		if *h.KptrRestrict >= 2 {
+			v = p.st.fg(cYellow, v)
+		}
+		kptr = " · kptr_restrict " + v
 	}
-	p.printf("  %-9s BTF %s · lockdown %s%s\n", "Kernel", btf, h.Lockdown, kptr)
-	p.printf("  %-9s %s\n\n", "Started", r.StartedAt.Format("2006-01-02 15:04:05 MST"))
+	label := func(s string) string { return p.st.dim(fmt.Sprintf("%-9s", s)) }
+	p.printf("%s %s\n\n", p.st.strong(cMauve, "zygarde "+version), p.st.dim("· eBPF rootkit triage for Linux"))
+	p.printf("  %s %s\n", label("Host"), p.st.bold(h.Hostname))
+	p.printf("  %s %s · Linux %s · %s\n", label("System"), h.Distro, h.Kernel, h.Arch)
+	p.printf("  %s BTF %s · lockdown %s%s\n", label("Kernel"), btf, lockdown, kptr)
+	if b := h.BTFHub; b != nil {
+		yellow := func(s string) string { return p.st.fg(cYellow, s) }
+		lead := "  " + label("BTF") + " "
+		switch {
+		case b.Verified:
+			p.wrapSegs(lead, seg{"BTFHub " + b.Path + ",", nil},
+				seg{"verified against GitHub's git blob hash " + b.GitBlobSHA1, p.st.dim})
+		case b.Requested:
+			p.wrapSegs(lead, seg{"not fetched from BTFHub: " + b.Error + ".", yellow},
+				seg{"Checks that need BTF are skipped; --btf <file> provides it.", p.st.dim})
+		case b.Path != "":
+			// The hint: this kernel lacks BTF, and BTFHub publishes a path for it.
+			p.wrapSegs(lead, seg{"this kernel ships none, so checks that need it are skipped.", yellow},
+				seg{"Run with --btfhub to fetch " + b.Path + " from BTFHub, or give one with --btf <file>.", nil})
+		default:
+			p.wrapSegs(lead, seg{"this kernel ships none, so checks that need it are skipped.", yellow},
+				seg{"Give one with --btf <file> (BTFHub has no BTF for this distribution).", nil})
+		}
+	}
+	p.printf("  %s %s\n\n", label("Started"), r.StartedAt.Format("2006-01-02 15:04:05 MST"))
 }
 
 func (p *printer) start(c core.Cell) {
 	p.index++
-	if p.json {
+	if p.json || !p.verbose() {
 		return
 	}
-	if p.verbose {
-		p.printf("  %s\n", p.st.dim(fmt.Sprintf("[%02d/%02d] %s: %s", p.index, p.total, c.Name(), c.Description())))
-	}
+	p.printf("  %s\n", p.st.dim(fmt.Sprintf("[%02d/%02d] %s: %s", p.index, p.total, c.Name(), c.Description())))
 }
 
 // result prints one aligned line per Cell: status, then its summary.
 func (p *printer) result(r core.Result) {
-	if p.json {
+	if p.json || p.quiet() {
 		return
 	}
-	label := fmt.Sprintf("[%02d/%02d] %-*s", p.index, p.total, p.nameW, r.Name)
+	name := fmt.Sprintf("%-*s", p.nameW, r.Name)
 	text := r.StatusText
 	if r.Status == core.StatusOK && len(r.Limitations) > 0 {
 		text += "*" // partly checked; listed under Coverage
 	}
 	status := fmt.Sprintf("%-10s", text)
 	summary := r.Message
+	var paint func(string) string
 	switch r.Status {
 	case core.StatusOK:
-		status = p.st.green(status)
+		status = p.st.fg(cGreen, status)
 	case core.StatusSkipped:
 		status = p.st.dim(status)
-	case core.StatusError:
-		status = p.st.red(status)
-		summary = r.Error
-	case core.StatusSuspicious:
-		status = p.st.yellow(status)
-		summary = fmt.Sprintf("%d finding(s), see below", len(r.Findings))
-	}
-	if r.Status != core.StatusSkipped {
-		summary += fmt.Sprintf(" (%.1fs)", r.DurationSeconds)
-	}
-	var paint func(string) string
-	if r.Status == core.StatusSkipped {
+		name = p.st.dim(name)
 		paint = p.st.dim
+	case core.StatusError:
+		status = p.st.strong(cPeach, status)
+		name = p.st.bold(name)
+		summary = r.Error
+		paint = func(s string) string { return p.st.fg(cPeach, s) }
+	case core.StatusSuspicious:
+		status = p.st.strong(cPink, status)
+		name = p.st.bold(name)
+		summary = fmt.Sprintf("%d finding(s), see below", len(r.Findings))
+		paint = func(s string) string { return p.st.fg(cPink, s) }
 	}
-	prefix := fmt.Sprintf("  %s  %s ", label, status)
-	if visibleLen(prefix)+utf8.RuneCountInString(summary) <= p.width {
-		p.wrapped(prefix, summary, paint)
+	timing := ""
+	if r.Status != core.StatusSkipped {
+		timing = fmt.Sprintf(" (%.1fs)", r.DurationSeconds)
+	}
+	prefix := fmt.Sprintf("  %s %s  %s ", p.st.dim(fmt.Sprintf("[%02d/%02d]", p.index, p.total)), name, status)
+	if visibleLen(prefix)+utf8.RuneCountInString(summary+timing) <= p.width {
+		p.wrappedTail(prefix, summary, timing, paint)
 	} else {
 		// Too long to sit beside the status: give it its own lines.
 		p.printf("%s\n", strings.TrimRight(prefix, " "))
-		p.wrapped("        ", summary, paint)
+		p.wrappedTail("        ", summary, timing, paint)
 	}
 
-	if p.verbose {
+	if p.verbose() {
 		for _, o := range r.Observations {
 			p.printf("        %s\n", p.st.dim("· "+o.Description))
 		}
 		for _, c := range r.Canaries {
-			mark := "seen"
+			mark := p.st.dim("seen")
 			if !c.Observed {
-				mark = "MISSING"
+				mark = p.st.strong(cPink, "MISSING")
 			}
-			p.printf("        %s\n", p.st.dim(fmt.Sprintf("canary %s in %s: %s", c.Canary, c.View, mark)))
+			p.printf("        %s %s\n", p.st.dim(fmt.Sprintf("canary %s in %s:", c.Canary, c.View)), mark)
 		}
 	}
+}
+
+// wrappedTail is wrapped followed by a grey tail (the timing).
+func (p *printer) wrappedTail(prefix, text, tail string, paint func(string) string) {
+	p.wrapSegs(prefix, seg{text, paint}, seg{tail, p.st.dim})
 }
 
 // summary prints findings, coverage and the verdict.
@@ -169,11 +260,6 @@ func (p *printer) summary(r *report.Report, savedTo string) {
 	if p.json {
 		p.writeJSON(r)
 		return
-	}
-
-	if r.Findings > 0 {
-		p.section("Findings")
-		p.findings(r)
 	}
 
 	var errs, skipped []core.Result
@@ -188,10 +274,21 @@ func (p *printer) summary(r *report.Report, savedTo string) {
 			completed++
 		}
 	}
+
+	if p.quiet() {
+		p.quietSummary(r, errs, completed, savedTo)
+		return
+	}
+
+	if r.Findings > 0 {
+		p.section("Findings")
+		p.findings(r)
+	}
+
 	if len(errs) > 0 {
 		p.section("Errors")
 		for _, res := range errs {
-			p.printf("  %s: %s\n", p.st.bold(res.Name), res.Error)
+			p.wrapSegs("  ", seg{res.Name + ":", p.st.bold}, seg{res.Error, func(s string) string { return p.st.fg(cPeach, s) }})
 		}
 	}
 
@@ -209,7 +306,7 @@ func (p *printer) summary(r *report.Report, savedTo string) {
 			p.printf("  Not checked on this system:\n")
 			header = true
 		}
-		p.wrapped("    - ", res.Name+": "+res.Message, nil)
+		p.wrapSegs("    "+p.st.dim("-")+" ", seg{res.Name + ":", p.st.bold}, seg{res.Message, p.st.dim})
 	}
 	header = false
 	for _, res := range r.Results {
@@ -221,10 +318,10 @@ func (p *printer) summary(r *report.Report, savedTo string) {
 				continue
 			}
 			if !header {
-				p.printf("  Partly checked (*):\n")
+				p.printf("  Partly checked (%s):\n", p.st.fg(cYellow, "*"))
 				header = true
 			}
-			p.wrapped("    - ", res.Name+": "+l, nil)
+			p.wrapSegs("    "+p.st.dim("-")+" ", seg{res.Name + ":", p.st.bold}, seg{l, p.st.dim})
 		}
 	}
 	for i, c := range causes {
@@ -232,6 +329,15 @@ func (p *printer) summary(r *report.Report, savedTo string) {
 	}
 
 	p.section("Verdict")
+	p.verdict(r, len(errs))
+
+	if savedTo != "" {
+		p.printf("\n  %s %s\n", p.st.dim("Report saved to"), savedTo)
+	}
+}
+
+// verdict prints the one-line outcome, with the exit code it implies.
+func (p *printer) verdict(r *report.Report, errs int) {
 	switch r.Verdict {
 	case report.VerdictSuspicious:
 		cells := 0
@@ -240,15 +346,39 @@ func (p *printer) summary(r *report.Report, savedTo string) {
 				cells++
 			}
 		}
-		p.printf("  %s  %d finding(s) in %d check(s). Exit code 2.\n", p.st.red("SUSPICIOUS"), r.Findings, cells)
+		p.printf("  %s  %s\n", p.st.badge(cPink, "SUSPICIOUS"),
+			p.st.fg(cPink, fmt.Sprintf("%d finding(s) in %d check(s).", r.Findings, cells))+p.st.dim(" Exit code 2."))
 	case report.VerdictIncomplete:
-		p.printf("  %s  no findings, but %d check(s) failed. Exit code 1.\n", p.st.yellow("INCOMPLETE"), len(errs))
+		p.printf("  %s  %s\n", p.st.badge(cPeach, "INCOMPLETE"),
+			fmt.Sprintf("no findings, but %d check(s) failed.", errs)+p.st.dim(" Exit code 1."))
 	default:
-		p.printf("  %s  no signs of hiding or tampering in the checks that ran. Exit code 0.\n", p.st.green("CLEAN"))
+		p.printf("  %s  %s\n", p.st.badge(cGreen, "CLEAN"),
+			"no signs of hiding or tampering in the checks that ran."+p.st.dim(" Exit code 0."))
 	}
+}
 
+// quietSummary is the whole -q report: the verdict, one line per finding and
+// per failed check, and how much of the scan completed.
+func (p *printer) quietSummary(r *report.Report, errs []core.Result, completed int, savedTo string) {
+	p.verdict(r, len(errs))
+	n := 0
+	for _, res := range r.Results {
+		for _, f := range res.Findings {
+			n++
+			p.wrapSegs(fmt.Sprintf("  %s ", p.st.strong(cPeach, fmt.Sprintf("%2d.", n))),
+				seg{res.Name + ":", p.st.bold}, seg{f.Description, nil})
+		}
+	}
+	for _, res := range errs {
+		p.wrapSegs("  "+p.st.strong(cPeach, "ERR")+" ", seg{res.Name + ":", p.st.bold}, seg{res.Error, func(s string) string { return p.st.fg(cPeach, s) }})
+	}
+	note := ""
+	if completed < len(r.Results) {
+		note = " (run without -q to see what was not checked)"
+	}
+	p.printf("  %s\n", p.st.dim(fmt.Sprintf("%d of %d checks completed.%s", completed, len(r.Results), note)))
 	if savedTo != "" {
-		p.printf("\n  Report saved to %s\n", savedTo)
+		p.printf("  %s %s\n", p.st.dim("Report saved to"), savedTo)
 	}
 }
 
@@ -261,11 +391,16 @@ func (p *printer) findings(r *report.Report) {
 	}
 	var rows [][]string
 	var notes []*note
+	shortened := false
 	for _, res := range r.Results {
 		for _, f := range res.Findings {
 			n := len(rows) + 1
 			var ev []string
 			for _, k := range slices.Sorted(maps.Keys(f.Details)) {
+				if !p.verbose() && !keyEvidence(f, k) {
+					shortened = true
+					continue
+				}
 				ev = append(ev, k+"="+f.Details[k])
 			}
 			rows = append(rows, []string{strconv.Itoa(n), res.Name, f.Description, strings.Join(ev, "\n")})
@@ -283,15 +418,42 @@ func (p *printer) findings(r *report.Report) {
 
 	p.printf("\n")
 	p.table([]string{"#", "Check", "Finding", "Evidence"}, rows)
+	if shortened {
+		p.printf("  %s\n", p.st.dim("Key evidence only: -v or the JSON report (-o) has every field."))
+	}
 	for _, n := range notes {
-		p.printf("\n  %s %s\n", p.st.yellow(numberRanges(n.rows)+"."), p.st.bold(n.cell))
+		p.printf("\n  %s %s\n", p.st.strong(cPeach, numberRanges(n.rows)+"."), p.st.bold(n.cell))
 		if n.why != "" {
-			p.labelled("Why", n.why)
+			p.labelled(cBlue, "Why", n.why)
 		}
 		if n.benign != "" {
-			p.labelled("Rule out", n.benign)
+			p.labelled(cGreen, "Rule out", n.benign)
 		}
 	}
+}
+
+// secondaryEvidence are detail fields that matter when working a finding but
+// not when reading the report: times, inode and ownership numbers, hashes,
+// raw addresses. The default report leaves them out; -v and JSON keep them.
+var secondaryEvidence = map[string]bool{
+	"atime": true, "ctime": true, "mtime": true, "started_at": true,
+	"inode": true, "gid": true, "size": true, "mode": true, "state": true,
+	"ppid": true, "global_tid": true, "global_tgid": true, "ifindex": true,
+	"cgroup": true, "sha256": true, "exe_sha256": true,
+	"struct_module": true, "expected_address": true, "syscall_number": true,
+	"start_id": true,
+}
+
+// keyEvidence reports whether detail k of f belongs in the default report:
+// not a secondary field, and not a value the finding's sentence already
+// states (the PID, module or path it names). Short values ("0", "1") are
+// always kept, since they are not reliably "stated" by a substring match.
+func keyEvidence(f core.Finding, k string) bool {
+	if secondaryEvidence[k] {
+		return false
+	}
+	v := f.Details[k]
+	return utf8.RuneCountInString(v) < 3 || !strings.Contains(f.Description, v)
 }
 
 // table prints a bordered table that fits the output width. The first column
@@ -320,11 +482,21 @@ func (p *printer) table(head []string, rows [][]string) {
 		}
 		p.printf("  %s\n", p.st.dim(l+strings.Join(parts, m)+r))
 	}
-	line := func(cells []string, paint func(string) string) {
+	// Each column's lines come pre-styled; padding uses the visible width.
+	line := func(cells []string, header bool) {
 		wrapped := make([][]string, len(w))
 		height := 1
 		for i, c := range cells {
-			wrapped[i] = wrapCell(c, w[i])
+			switch {
+			case header:
+				wrapped[i] = []string{p.st.strong(cBlue, c)}
+			case i == 0:
+				wrapped[i] = []string{p.st.strong(cPeach, c)}
+			case i == 3:
+				wrapped[i] = p.evidenceLines(c, w[i])
+			default:
+				wrapped[i] = wrapCell(c, w[i])
+			}
 			height = max(height, len(wrapped[i]))
 		}
 		bar := p.st.dim("│")
@@ -336,10 +508,7 @@ func (p *printer) table(head []string, rows [][]string) {
 				if l < len(wrapped[i]) {
 					text = wrapped[i][l]
 				}
-				text += strings.Repeat(" ", w[i]-utf8.RuneCountInString(text))
-				if paint != nil {
-					text = paint(text)
-				}
+				text += strings.Repeat(" ", max(w[i]-visibleLen(text), 0))
 				b.WriteString(" " + text + " " + bar)
 			}
 			p.printf("%s\n", b.String())
@@ -347,12 +516,29 @@ func (p *printer) table(head []string, rows [][]string) {
 	}
 
 	rule("┌", "┬", "┐")
-	line(head, p.st.bold)
+	line(head, true)
 	for _, row := range rows {
 		rule("├", "┼", "┤")
-		line(row, nil)
+		line(row, false)
 	}
 	rule("└", "┴", "┘")
+}
+
+// evidenceLines wraps key=value lines to width, the key grey and the value
+// teal, so values stand out from their labels.
+func (p *printer) evidenceLines(text string, width int) []string {
+	var out []string
+	for _, entry := range strings.Split(text, "\n") {
+		for j, l := range wrapCell(entry, width) {
+			k, v, ok := strings.Cut(l, "=")
+			if j > 0 || !ok {
+				out = append(out, p.st.fg(cTeal, l))
+				continue
+			}
+			out = append(out, p.st.dim(k+"=")+p.st.fg(cTeal, v))
+		}
+	}
+	return out
 }
 
 // wrapCell wraps text into lines of at most width runes. Newlines in text
@@ -408,45 +594,74 @@ func numberRanges(ns []int) string {
 	return strings.Join(parts, ", ")
 }
 
-func (p *printer) labelled(label, text string) {
-	p.wrapped("     "+p.st.dim(fmt.Sprintf("%-9s", label))+" ", text, nil)
+func (p *printer) labelled(c color, label, text string) {
+	p.wrapped("     "+p.st.fg(c, fmt.Sprintf("%-9s", label))+" ", text, nil)
 }
 
 func (p *printer) section(title string) {
-	p.printf("\n%s\n", p.st.bold(strings.ToUpper(title)))
+	p.printf("\n%s\n", p.st.strong(cMauve, strings.ToUpper(title)))
 }
 
 // wrapped prints text after prefix, wrapping at the output width and indenting
 // continuation lines to the prefix's visible width. paint, if set, styles
 // the text (not the prefix).
 func (p *printer) wrapped(prefix, text string, paint func(string) string) {
-	if paint == nil {
-		paint = func(s string) string { return s }
-	}
+	p.wrapSegs(prefix, seg{text, paint})
+}
+
+// seg is a piece of text with its own style (nil: plain).
+type seg struct {
+	text  string
+	paint func(string) string
+}
+
+// wrapSegs prints segments after prefix as one paragraph, wrapping at the
+// output width. Each segment keeps its style across line breaks.
+func (p *printer) wrapSegs(prefix string, segs ...seg) {
 	indent := strings.Repeat(" ", visibleLen(prefix))
 	width := max(p.width-visibleLen(prefix), 30)
-	line := ""
-	first := true
-	flush := func() {
-		if first {
-			p.printf("%s%s\n", prefix, paint(line))
-			first = false
-		} else {
-			p.printf("%s%s\n", indent, paint(line))
-		}
-		line = ""
+	// Lines are lists of runs: consecutive words of one segment, painted
+	// together so a style is applied once per line, not once per word.
+	type run struct {
+		seg   int
+		words []string
 	}
-	for _, word := range strings.Fields(text) {
-		if line != "" && utf8.RuneCountInString(line)+1+utf8.RuneCountInString(word) > width {
-			flush()
+	var lines [][]run
+	var cur []run
+	n := 0 // visible length of cur
+	for si, s := range segs {
+		for _, w := range strings.Fields(s.text) {
+			wl := utf8.RuneCountInString(w)
+			if n > 0 && n+1+wl > width {
+				lines, cur, n = append(lines, cur), nil, 0
+			}
+			if n > 0 {
+				n++
+			}
+			n += wl
+			if len(cur) > 0 && cur[len(cur)-1].seg == si {
+				cur[len(cur)-1].words = append(cur[len(cur)-1].words, w)
+			} else {
+				cur = append(cur, run{si, []string{w}})
+			}
 		}
-		if line != "" {
-			line += " "
-		}
-		line += word
 	}
-	if line != "" || first {
-		flush()
+	if len(cur) > 0 || len(lines) == 0 {
+		lines = append(lines, cur)
+	}
+	for i, l := range lines {
+		parts := make([]string, len(l))
+		for j, r := range l {
+			parts[j] = strings.Join(r.words, " ")
+			if paint := segs[r.seg].paint; paint != nil {
+				parts[j] = paint(parts[j])
+			}
+		}
+		lead := indent
+		if i == 0 {
+			lead = prefix
+		}
+		p.printf("%s%s\n", lead, strings.Join(parts, " "))
 	}
 }
 
@@ -511,12 +726,12 @@ func (p *printer) causeCoverage(r *report.Report, c cause, skipped, partial []st
 		return
 	}
 	heading, fix := c.explain(r)
-	p.printf("  %s\n", heading)
+	p.wrapped("  ", heading, func(s string) string { return p.st.fg(cYellow, s) })
 	if len(skipped) > 0 {
-		p.wrapped("    - Not checked: ", strings.Join(skipped, ", "), nil)
+		p.wrapped("    "+p.st.dim("-")+" Not checked: ", strings.Join(skipped, ", "), p.st.bold)
 	}
 	if len(partial) > 0 {
-		p.wrapped("    - Partly checked (*): ", strings.Join(partial, ", "), nil)
+		p.wrapped("    "+p.st.dim("-")+" Partly checked (*): ", strings.Join(partial, ", "), p.st.bold)
 	}
 	for _, f := range fix {
 		p.wrapped("    ", f, nil)

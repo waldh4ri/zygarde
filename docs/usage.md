@@ -11,14 +11,17 @@ zygarde [flags]
 | `-o`, `--output <file>` | Save the JSON report to a new file. Refused if the path already exists (a file, symlink, device or pipe: nothing is ever overwritten), checked writable before the scan starts, written atomically with mode 0600 |
 | `--preserve-dir <dir>` | Save copies of volatile suspicious binaries (deleted or memfd-backed) into `<dir>` (directory mode 0700, files 0600) |
 | `--json` | Print the full JSON report on stdout instead of the text report |
-| `-v` | Verbose: show what each check does, its observations (for example legitimate hooks) and canaries |
+| `-q`, `--quiet` | Quiet: print only the verdict, one line per finding and how many checks completed |
+| `-v` | Verbose: also show what each check does, its observations (for example legitimate hooks), canaries and every evidence field |
+| `-vv` | `-v` plus debug logging on stderr (same as `--debug`) |
 | `--no-color` | Disable colors. They are also off when `NO_COLOR` is set, `TERM=dumb`, or output is not a terminal |
 | `--cells a,b` | Run only these Cells, in the given order (IDs from `--list`) |
 | `--list` | List Cell IDs and descriptions, then exit |
 | `--btf <file>` | External BTF file, for kernels without `/sys/kernel/btf/vmlinux` |
+| `--btfhub` | On a kernel without BTF, download its BTF from the [BTFHub archive](https://github.com/aquasecurity/btfhub-archive) for the scan (see [Kernels without BTF](compatibility.md#kernels-without-btf)). Off by default: without it, the header only says whether BTFHub has this kernel |
 | `--no-isolation` | Run Cells inside the main process instead of a supervised worker. No hard timeout: a stuck Cell is only stopped by Ctrl-C (a second Ctrl-C exits at once). Mainly for debugging |
 | `--allow-panic-on-oops` | Run even though `kernel.panic_on_oops=1`. By default Zygarde refuses: it reads kernel-backed files that a rootkit may have left dangling, and a kernel oops while reading one would panic and reboot the machine, losing the volatile evidence. Red Hat family distributions (RHEL, Rocky, AlmaLinux) set it by default, so there it is needed unless the sysctl is lowered first. Prefer `sysctl -w kernel.panic_on_oops=0` for the scan and restoring it afterwards |
-| `-d`, `--debug` | Debug logging on stderr |
+| `-d`, `--debug` | Same as `-vv` |
 | `--version` | Print the version |
 
 Ctrl-C, `SIGTERM` and `SIGHUP` (a dropped SSH session) stop the scan cleanly: the worker gets 3 seconds to detach probes and remove canaries before it is killed.
@@ -52,6 +55,17 @@ SKIPPED is not a failure: Cells check for the BTF types and features they need (
 4. **Coverage**: Cells that did not run, and the parts of other Cells that could not (limitations). A clean verdict covers only what ran.
 5. **Verdict** (`clean`, `suspicious`, `incomplete`) and the exit code.
 
+### Verbosity
+
+| Level | Text report |
+|-------|-------------|
+| `-q` | Verdict, one line per finding (and per failed Cell), number of checks completed |
+| default | Everything above. The evidence column keeps the key fields: values the finding's sentence already states (its PID, path or module) and secondary fields (timestamps, inode, gid, mode, size, hashes, cgroup, raw expected addresses) are left out |
+| `-v` | Also each Cell's description, its observations and canaries, and every evidence field |
+| `-vv`, `--debug` | Also debug logs on stderr |
+
+The JSON report (`--json`, `-o`) is always complete, whatever the level. Colors are pastel 24-bit when the terminal sets `COLORTERM=truecolor` (or `24bit`), 256-color otherwise; `--no-color` or `NO_COLOR` turn them off.
+
 ### How to triage a SUSPICIOUS finding
 
 1. Read the *benign causes* line first. Common ones: a security product (EDR, auditd plugin, BPF-LSM) loaded a hook or program; a package manager mid-update replaced a library; a legitimate livepatch.
@@ -66,7 +80,7 @@ SKIPPED is not a failure: Cells check for the BTF types and features they need (
 | Field | Content |
 |-------|---------|
 | `tool`, `version` | `"zygarde"` and its version |
-| `host` | `hostname`, `machine_id`, `distro`, `kernel`, `kernel_version`, `arch`, `lockdown`, `kptr_restrict`, `btf`, `boot_id`, `boot_time` |
+| `host` | `hostname`, `machine_id`, `distro`, `kernel`, `kernel_version`, `arch`, `lockdown`, `kptr_restrict`, `btf` (the kernel's own BTF), `btf_source` (`kernel`, `file`, `btfhub` or `none`), `btfhub` (see [Kernels without BTF](compatibility.md#kernels-without-btf)), `boot_id`, `boot_time` |
 | `scanner_footprint` | `pid`, `worker_pids`, `binary_sha256`, `args`, `artifacts`: everything Zygarde created, to filter scanner noise out of audit/EDR timelines |
 | `started_at`, `finished_at` | UTC timestamps |
 | `verdict` | `clean`, `suspicious` or `incomplete` (no findings but a Cell errored) |

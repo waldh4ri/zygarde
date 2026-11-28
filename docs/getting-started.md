@@ -39,7 +39,8 @@ A scan takes a few seconds to about a minute. It prints one line per Cell as it 
 Common variations:
 
 ```bash
-sudo ./zygarde -v                                       # explain each check, show observations and canaries
+sudo ./zygarde -v                                       # explain each check, show observations, canaries, all evidence
+sudo ./zygarde -q                                       # verdict and one line per finding (fleet runs)
 sudo ./zygarde --cells hidden_process,hidden_socket     # only some Cells
 sudo ./zygarde -o report.json --preserve-dir ./evidence # keep a JSON report and copies of deleted/memfd binaries
 sudo ./zygarde --json | jq '.results[] | select(.status == 2)'
@@ -62,6 +63,29 @@ This runs on the kernel of the Docker host (on Docker Desktop, its VM), inside a
 - Use `--privileged --pid=host` so Zygarde sees the host's processes. Without `--pid=host` it scans the container's PID namespace only (PIDs are translated, so it still works there).
 - tracefs does not need to be mounted: syscall tracing uses BTF raw tracepoints, and `hook_inventory` mounts tracefs in a private mount namespace when it needs it.
 - If `bpf()` is blocked by seccomp or an LSM profile, the affected Cells report ERROR or SKIPPED and say why. When the environment says `bpf()` should work (privileged, no seccomp, unconfined, lockdown allows it) but the kernel refuses with a permission error, that is itself reported as SUSPICIOUS.
+
+## Hosts with `kernel.kptr_restrict=2`
+
+At `kptr_restrict=2`, `/proc/kallsyms` shows zero addresses even to root, so the Cells that need kernel symbols report SKIPPED. At `1`, root sees the real addresses. This wrapper lowers the setting to `1` for the scan and restores the original value afterwards, including on error or Ctrl-C:
+
+```sh
+#!/bin/sh
+# Run a command with kernel.kptr_restrict lowered from 2 to 1, then restore it.
+# Usage (as root): kptr-wrap.sh ./zygarde [args...]
+f=/proc/sys/kernel/kptr_restrict
+[ $# -gt 0 ] || { echo "usage: $0 command [args...]" >&2; exit 2; }
+old=$(cat "$f" 2>/dev/null)
+if [ "${old:-0}" -gt 1 ]; then
+	trap 'rc=$?; echo "$old" > "$f"; exit $rc' EXIT
+	trap 'exit 130' INT TERM HUP
+	echo 1 > "$f" || { trap - EXIT; echo "$0: cannot lower kptr_restrict" >&2; }
+fi
+"$@"
+```
+
+```bash
+sudo sh kptr-wrap.sh ./zygarde -o report.json
+```
 
 ## Before scanning a host you already suspect
 

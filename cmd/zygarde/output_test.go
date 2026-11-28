@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -23,8 +24,14 @@ func result(cell, name string, s core.Status, msg string) core.Result {
 // render prints a report the way a run would, without colors.
 func render(t *testing.T, results []core.Result) string {
 	t.Helper()
+	return renderAt(t, levelNormal, style{}, results)
+}
+
+// renderAt prints a report at a verbosity level and style.
+func renderAt(t *testing.T, level int, st style, results []core.Result) string {
+	t.Helper()
 	var buf bytes.Buffer
-	p := newPrinter(&buf, false, false, false, 100)
+	p := newPrinter(&buf, false, level, st, 100)
 	rep := &report.Report{Host: report.Host{Hostname: "web-01", Distro: "Ubuntu 24.04.5 LTS", Kernel: "6.8.0-142-generic", Arch: "amd64", Lockdown: "none", BTF: true}}
 	var cells []core.Cell
 	p.header(rep, cells)
@@ -48,7 +55,7 @@ func TestRenderSuspicious(t *testing.T) {
 	file := result("hidden_file", "Hidden File Detection", core.StatusSuspicious, "")
 	file.Findings = []core.Finding{{
 		Description: "/usr/lib/.cache exists but is filtered out of directory listings",
-		Details:     map[string]string{"path": "/usr/lib/.cache", "directory": "/usr/lib"},
+		Details:     map[string]string{"path": "/usr/lib/.cache", "directory": "/usr/lib", "inode": "4242", "owner": "nobody"},
 		Why:         "The filesystem returned this entry, but it was removed before the listing reached userspace.",
 		Benign:      "Rare: some security products hide their own files this way.",
 	}}
@@ -63,7 +70,7 @@ func TestRenderSuspicious(t *testing.T) {
 	for _, want := range []string{
 		"web-01", "Ubuntu 24.04.5 LTS",
 		"SUSPICIOUS", "1 finding(s), see below",
-		"FINDINGS", "/usr/lib/.cache exists", "Evidence", "directory=/usr/lib", "path=/usr/lib/.cache", "Why", "Rule out",
+		"FINDINGS", "/usr/lib/.cache exists", "Evidence", "owner=nobody", "Key evidence only", "Why", "Rule out",
 		"OK*", "Partly checked (*)", "Not checked on this system",
 		"Exit code 2", "Report saved to report.json",
 	} {
@@ -106,7 +113,7 @@ func TestFindingsTable(t *testing.T) {
 	}
 	for _, width := range []int{100, 80} {
 		var buf bytes.Buffer
-		p := newPrinter(&buf, false, false, false, width)
+		p := newPrinter(&buf, false, levelNormal, style{}, width)
 		rep := &report.Report{}
 		rep.Finish([]core.Result{hooks})
 		p.findings(rep)
@@ -166,7 +173,7 @@ func TestNumberRanges(t *testing.T) {
 
 func TestWrapped(t *testing.T) {
 	var buf bytes.Buffer
-	p := newPrinter(&buf, false, false, false, 40)
+	p := newPrinter(&buf, false, levelNormal, style{}, 40)
 	p.wrapped("  - ", strings.Repeat("word ", 20), nil)
 	for _, line := range strings.Split(strings.TrimRight(buf.String(), "\n"), "\n") {
 		if len(line) > 40 {
@@ -189,7 +196,7 @@ func TestKptrCoverage(t *testing.T) {
 	mods.Limitations = []string{"Kernel memory views of the modules were not compared: " + hidden, "Module memory in /proc/vmallocinfo was not compared"}
 	render := func(v *int, results ...core.Result) string {
 		var buf bytes.Buffer
-		p := newPrinter(&buf, false, false, false, 100)
+		p := newPrinter(&buf, false, levelNormal, style{}, 100)
 		rep := &report.Report{Host: report.Host{KptrRestrict: v}}
 		rep.Finish(results)
 		p.summary(rep, "")
@@ -225,7 +232,7 @@ func TestLockdownCoverage(t *testing.T) {
 	hooks := result("userhooks", "Userspace Hook Detection", core.StatusOK, "")
 	hooks.Limitations = []string{"Executable mappings not compared with the kernel's: " + lock}
 	var buf bytes.Buffer
-	p := newPrinter(&buf, false, false, false, 100)
+	p := newPrinter(&buf, false, levelNormal, style{}, 100)
 	rep := &report.Report{}
 	rep.Finish([]core.Result{inline, hooks})
 	p.summary(rep, "")
@@ -249,5 +256,185 @@ func TestLockdownCoverage(t *testing.T) {
 func TestSymbolsUnavailableSkips(t *testing.T) {
 	if st, _ := core.Classify(nil, core.SymbolsUnavailable(kernel.HiddenAddressesError())); st != core.StatusSkipped {
 		t.Errorf("hidden kallsyms addresses: status %v, want SKIPPED", st)
+	}
+}
+
+func suspiciousFile() core.Result {
+	r := result("hidden_file", "Hidden File Detection", core.StatusSuspicious, "")
+	r.Findings = []core.Finding{{
+		Description: "/usr/lib/.cache exists but is filtered out of directory listings",
+		Details:     map[string]string{"path": "/usr/lib/.cache", "inode": "4242", "owner": "nobody", "uid": "0"},
+		Why:         "Removed before the listing reached userspace.",
+	}}
+	return r
+}
+
+// The default report keeps key evidence; -v shows every field.
+func TestEvidenceLevels(t *testing.T) {
+	normal := renderAt(t, levelNormal, style{}, []core.Result{suspiciousFile()})
+	for _, want := range []string{"owner=nobody", "uid=0", "Key evidence only"} {
+		if !strings.Contains(normal, want) {
+			t.Errorf("default report lacks %q", want)
+		}
+	}
+	for _, hidden := range []string{"inode=4242", "path=/usr/lib/.cache"} {
+		if strings.Contains(normal, hidden) {
+			t.Errorf("default report shows secondary or restated evidence %q", hidden)
+		}
+	}
+	verbose := renderAt(t, levelVerbose, style{}, []core.Result{suspiciousFile()})
+	for _, want := range []string{"inode=4242", "path=/usr/lib/.cache", "owner=nobody"} {
+		if !strings.Contains(verbose, want) {
+			t.Errorf("-v report lacks %q", want)
+		}
+	}
+	if strings.Contains(verbose, "Key evidence only") {
+		t.Error("-v report must not say evidence was shortened")
+	}
+}
+
+// -q prints the verdict and one line per finding: no header, table or coverage.
+func TestQuiet(t *testing.T) {
+	out := renderAt(t, levelQuiet, style{}, []core.Result{
+		result("ebpf_integrity", "eBPF Integrity", core.StatusOK, "bpf() works normally"),
+		suspiciousFile(),
+	})
+	for _, want := range []string{"SUSPICIOUS", "1. Hidden File Detection: /usr/lib/.cache exists", "2 of 2 checks completed.", "Report saved to report.json"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("-q output lacks %q", want)
+		}
+	}
+	for _, not := range []string{"web-01", "eBPF Integrity", "FINDINGS", "COVERAGE", "┌", "Why"} {
+		if strings.Contains(out, not) {
+			t.Errorf("-q output contains %q", not)
+		}
+	}
+}
+
+// Colors use pastel truecolor when available, 256 colors otherwise, and the
+// table keeps its alignment either way.
+func TestColors(t *testing.T) {
+	for _, st := range []style{{on: true, truecolor: true}, {on: true}} {
+		out := renderAt(t, levelNormal, st, []core.Result{suspiciousFile()})
+		want := "\033[1;38;5;235;48;5;211m SUSPICIOUS "
+		if st.truecolor {
+			want = "\033[1;38;2;30;30;46;48;2;243;139;168m SUSPICIOUS "
+		}
+		if !strings.Contains(out, want) {
+			t.Errorf("truecolor=%v: no SUSPICIOUS badge %q", st.truecolor, want)
+		}
+		tableW := 0
+		for _, line := range strings.Split(out, "\n") {
+			if !strings.Contains(line, "│") && !strings.Contains(line, "─") {
+				continue
+			}
+			n := visibleLen(line)
+			if tableW == 0 {
+				tableW = n
+			}
+			if n != tableW {
+				t.Errorf("truecolor=%v: table line %d wide, want %d: %q", st.truecolor, n, tableW, line)
+			}
+		}
+	}
+}
+
+// Segments keep their own style when wrapped, and lines stay within width.
+func TestWrapSegs(t *testing.T) {
+	var buf bytes.Buffer
+	p := newPrinter(&buf, false, levelNormal, style{on: true}, 40)
+	p.wrapSegs("  ", seg{strings.Repeat("alpha ", 8), p.st.bold}, seg{"(0.2s)", p.st.dim})
+	out := buf.String()
+	t.Log("\n" + out)
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if visibleLen(line) > 40 {
+			t.Errorf("line exceeds width: %q", line)
+		}
+	}
+	if !strings.Contains(out, p.st.dim("(0.2s)")) {
+		t.Error("tail segment lost its style")
+	}
+}
+
+func TestVerbosityFlags(t *testing.T) {
+	for _, c := range []struct {
+		args  []string
+		level int
+		debug bool
+	}{
+		{nil, levelNormal, false},
+		{[]string{"-q"}, levelQuiet, false},
+		{[]string{"-v"}, levelVerbose, false},
+		{[]string{"-v", "-v"}, levelDebug, true},
+		{[]string{"-vv"}, levelDebug, true},
+		{[]string{"--debug"}, levelDebug, true},
+	} {
+		o, err := parseFlags(c.args)
+		if err != nil {
+			t.Fatalf("%v: %v", c.args, err)
+		}
+		if o.level() != c.level || o.debug != c.debug {
+			t.Errorf("%v: level %d debug %v, want %d %v", c.args, o.level(), o.debug, c.level, c.debug)
+		}
+	}
+	if _, err := parseFlags([]string{"-q", "-v"}); err == nil {
+		t.Error("-q -v must be refused")
+	}
+}
+
+// fetchBTF stays off the network when it has nothing to do, and says why.
+func TestFetchBTFSkips(t *testing.T) {
+	args := []string{"-q"}
+	o := options{}
+	o.settings.BTFPath = "/x.btf"
+	rep := &report.Report{Host: report.Host{BTFSource: "none"}}
+	fetchBTF(context.Background(), &o, rep, &args)()
+	if rep.Host.BTFSource != "file" || rep.Host.BTFHub != nil || len(args) != 1 {
+		t.Errorf("--btf: source %q, btfhub %+v, args %v", rep.Host.BTFSource, rep.Host.BTFHub, args)
+	}
+
+	o = options{}
+	rep = &report.Report{Host: report.Host{BTF: true, BTFSource: "kernel"}}
+	fetchBTF(context.Background(), &o, rep, &args)()
+	if rep.Host.BTFSource != "kernel" || rep.Host.BTFHub != nil {
+		t.Errorf("kernel BTF: source %q, btfhub %+v", rep.Host.BTFSource, rep.Host.BTFHub)
+	}
+
+	// Without --btfhub: nothing is downloaded, only the hint is recorded.
+	o = options{}
+	rep = &report.Report{Host: report.Host{BTFSource: "none"}}
+	fetchBTF(context.Background(), &o, rep, &args)()
+	if rep.Host.BTFHub == nil || rep.Host.BTFHub.Requested || rep.Host.BTFHub.Verified || o.settings.BTFPath != "" || len(args) != 1 {
+		t.Errorf("no --btfhub: %+v, args %v", rep.Host.BTFHub, args)
+	}
+	if rep.ScannerFootprint != nil && len(rep.ScannerFootprint.Artifacts) != 0 {
+		t.Errorf("no --btfhub must not touch the network: %v", rep.ScannerFootprint.Artifacts)
+	}
+}
+
+// The header says where BTF came from, or why it is missing.
+func TestHeaderBTF(t *testing.T) {
+	for _, c := range []struct {
+		host report.Host
+		want []string
+	}{
+		{report.Host{BTFSource: "btfhub", BTFHub: &report.BTFHub{Requested: true, Path: "ubuntu/20.04/x86_64/5.4.0-72-generic.btf.tar.xz", GitBlobSHA1: "59d40cd9", Verified: true}},
+			[]string{"BTF from BTFHub", "ubuntu/20.04/x86_64/5.4.0-72-generic.btf.tar.xz", "59d40cd9"}},
+		{report.Host{BTFSource: "none", BTFHub: &report.BTFHub{Requested: true, Path: "ubuntu/20.04/x86_64/x.btf.tar.xz", Error: "BTFHub publishes no BTF for this kernel"}},
+			[]string{"BTF no", "not fetched from BTFHub: BTFHub publishes no BTF for this kernel.", "--btf <file>"}},
+		{report.Host{BTFSource: "none", BTFHub: &report.BTFHub{Path: "ubuntu/20.04/x86_64/5.4.0-72-generic.btf.tar.xz"}},
+			[]string{"BTF no", "Run with --btfhub to fetch", "ubuntu/20.04/x86_64/5.4.0-72-generic.btf.tar.xz"}},
+		{report.Host{BTFSource: "none", BTFHub: &report.BTFHub{Error: "not mapped"}},
+			[]string{"BTF no", "BTFHub has no BTF for this distribution"}},
+		{report.Host{BTFSource: "file"}, []string{"BTF from --btf"}},
+	} {
+		var buf bytes.Buffer
+		p := newPrinter(&buf, false, levelNormal, style{}, 250)
+		p.header(&report.Report{Host: c.host}, nil)
+		for _, w := range c.want {
+			if !strings.Contains(buf.String(), w) {
+				t.Errorf("header lacks %q:\n%s", w, buf.String())
+			}
+		}
 	}
 }

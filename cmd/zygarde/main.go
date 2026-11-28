@@ -46,13 +46,15 @@ var version = "0.4.0"
 type options struct {
 	debug       bool
 	json        bool
-	verbose     bool
+	verbosity   int // -v count; -vv counts 2
+	quiet       bool
 	noColor     bool
 	output      string
 	noIsolate   bool
 	list        bool
 	cells       string
 	allowPanic  bool
+	btfhub      bool
 	settings    core.Settings
 	versionOut  bool
 	licensesOut bool
@@ -62,9 +64,18 @@ func parseFlags(args []string) (options, error) {
 	var o options
 	fs := flag.NewFlagSet("zygarde", flag.ContinueOnError)
 	fs.BoolVar(&o.debug, "d", false, "enable debug logging (shorthand)")
-	fs.BoolVar(&o.debug, "debug", false, "enable debug logging on stderr")
+	fs.BoolVar(&o.debug, "debug", false, "enable debug logging on stderr (same as -vv)")
 	fs.BoolVar(&o.json, "json", false, "print the full report as JSON on stdout instead of text")
-	fs.BoolVar(&o.verbose, "v", false, "also show what each check does, its observations and canaries")
+	fs.BoolFunc("v", "verbose: also show what each check does, its observations, canaries and every evidence field (-vv: also debug logs)", func(string) error {
+		o.verbosity++
+		return nil
+	})
+	fs.BoolFunc("vv", "same as -v -v", func(string) error {
+		o.verbosity += 2
+		return nil
+	})
+	fs.BoolVar(&o.quiet, "q", false, "quiet: print only the verdict and one line per finding")
+	fs.BoolVar(&o.quiet, "quiet", false, "quiet: print only the verdict and one line per finding")
 	fs.BoolVar(&o.noColor, "no-color", false, "disable colors (also disabled when NO_COLOR is set or output is not a terminal)")
 	fs.StringVar(&o.output, "o", "", "also save the JSON report to this file")
 	fs.StringVar(&o.output, "output", "", "also save the JSON report to this file")
@@ -73,10 +84,33 @@ func parseFlags(args []string) (options, error) {
 	fs.BoolVar(&o.list, "list", false, "list available Cells and exit")
 	fs.StringVar(&o.cells, "cells", "", "comma-separated Cell IDs to run (default: all)")
 	fs.StringVar(&o.settings.BTFPath, "btf", "", "external BTF file for kernels without /sys/kernel/btf/vmlinux")
+	fs.BoolVar(&o.btfhub, "btfhub", false, "on kernels without BTF, download this kernel's BTF from the BTFHub archive (verified against GitHub's published hash)")
 	fs.BoolVar(&o.allowPanic, "allow-panic-on-oops", false, "run even though kernel.panic_on_oops=1 (a kernel oops while scanning would then panic and reboot the machine)")
 	fs.BoolVar(&o.versionOut, "version", false, "print the version and exit")
 	fs.BoolVar(&o.licensesOut, "licenses", false, "print the license and third-party notices and exit")
-	return o, fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return o, err
+	}
+	if o.quiet && o.verbosity > 0 {
+		err := fmt.Errorf("-q and -v cannot be combined")
+		fmt.Fprintln(fs.Output(), "zygarde:", err)
+		return o, err
+	}
+	if o.verbosity >= 2 {
+		o.debug = true
+	}
+	return o, nil
+}
+
+// level is the text report's verbosity.
+func (o options) level() int {
+	switch {
+	case o.quiet:
+		return levelQuiet
+	case o.debug: // -vv or --debug
+		return levelDebug
+	}
+	return o.verbosity
 }
 
 func allCells(o options) []core.Cell {
@@ -173,7 +207,8 @@ func run() int {
 		return 1
 	}
 
-	out := newPrinter(os.Stdout, o.json, o.verbose, colorEnabled(os.Stdout, o.noColor), termWidth(os.Stdout))
+	st := style{on: colorEnabled(os.Stdout, o.noColor), truecolor: truecolor()}
+	out := newPrinter(os.Stdout, o.json, o.level(), st, termWidth(os.Stdout))
 	if !hasPrivileges() {
 		return out.fatal("zygarde needs CAP_BPF/CAP_SYS_ADMIN in the initial user namespace (try: sudo zygarde)")
 	}
@@ -187,6 +222,8 @@ func run() int {
 	}
 
 	rep := report.New(version, os.Args[1:])
+	workerArgs := append([]string(nil), os.Args[1:]...)
+	defer fetchBTF(ctx, &o, rep, &workerArgs)()
 	out.header(rep, selected)
 	canary.RemoveStale(canary.FileDir)
 
@@ -220,7 +257,7 @@ func run() int {
 			results = append(results, r)
 		}
 	} else {
-		results = supervisor.Supervise(ctx, selected, os.Args[1:], log, cb)
+		results = supervisor.Supervise(ctx, selected, workerArgs, log, cb)
 		rep.AddWorkerPIDs(workerPIDs)
 	}
 

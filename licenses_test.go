@@ -29,7 +29,7 @@ func TestEmbeddedNotices(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"cilium/ebpf", "golang.org/x/sys", "Go standard library", "libbpf",
+		"cilium/ebpf", "golang.org/x/sys", "ulikunitz/xz", "Go standard library", "libbpf",
 	} {
 		if !strings.Contains(ThirdParty, want) {
 			t.Errorf("THIRD_PARTY_LICENSES lacks %q", want)

@@ -139,8 +139,7 @@ func hasModuleMemory(env *core.Env) bool {
 	if env == nil || env.BTF == nil {
 		return false
 	}
-	_, err := env.BTF.AnyTypeByName("module_memory")
-	return err == nil
+	return core.HasBTFType(env.BTF, "module_memory")
 }
 
 // onePerModule reports whether the kernel gives every module exactly one

@@ -434,10 +434,10 @@ func loadSocketIterators(env *core.Env, rec *core.Recorder) *socketObjects {
 	if env == nil || env.BTF == nil || env.Lockdown == "confidentiality" {
 		return nil
 	}
-	if _, err := env.BTF.AnyTypeByName("bpf_iter__tcp"); err != nil {
+	if !core.HasBTFType(env.BTF, "bpf_iter__tcp") {
 		return nil
 	}
-	if _, err := env.BTF.AnyTypeByName("bpf_iter__udp"); err != nil {
+	if !core.HasBTFType(env.BTF, "bpf_iter__udp") {
 		return nil
 	}
 	spec, err := loadSocket()

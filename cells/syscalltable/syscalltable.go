@@ -152,11 +152,7 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 			"expected_address": fmt.Sprintf("%#x", c.expected),
 			"actual_address":   fmt.Sprintf("%#x", entries[i]),
 		}
-		if fn, mod, off, ok := ks.LookupModule(entries[i]); ok {
-			details["actual_symbol"] = fmt.Sprintf("%s+%#x [%s]", fn, off, mod)
-		} else if fn, off, ok := ks.Lookup(entries[i]); ok {
-			details["actual_symbol"] = fmt.Sprintf("%s+%#x", fn, off)
-		}
+		details["actual_symbol"] = actualSymbol(ks, img, entries[i])
 		rec.Suspicious(core.Finding{
 			Description: fmt.Sprintf("sys_call_table[%d] (%s) points to %#x instead of %s", c.nr, c.name, entries[i], c.symbol),
 			Details:     details,
@@ -180,6 +176,22 @@ func (*Cell) Run(ctx context.Context, env *core.Env, rec *core.Recorder) error {
 
 // outsideImage reports a watched symbol that kallsyms places outside the
 // kernel image. It is not read.
+// actualSymbol names what a hooked table entry points to: a visible module's
+// function, a core kernel function, or neither (a hidden module, BPF or
+// allocated memory). Core names are only given inside the kernel's text: the
+// nearest core symbol below a module address is meaningless.
+func actualSymbol(ks *kernel.Kallsyms, img kernel.Image, addr uint64) string {
+	if fn, mod, off, ok := ks.LookupModule(addr); ok {
+		return fmt.Sprintf("%s+%#x [%s]", fn, off, mod)
+	}
+	if img.InText(addr, 1) {
+		if fn, off, ok := ks.Lookup(addr); ok {
+			return fmt.Sprintf("%s+%#x", fn, off)
+		}
+	}
+	return "outside the kernel's text (hidden module, BPF or allocated memory)"
+}
+
 func outsideImage(rec *core.Recorder, sym string, addr uint64, img kernel.Image) {
 	rec.Suspicious(core.Finding{
 		Description: fmt.Sprintf("/proc/kallsyms reports %s at %#x, outside the kernel image", sym, addr),
