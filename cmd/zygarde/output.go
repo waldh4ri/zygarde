@@ -452,6 +452,9 @@ var secondaryEvidence = map[string]bool{
 	"cgroup": true, "sha256": true, "exe_sha256": true,
 	"struct_module": true, "expected_address": true, "syscall_number": true,
 	"start_id": true,
+	// Inline Hook Detection's raw decode: the finding's sentence names the
+	// function and the call target; target_symbol stays.
+	"bytes": true, "offset": true, "entry": true,
 }
 
 // keyEvidence reports whether detail k of f belongs in the default report:
@@ -718,6 +721,16 @@ var causes = []cause{
 				[]string{"To cover them, run Zygarde as root with CAP_SYSLOG."}
 		}
 		return "Kernel addresses were hidden:", nil
+	}},
+	{core.NoBTF, func(r *report.Report) (string, []string) {
+		const heading = "This kernel was built without BTF, which these checks need:"
+		switch b := r.Host.BTFHub; {
+		case b != nil && b.Requested:
+			return heading, []string{"BTFHub could not provide it (see BTF above): give it with --btf <file>."}
+		case b != nil && b.Path != "":
+			return heading, []string{"To cover them: run with --btfhub (BTFHub has this kernel), or give BTF with --btf <file>."}
+		}
+		return heading, []string{"To cover them: give BTF with --btf <file> (from BTFHub or pahole)."}
 	}},
 	{"lockdown (confidentiality)", func(*report.Report) (string, []string) {
 		return "Kernel lockdown (confidentiality) blocks reading kernel memory:",
