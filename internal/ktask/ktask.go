@@ -312,3 +312,26 @@ func read(m kmem.Memory, l Layout, tasks map[uint64]uint64, out map[uint64]*Task
 	}
 	return nil
 }
+
+// maxDepth bounds the walk up the process tree: real hierarchies are a few
+// dozen levels deep at most.
+const maxDepth = 1024
+
+// FindInitTask walks up the real_parent chain from task (any task, such as
+// zygarde's own) to init_task, the only task that is its own parent.
+func FindInitTask(m kmem.Memory, l Layout, task uint64) (uint64, error) {
+	for range maxDepth {
+		vals, ok, err := kmem.ReadU64s(m, []uint64{task + l.realParent})
+		if err != nil {
+			return 0, err
+		}
+		if !ok[0] {
+			return 0, fmt.Errorf("task %#x is not readable", task)
+		}
+		if vals[0] == task {
+			return task, nil
+		}
+		task = vals[0]
+	}
+	return 0, errors.New("no task is its own parent within the process tree's depth: corrupted or looping")
+}

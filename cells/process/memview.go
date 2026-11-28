@@ -24,8 +24,9 @@ func useMemoryView(env *core.Env) bool {
 }
 
 // memViewSupported says whether the memory view can run: it needs BTF (for
-// the offsets), kernel addresses (init_task), and the initial PID namespace
-// (it reads init-namespace IDs, which /proc then shows).
+// the offsets) and the initial PID namespace (it reads init-namespace IDs,
+// which /proc then shows). It finds init_task from its own task, so it needs
+// no kernel symbols.
 func memViewSupported(env *core.Env) error {
 	if err := env.RequireBTF(); err != nil {
 		return err
@@ -35,13 +36,6 @@ func memViewSupported(env *core.Env) error {
 	}
 	if init, err := bpfutil.InInitPIDNS(); err != nil || !init {
 		return core.Skip("no BPF task iterator (Linux 5.8+), and the kernel memory view needs the initial PID namespace")
-	}
-	ks, err := env.Kallsyms()
-	if err != nil {
-		return core.SkipSymbols(err)
-	}
-	if _, ok := ks.Addr("init_task"); !ok {
-		return core.Skip("init_task is not in /proc/kallsyms")
 	}
 	return nil
 }
@@ -58,14 +52,6 @@ func openMemView(env *core.Env, rec *core.Recorder) (*memView, error) {
 	if err != nil {
 		return nil, err
 	}
-	ks, err := env.Kallsyms()
-	if err != nil {
-		return nil, err
-	}
-	initTask, ok := ks.Addr("init_task")
-	if !ok {
-		return nil, fmt.Errorf("init_task is not in /proc/kallsyms")
-	}
 	mem, err := kmem.Open(env)
 	if err != nil {
 		return nil, err
@@ -73,7 +59,39 @@ func openMemView(env *core.Env, rec *core.Recorder) (*memView, error) {
 	if id := mem.ProgramID(); id != 0 {
 		rec.Footprint("bpf_prog_id", strconv.FormatUint(uint64(id), 10))
 	}
-	return &memView{mem: mem, layout: layout, initTask: initTask}, nil
+	// init_task is the root of zygarde's own real_parent chain. That needs
+	// no /proc/kallsyms data symbols (CONFIG_KALLSYMS_ALL), and where
+	// kallsyms does list init_task the two must agree.
+	self, err := mem.CurrentTask()
+	if err == nil {
+		var initTask uint64
+		if initTask, err = ktask.FindInitTask(mem, layout, self); err == nil {
+			checkInitTaskSymbol(env, rec, initTask)
+			return &memView{mem: mem, layout: layout, initTask: initTask}, nil
+		}
+	}
+	mem.Close()
+	return nil, fmt.Errorf("finding init_task: %w", err)
+}
+
+// checkInitTaskSymbol compares the root of the process tree with the address
+// /proc/kallsyms gives for init_task, when it gives one.
+func checkInitTaskSymbol(env *core.Env, rec *core.Recorder, root uint64) {
+	ks, err := env.Kallsyms()
+	if err != nil {
+		return
+	}
+	sym, ok := ks.Addr("init_task")
+	if !ok || sym == root {
+		return
+	}
+	rec.Suspicious(core.Finding{
+		Description: fmt.Sprintf("/proc/kallsyms places init_task at %#x, but the root of the process tree is at %#x", sym, root),
+		Details:     map[string]string{"kallsyms_init_task": fmt.Sprintf("%#x", sym), "tree_root": fmt.Sprintf("%#x", root)},
+		Why: "init_task is the root of every process's chain of parents, and /proc/kallsyms gives its address. " +
+			"A different address means /proc/kallsyms is being rewritten, which rootkits do to mislead scanners.",
+		Benign: "None expected.",
+	})
 }
 
 func (v *memView) Close() { v.mem.Close() }

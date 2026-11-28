@@ -27,18 +27,27 @@ type kmemKmemReq struct {
 	Seq  uint32
 }
 
+type kmemKmemSelf struct {
+	_    structs.HostLayout
+	Seq  uint32
+	Pad  uint32
+	Task uint64
+}
+
 // Names of all BPF objects in the ELF.
 //
 // Used for safe lookups in a Collection or CollectionSpec.
 const (
 	kmemMapChunks          = "chunks"
 	kmemMapReqs            = "reqs"
+	kmemMapSelf            = "self"
 	kmemProgReadKmem       = "read_kmem"
 	kmemVarPidnsDev        = "pidns_dev"
 	kmemVarPidnsIno        = "pidns_ino"
 	kmemVarTargetTgid      = "target_tgid"
 	kmemVarUnusedKmemChunk = "unused_kmem_chunk"
 	kmemVarUnusedKmemReq   = "unused_kmem_req"
+	kmemVarUnusedKmemSelf  = "unused_kmem_self"
 )
 
 // loadKmem returns the embedded CollectionSpec for kmem.
@@ -92,6 +101,7 @@ type kmemProgramSpecs struct {
 type kmemMapSpecs struct {
 	Chunks *ebpf.MapSpec `ebpf:"chunks"`
 	Reqs   *ebpf.MapSpec `ebpf:"reqs"`
+	Self   *ebpf.MapSpec `ebpf:"self"`
 }
 
 // kmemVariableSpecs contains global variables before they are loaded into the kernel.
@@ -103,6 +113,7 @@ type kmemVariableSpecs struct {
 	TargetTgid      *ebpf.VariableSpec `ebpf:"target_tgid"`
 	UnusedKmemChunk *ebpf.VariableSpec `ebpf:"unused_kmem_chunk"`
 	UnusedKmemReq   *ebpf.VariableSpec `ebpf:"unused_kmem_req"`
+	UnusedKmemSelf  *ebpf.VariableSpec `ebpf:"unused_kmem_self"`
 }
 
 // kmemObjects contains all objects after they have been loaded into the kernel.
@@ -127,12 +138,14 @@ func (o *kmemObjects) Close() error {
 type kmemMaps struct {
 	Chunks *ebpf.Map `ebpf:"chunks"`
 	Reqs   *ebpf.Map `ebpf:"reqs"`
+	Self   *ebpf.Map `ebpf:"self"`
 }
 
 func (m *kmemMaps) Close() error {
 	return _KmemClose(
 		m.Chunks,
 		m.Reqs,
+		m.Self,
 	)
 }
 
@@ -145,6 +158,7 @@ type kmemVariables struct {
 	TargetTgid      *ebpf.Variable `ebpf:"target_tgid"`
 	UnusedKmemChunk *ebpf.Variable `ebpf:"unused_kmem_chunk"`
 	UnusedKmemReq   *ebpf.Variable `ebpf:"unused_kmem_req"`
+	UnusedKmemSelf  *ebpf.Variable `ebpf:"unused_kmem_self"`
 }
 
 // kmemPrograms contains all programs after they have been loaded into the kernel.

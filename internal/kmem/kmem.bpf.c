@@ -32,6 +32,17 @@ struct kmem_chunk {
 const struct kmem_req *unused_kmem_req __attribute__((unused));
 const struct kmem_chunk *unused_kmem_chunk __attribute__((unused));
 
+// The task that ran the batch (zygarde itself), tagged with the batch's seq:
+// userspace walks up its real_parent chain to init_task without needing
+// init_task in /proc/kallsyms (CONFIG_KALLSYMS_ALL).
+struct kmem_self {
+	__u32 seq;
+	__u32 pad;
+	__u64 task;
+};
+
+const struct kmem_self *unused_kmem_self __attribute__((unused));
+
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
 	__uint(max_entries, MAX_READS);
@@ -46,6 +57,13 @@ struct {
 	__type(value, struct kmem_chunk);
 } chunks SEC(".maps");
 
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, struct kmem_self);
+} self SEC(".maps");
+
 // Attached to getuid(); zygarde calls getuid() to run a batch. Userspace
 // only passes kernel-half addresses away from the vsyscall page (kmem.go).
 SEC("kprobe")
@@ -53,6 +71,17 @@ int read_kmem(void *ctx)
 {
 	if (!is_target())
 		return 0;
+
+	{
+		__u32 zero = 0;
+		struct kmem_req *first = bpf_map_lookup_elem(&reqs, &zero);
+		struct kmem_self *s = bpf_map_lookup_elem(&self, &zero);
+
+		if (first && s) {
+			s->task = bpf_get_current_task();
+			s->seq = first->seq;
+		}
+	}
 
 #pragma unroll
 	for (int i = 0; i < MAX_READS; i++) {

@@ -178,3 +178,22 @@ func TestNewLayoutKernelBTF(t *testing.T) {
 		t.Errorf("layout = %+v", l)
 	}
 }
+
+// init_task is found from any task by walking up real_parent.
+func TestFindInitTask(t *testing.T) {
+	k := newFakeKernel()
+	l := k.l
+	init := k.alloc()
+	k.Put64(init+l.realParent, init)
+	sys := k.task(1, 1, "systemd", init)
+	sh := k.task(50, 50, "sh", sys)
+	z := k.task(60, 60, "zygarde", sh)
+	if got, err := FindInitTask(k, l, z); err != nil || got != init {
+		t.Errorf("FindInitTask = %#x, %v; want %#x", got, err, init)
+	}
+	// A loop with no self-parented task is an error.
+	k.Put64(sys+l.realParent, sh)
+	if _, err := FindInitTask(k, l, z); err == nil {
+		t.Error("looping parents: no error")
+	}
+}

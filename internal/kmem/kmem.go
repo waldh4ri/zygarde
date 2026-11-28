@@ -12,7 +12,7 @@
 // the x86-64 vsyscall page are refused before they reach the kernel.
 package kmem
 
-//go:generate go tool bpf2go -target amd64,arm64 -cflags "-Wall -Werror -Wno-missing-declarations" -type kmem_req -type kmem_chunk kmem kmem.bpf.c -- -I../../bpf/include
+//go:generate go tool bpf2go -target amd64,arm64 -cflags "-Wall -Werror -Wno-missing-declarations" -type kmem_req -type kmem_chunk -type kmem_self kmem kmem.bpf.c -- -I../../bpf/include
 
 import (
 	"encoding/binary"
@@ -319,4 +319,29 @@ func WalkList(m Memory, head uint64, max int) ([]uint64, error) {
 		prev, cur = cur, U64(got[0][:8])
 	}
 	return nodes, nil
+}
+
+// CurrentTask returns the address of the task that runs the read program:
+// one of zygarde's own threads (bpf_get_current_task()). Walking up its
+// real_parent chain reaches init_task without needing its symbol.
+func (r *Reader) CurrentTask() (uint64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.seq++
+	seq := r.seq
+	// An empty batch (length 0): the program records the task and reads nothing.
+	if err := r.objs.Reqs.Put(uint32(0), kmemKmemReq{Seq: seq}); err != nil {
+		return 0, core.WrapBPF("write read requests", err)
+	}
+	var s kmemKmemSelf
+	for range 3 {
+		unix.Getuid()
+		if err := r.objs.Self.Lookup(uint32(0), &s); err != nil {
+			return 0, core.WrapBPF("read the current task", err)
+		}
+		if s.Seq == seq && s.Task != 0 {
+			return s.Task, nil
+		}
+	}
+	return 0, errors.New("the kprobe on getuid() never fired")
 }
