@@ -36,9 +36,34 @@ type Host struct {
 	Arch          string `json:"arch"`
 	Lockdown      string `json:"lockdown"`
 	KptrRestrict  *int   `json:"kptr_restrict,omitempty"` // kernel.kptr_restrict, when readable
-	BTF           bool   `json:"btf"`
-	BootID        string `json:"boot_id,omitempty"`
-	BootTime      string `json:"boot_time,omitempty"`
+	BTF           bool   `json:"btf"`                     // the kernel's own BTF (/sys/kernel/btf/vmlinux)
+	// BTFSource is where the type information used for CO-RE came from:
+	// "kernel", "file" (--btf), "btfhub" (fetched) or "none".
+	BTFSource string  `json:"btf_source"`
+	BTFHub    *BTFHub `json:"btfhub,omitempty"` // set when a fetch was attempted or skipped
+	BootID    string  `json:"boot_id,omitempty"`
+	BootTime  string  `json:"boot_time,omitempty"`
+}
+
+// BTFHub records a BTF fetch from the BTFHub archive, for kernels without
+// their own BTF: what was downloaded and how it was verified, or why not.
+type BTFHub struct {
+	Requested     bool   `json:"requested"`      // --btfhub was given
+	Path          string `json:"path,omitempty"` // in the archive: <distro>/<version>/<arch>/<release>.btf.tar.xz
+	URL           string `json:"url,omitempty"`  // downloaded from
+	GitBlobSHA1   string `json:"git_blob_sha1,omitempty"`
+	ArchiveSHA256 string `json:"archive_sha256,omitempty"`
+	// Verified: size and git blob hash matched those the GitHub contents API
+	// publishes, and the file passed format checks.
+	Verified bool   `json:"verified"`
+	Error    string `json:"error,omitempty"`
+}
+
+// AddArtifact records a transient object Zygarde itself created.
+func (r *Report) AddArtifact(kind, value string) {
+	if r.ScannerFootprint != nil {
+		r.ScannerFootprint.Artifacts = append(r.ScannerFootprint.Artifacts, core.FootprintItem{Kind: kind, Value: value})
+	}
 }
 
 // ScannerFootprint records Zygarde's own execution context and transient
@@ -130,6 +155,10 @@ func probeHost() Host {
 	}
 	_, err := os.Stat("/sys/kernel/btf/vmlinux")
 	h.BTF = err == nil
+	h.BTFSource = "none"
+	if h.BTF {
+		h.BTFSource = "kernel"
+	}
 	if b, err := fsutil.ReadFileNoAtime("/proc/sys/kernel/random/boot_id"); err == nil {
 		h.BootID = strings.TrimSpace(string(b))
 	}
