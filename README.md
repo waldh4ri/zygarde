@@ -37,13 +37,13 @@ flowchart LR
 Needs Linux 5.8+ with BTF and root (`CAP_BPF`/`CAP_SYS_ADMIN`). Kernels without BTF can use `--btf <file>`, or `--btfhub` to download it from BTFHub.
 
 ```bash
-make build                                       # ./zygarde (Go only, no clang needed)
-sudo ./zygarde                                   # run all checks, human-readable report
-sudo ./zygarde -v                                # also explain each check, show observations, canaries, all evidence
-sudo ./zygarde -q                                # verdict and one line per finding
+make build                # ./zygarde (Go only, no clang)
+sudo ./zygarde            # all checks, text report
+sudo ./zygarde -v         # also descriptions, all evidence
+sudo ./zygarde -q         # verdict, one line per finding
 sudo ./zygarde --cells hidden_process,hidden_file
 sudo ./zygarde -o report.json --preserve-dir ./evidence
-./zygarde --list                                 # the checks
+./zygarde --list          # the checks
 ```
 
 No Linux machine? `make docker-run` runs it in a privileged container on the Docker host's kernel (works from Windows and macOS).
@@ -51,6 +51,12 @@ No Linux machine? `make docker-run` runs it in a privileged container on the Doc
 **Exit code:** `0` nothing found, `1` a check could not complete, `2` something is SUSPICIOUS.
 
 **Statuses:** `OK` (nothing found), `SUSPICIOUS` (evidence of tampering), `SKIPPED` (does not apply to this kernel, reason given), `ERROR` (could not complete). A clean verdict only covers what ran; the *Coverage* section of the report says what did not.
+
+### Demo
+
+A BPFDoor build runs as root, opens no port and passes for a system daemon; Zygarde finds the process running from a deleted copy in /dev/shm and its raw packet sniffer. More recordings (a new kernel rootkit, Diamorphine, rkhunter vs Zygarde, kernels without BTF) are in [demo/](demo/).
+
+![Zygarde detecting BPFDoor](demo/bpfdoor.gif)
 
 ## What it checks
 
@@ -79,11 +85,26 @@ Per-Cell details, requirements and SUSPICIOUS conditions: [docs/cells.md](docs/c
 ```bash
 make build         # ./zygarde for this machine
 make dist          # dist/zygarde-linux-{amd64,arm64}
-make test          # unit tests (make docker-test inside the toolchain image, on any OS)
-make generate      # recompile the eBPF programs after editing a .bpf.c (needs clang; or make docker-generate)
+make test          # unit tests
+make generate      # recompile eBPF programs (needs clang)
+```
 
-make vm-upstream   # boot upstream kernels 4.19 to 7.2 in QEMU/KVM and run Zygarde in each, about 1 minute
-make vm-distro     # same on distribution cloud images (Ubuntu, Debian, Rocky, Fedora, Amazon Linux, openSUSE)
+No Go or clang? The same targets run in the toolchain container (Docker, from Linux, Windows or macOS):
+
+```bash
+make docker-build     # ./zygarde
+make docker-dist      # dist/zygarde-linux-{amd64,arm64}
+make docker-test      # unit tests, as root and as a user
+make docker-check     # what CI runs: fmt, tidy, vet, lint, vuln, race tests
+make docker-generate  # recompile eBPF programs
+make docker-run       # scan the Docker host's kernel
+```
+
+The kernel matrix runs Zygarde in QEMU/KVM (inside a privileged container):
+
+```bash
+make vm-upstream   # upstream kernels 4.19 to 7.2, about 1 minute
+make vm-distro     # distribution cloud images
 make vm-report     # Markdown matrix of the results
 ```
 
@@ -91,23 +112,24 @@ On a clean VM every Cell must be OK or SKIPPED with all canaries seen. Fixture t
 
 ## Validated against real samples
 
-Besides the clean-kernel matrix and planted fixtures, Zygarde has been run against real Linux rootkit and backdoor samples on disposable VMs (Ubuntu 7.0, AlmaLinux 10 with SELinux, Debian 11, and emulated arm64), each compared with a clean baseline scan of the same VM.
+Besides the clean-kernel matrix and planted fixtures, Zygarde has been run against real Linux rootkit and backdoor samples on disposable VMs (Ubuntu with kernels 5.4, 6.2 and 7.0, AlmaLinux 10 with SELinux, Debian 11, and emulated arm64), each compared with a clean baseline scan of the same VM.
 
 | Detected | Through |
 |----------|---------|
-| BPFDoor (several builds, including ones with 0 detections on VirusTotal) | `hidden_process`, `hidden_socket` (packet-sniffer rule) |
+| gojiberi, a kernel rootkit first seen in November 2026 (0 of 35 VirusTotal engines on 2026-11-28) | `inline_hook`, `hidden_kernel_module`, `hidden_process`, `hidden_file` |
+| BPFDoor (several builds, some with 0 detections on VirusTotal when tested) | `hidden_process`, `hidden_socket` (packet-sniffer rule) |
 | Prism | `hidden_socket` (raw ICMP socket) |
 | HiddenWasp | `hidden_file` |
 | Ebury (trojaned `libkeyutils`) | `userspace_hooks` (package checksum verification) |
 | LinkPro (preload module), Auto-color, perfctl | `userspace_hooks` |
 | Symbiote, Azazel, Jynx, OrBit, Facefish, libprocesshider and other process hiders | `userspace_hooks` |
 | Winnti (process named `[scsi_eh]`), XMRig (`.kworker_sys`), Mirai/JoyBot-style bot (memfd, `kworker`) | `hidden_process` |
-| Diamorphine (module failed to load) | `kernel_taint` |
+| Diamorphine | `altered_syscall_table`, `hidden_kernel_module`, `hidden_process`, `hidden_file` |
 
 ## Documentation
 
-| | |
-|---|---|
+| Document | Contents |
+|----------|----------|
 | [Getting started](docs/getting-started.md) | requirements, building, first run, containers |
 | [Usage and reports](docs/usage.md) | flags, exit codes, reading findings, JSON schema |
 | [Cell reference](docs/cells.md) | what each check does, and when it reports SUSPICIOUS |
@@ -124,7 +146,7 @@ Besides the clean-kernel matrix and planted fixtures, Zygarde has been run again
 - Rootkit analyses behind the checks: Synacktiv, [LinkPro](https://www.synacktiv.com/publications/linkpro-analyse-dun-rootkit-ebpf); Sandfly Security, [Linux Scales eBPF Rootkit](https://sandflysecurity.com/blog/linux-scales-ebpf-rootkit-detection-and-analysis); ExaTrack, [Mélofée](https://exatrack.com/publications/melofee.html); Elastic Security Labs, [Linux Rootkits 2: Caught in the Act](https://www.elastic.co/security-labs/threat-command/linux-rootkits-2-caught-in-the-act)
 - Malware and rootkit families the checks were designed against or tested on (see [Validated against real samples](#validated-against-real-samples)):
   - **eBPF:** LinkPro, Scales, Boopkit, TripleCross, ebpfkit
-  - **Kernel modules and function hooking:** Reptile, Mélofée (khook), Diamorphine, adore-ng, Snapekit, VoidLink, Singularity, Syslogk, FontOnLake
+  - **Kernel modules and function hooking:** gojiberi, Reptile, Mélofée (khook), Diamorphine, adore-ng, Snapekit, VoidLink, Singularity, Syslogk, FontOnLake
   - **Backdoors waiting for a trigger packet:** BPFDoor (Red Menshen), Prism
   - **`LD_PRELOAD` and library trojans:** Azazel, Jynx, OrBit, Symbiote, Facefish, HiddenWasp, Auto-color, perfctl, Ebury, libprocesshider
   - **Disguised processes and loaders:** Winnti, XMRig miners, Mirai/JoyBot-style bots
