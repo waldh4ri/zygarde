@@ -52,6 +52,12 @@ No Linux machine? `make docker-run` runs it in a privileged container on the Doc
 
 **Statuses:** `OK` (nothing found), `SUSPICIOUS` (evidence of tampering), `SKIPPED` (does not apply to this kernel, reason given), `ERROR` (could not complete). A clean verdict only covers what ran; the *Coverage* section of the report says what did not.
 
+### Demo
+
+A BPFDoor build runs as root, opens no port and passes for a system daemon; Zygarde finds the process running from a deleted copy in /dev/shm and its raw packet sniffer. More recordings (a new kernel rootkit, Diamorphine, rkhunter vs Zygarde, kernels without BTF) are in [demo/](demo/).
+
+![Zygarde detecting BPFDoor](demo/bpfdoor.gif)
+
 ## What it checks
 
 | Cell | Kernel view | Userspace view / rule |
